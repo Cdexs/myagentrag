@@ -1,0 +1,3 @@
+publish/
+.git/
+scripts/__pycache__/
