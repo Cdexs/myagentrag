@@ -21,13 +21,13 @@
 **从 npm 安装（推荐）：**
 
 ```bash
-npm install smart-summarize
+npm install @cdexs/smart-summarize
 ```
 
-安装后技能包位于 `node_modules/smart-summarize/`，把该目录（或整个 `node_modules/smart-summarize`）放到 agent 的技能目录（如 `~/.pi/agent/skills/smart-summarize`），或直接指定路径运行：
+安装后技能包位于 `node_modules/@cdexs/smart-summarize/`，把该目录（或整个目录）放到 agent 的技能目录（如 `~/.pi/agent/skills/smart-summarize`），或直接指定路径运行：
 
 ```bash
-python node_modules/smart-summarize/scripts/extract.py --file demo.pdf
+python node_modules/@cdexs/smart-summarize/scripts/extract.py --file demo.pdf
 ```
 
 **从源码安装：**
