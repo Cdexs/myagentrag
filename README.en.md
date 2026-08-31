@@ -18,6 +18,20 @@ Cross-platform: Windows / macOS / Linux / WSL.
 
 ## Install
 
+**Install from npm (recommended):**
+
+```bash
+npm install smart-summarize
+```
+
+The skill lands in `node_modules/smart-summarize/`. Copy it (or point directly at it) into your agent's skill directory (e.g. `~/.pi/agent/skills/smart-summarize`), or run it in place:
+
+```bash
+python node_modules/smart-summarize/scripts/extract.py --file demo.pdf
+```
+
+**Install from source:**
+
 Place this directory into your agent's skill directory (e.g. `~/.pi/agent/skills/smart-summarize`), or run it in place:
 
 ```bash
