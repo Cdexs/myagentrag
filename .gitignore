@@ -1,0 +1,8 @@
+youtube-cookies.txt
+bilibili-cookies.txt
+x-cookies.txt
+weixin-cookies.txt
+*.cookies.txt
+
+# 发布产物不入库（发布时才打包）
+publish/
