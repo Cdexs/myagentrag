@@ -24,6 +24,12 @@ Cross-platform: Windows / macOS / Linux / WSL.
 npm install @cdexs/smart-summarize
 ```
 
+**One-liner for pi users (installs straight into the skill directory):**
+
+```bash
+pi install npm:@cdexs/smart-summarize
+```
+
 The skill lands in `node_modules/@cdexs/smart-summarize/`. Copy it (or point directly at it) into your agent's skill directory (e.g. `~/.pi/agent/skills/smart-summarize`), or run it in place:
 
 ```bash

@@ -24,6 +24,12 @@
 npm install @cdexs/smart-summarize
 ```
 
+**pi 用户一键安装（自动装到技能目录）：**
+
+```bash
+pi install npm:@cdexs/smart-summarize
+```
+
 安装后技能包位于 `node_modules/@cdexs/smart-summarize/`，把该目录（或整个目录）放到 agent 的技能目录（如 `~/.pi/agent/skills/smart-summarize`），或直接指定路径运行：
 
 ```bash
