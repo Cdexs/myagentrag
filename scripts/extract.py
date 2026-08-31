@@ -422,7 +422,7 @@ def install_ffmpeg():
     import zipfile
     import tarfile
     with tempfile.TemporaryDirectory(prefix="ss_ffmpeg_dl_") as td:
-        archive = _http_download(url, Path(td) / Path(url).split("/")[-1].split("?")[0], "ffmpeg")
+        archive = _http_download(url, Path(td) / url.split("/")[-1].split("?")[0], "ffmpeg")
         if archive.suffix == ".zip":
             with zipfile.ZipFile(archive) as zf:
                 zf.extractall(td)
