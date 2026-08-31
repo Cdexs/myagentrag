@@ -482,6 +482,11 @@ def install_whispercli():
                         break
                 if built:
                     shutil.copy2(built, dest)
+                    # 官方预编译 exe 依赖同目录的 DLL（whisper.dll/ggml.dll 等），必须一起拷
+                    for extra in built.parent.iterdir():
+                        if extra.is_file() and extra.suffix.lower() == ".dll":
+                            shutil.copy2(extra, dest.parent)
+                            print(f"  + DLL: {extra.name}", file=sys.stderr)
                     print("  ⚠️ 预编译版为 CPU 构建；如需 GPU 加速请安装 Vulkan SDK/CUDA Toolkit "
                           "后删除受管二进制重新构建，或用 SMART_SUMMARIZE_WHISPERCPP_CLI 指向 GPU 预编译版",
                           file=sys.stderr)
