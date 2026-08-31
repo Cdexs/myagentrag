@@ -206,7 +206,7 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 - yt-dlp 优先从当前 Python 环境查找；视频缺 ffmpeg 时走统一的缺失提示而非静默失败。
 
 ### v3.5.1（whisper-cli 三级安装与 GPU 检测）
-- whisper-cli 安装优先级：brew 预编译包 → GitHub 官方预编译 zip → 源码构建兑底；
+- whisper-cli 安装优先级：brew 预编译包 → GitHub 官方预编译 zip → 源码构建兜底；
 - 源码构建时自动检测 CUDA/Vulkan 工具链并如实告知；支持 `SMART_SUMMARIZE_WHISPERCPP_CMAKE_FLAGS`。
 
 ### v3.5（运行时确认下载）
