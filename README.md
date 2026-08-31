@@ -41,7 +41,8 @@ python node_modules/@cdexs/smart-summarize/scripts/extract.py --file demo.pdf
 把本目录放到 agent 的技能目录（如 `~/.pi/agent/skills/smart-summarize`），或直接在本目录运行：
 
 ```bash
-# 依赖（纯 Python，无编译）
+# 依赖（可选，纯 Python）：首次用到某格式时会运行时检测并提示确认安装，
+# 开箱即用；如需预装可执行：
 python -m pip install requests pdfplumber pymupdf python-docx ebooklib yt-dlp
 
 python scripts/extract.py --url "https://www.bilibili.com/video/BVxxxx"   # B站字幕
@@ -51,6 +52,24 @@ python scripts/extract.py --file lecture.mp3 --output srt                  # SRT
 ```
 
 详细用法、环境变量、故障排除见 [SKILL.md](SKILL.md)。
+
+## 运行环境与依赖组件
+
+安装技能包本身即可用，但**各功能所需的软件环境不同**，首次使用对应功能时才会触发检测/安装：
+
+| 功能 | 依赖 | 说明 |
+| --- | --- | --- |
+| 所有功能 | **Python 3.9+** | 始终需要；默认用 PATH 中的 `python`，或由 `SMART_SUMMARIZE_PYTHON` 指定 |
+| 网页正文 / B站字幕 | `requests`（pip） | 首次使用时检测并确认安装；组件下载链路也依赖它 |
+| PDF | `pdfplumber` 或 `PyMuPDF`（任一即可） | 同上，首次检测、确认后 pip 安装 |
+| Word `.docx` | `python-docx` | 同上 |
+| EPUB | `ebooklib` | 同上 |
+| YouTube 字幕 | `yt-dlp` | 同上；另见下行 Node.js |
+| YouTube 受限内容 | **Node.js**（`node` 在 PATH） | yt-dlp 需 JS runtime；未安装时见故障排除 |
+| Word `.doc`（老格式） | **pandoc**（PATH） | 仅需此格式时装；不自动下载 |
+| 音视频转录 | **ffmpeg + whisper-cli + ggml 模型** | 首次使用时列出名称/用途/来源/预计大小（合计约 1.6–2.4 GB），经确认后自动下载到 `~/.smart-summarize`，也可用环境变量指向已有安装 |
+
+提示：所有 Python 库与组件都**无需预先安装**——首次用到某类内容时脚本会自动检测，并经确认后代为安装。
 
 ## 环境变量一览
 

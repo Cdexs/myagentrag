@@ -24,12 +24,16 @@ compatibility: Windows / macOS / Linux + Python 3.9+；音视频转录另需 ffm
 
 ## 安装依赖
 
-入口优先使用 `SMART_SUMMARIZE_PYTHON`，未设置时使用 PATH 中的 `python`。技能不会假设某台机器上的 Python、venv 或磁盘路径。
+**无需要预先安装任何 Python 库。** 首次提取某类内容时（如第一个 PDF），脚本会运行时检测所需库：缺失时列出名称/用途/安装命令，经用户确认后用当前解释器 `pip` 安装并自动继续；agent 在征得用户同意后可加 `--download-deps` 非交互执行。
+
+各功能对应的库（仅供参考，通常无需手动装）：
 
 ```bash
 PYTHON="${SMART_SUMMARIZE_PYTHON:-python}"
 "$PYTHON" -m pip install --upgrade requests pdfplumber pymupdf python-docx ebooklib yt-dlp
 ```
+
+入口优先使用 `SMART_SUMMARIZE_PYTHON`，未设置时使用 PATH 中的 `python`。技能不会假设某台机器上的 Python、venv 或磁盘路径。
 
 推荐使用独立环境（Unix/macOS/Linux）：
 
@@ -198,7 +202,10 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 
 ## 更新日志
 
-## 更新日志
+### v3.5.3（Python 库运行时预检与确认安装）
+- 首次提取 PDF/Word(.docx)/EPUB/YouTube/网页时运行时检测对应 Python 库（pdfplumber/PyMuPDF/python-docx/ebooklib/yt-dlp/requests）；
+- 缺失时与 ffmpeg/whisper 组件同一机制：列出名称/用途/安装命令，经用户确认后用当前解释器 pip 安装并自动继续；agent 可用 `--download-deps` 代为确认；
+- 原先缺库仅 stderr 一句警告且 JSON 分不清“库缺失”与“文件损坏”，现在错误结构化为 `missing` 清单。
 
 ### v3.5.2（cookies 自动路径）
 - cookies 文件默认位置自动确定：`~/.smart-summarize/cookies/youtube-cookies.txt`，无需预先配置；

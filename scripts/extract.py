@@ -25,6 +25,7 @@ import platform
 import subprocess
 import shutil
 import tempfile
+import importlib
 from pathlib import Path
 from datetime import datetime
 
@@ -342,10 +343,60 @@ def extract_epub_text(file_path):
 # ==================== 运行时依赖检测与确认下载 ====================
 
 class MissingDependencyError(Exception):
-    """转录所需组件缺失；kinds: 'ffmpeg' / 'whisper-cli' / 'model:<name>'"""
+    """所需组件缺失；kinds: 'ffmpeg' / 'whisper-cli' / 'model:<name>' / 'pip:<group>'"""
     def __init__(self, kinds):
         self.kinds = kinds
         super().__init__("缺少组件: " + ", ".join(kinds))
+
+# ==================== Python 库依赖（首次使用时运行时检测、确认后安装） ====================
+# 设计原则与 ffmpeg/whisper 组件一致：初始安装不预装、不自动下载；
+# 实际用到该格式时才检测，列出清单经用户确认后用当前解释器 pip 安装。
+PIP_LIB_GROUPS = {
+    "pdf": {
+        "packages": ["pdfplumber", "pymupdf"],
+        "purpose": "PDF 文本提取（pdfplumber 或 PyMuPDF 任一即可）",
+    },
+    "docx": {
+        "packages": ["python-docx"],
+        "purpose": "Word (.docx) 文本提取",
+    },
+    "epub": {
+        "packages": ["ebooklib"],
+        "purpose": "EPUB 电子书文本提取",
+    },
+    "yt-dlp": {
+        "packages": ["yt-dlp"],
+        "purpose": "YouTube 字幕与元数据提取",
+    },
+    "requests": {
+        "packages": ["requests"],
+        "purpose": "网页正文与 B 站字幕提取",
+    },
+}
+
+def _import_ok(name):
+    try:
+        importlib.import_module(name)
+        return True
+    except Exception:
+        return False
+
+def _missing_pipelib_kinds(groups):
+    """按用途组检测缺失的 Python 库，返回 'pip:<group>' kind 列表。"""
+    kinds = []
+    for g in groups:
+        if g == "pdf":
+            if not (_import_ok("pdfplumber") or _import_ok("pymupdf") or _import_ok("fitz")):
+                kinds.append(f"pip:{g}")
+        elif g == "yt-dlp":
+            if not _import_ok("yt_dlp") and not shutil.which("yt-dlp"):
+                kinds.append(f"pip:{g}")
+        else:
+            spec = PIP_LIB_GROUPS.get(g)
+            import_name = "docx" if g == "docx" else g
+            if spec and not _import_ok(import_name):
+                kinds.append(f"pip:{g}")
+    return kinds
 
 MODEL_URL_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/"
 WHISPERCPP_REPO_URL = "https://github.com/ggml-org/whisper.cpp"
@@ -583,13 +634,22 @@ def _missing_dep_kinds(model_name):
     return kinds
 
 def _dep_detail(kind):
+    if kind.startswith("pip:"):
+        group = kind.split(":", 1)[1]
+        spec = PIP_LIB_GROUPS.get(group)
+        pkgs = " ".join(spec["packages"]) if spec else group
+        purpose = spec["purpose"] if spec else "Python 库"
+        return {"kind": kind, "name": pkgs,
+                "purpose": purpose,
+                "source": f"安装到当前 Python 解释器：\"{sys.executable}\" -m pip install {pkgs}",
+                "est_size": "合计数 MB"}
     if kind == "ffmpeg":
         url = _ffmpeg_source_url()
         size = _content_length(url) if url else 0
         return {"kind": kind, "name": "ffmpeg",
                 "purpose": "音视频解码与音频提取",
                 "source": url or "系统包管理器（apt/dnf/pacman/brew）",
-                "est_size": _human_size(size)}
+                "est_size": _human_size(size) if size else "约 100 MB（以实际下载为准）"}
     if kind == "whisper-cli":
         return {"kind": kind, "name": "whisper-cli (whisper.cpp)",
                 "purpose": "本地语音转录",
@@ -604,7 +664,16 @@ def _dep_detail(kind):
             "est_size": _human_size(size)}
 
 def _install_dep(kind):
-    if kind == "ffmpeg":
+    if kind.startswith("pip:"):
+        group = kind.split(":", 1)[1]
+        spec = PIP_LIB_GROUPS[group]
+        cmd = [sys.executable, "-m", "pip", "install", "--upgrade"] + spec["packages"]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if r.returncode != 0:
+            manual = " ".join(cmd)
+            tail = ((r.stderr or "") + (r.stdout or "")).strip()[-300:]
+            raise RuntimeError(f"pip 安装失败: {tail}；可手动执行以下命令 {manual}")
+        return f"{Path(sys.executable)} -m pip（{' '.join(spec['packages'])}）"
         return install_ffmpeg()
     if kind == "whisper-cli":
         return install_whispercli()
@@ -818,6 +887,28 @@ def _run_extraction(args):
     target = args.url or args.file
     content_type = detect_content_type(target)
 
+    # Python 库依赖预检（与 ffmpeg/whisper 组件同一确认机制）：
+    # 只在实际用到该格式时检测，缺失则列出清单，确认后用当前解释器 pip 安装。
+    lib_groups = []
+    if content_type == "youtube":
+        lib_groups.append("yt-dlp")
+    elif content_type in ("bilibili", "web"):
+        lib_groups.append("requests")
+    elif content_type in ("audio", "video"):
+        # 下载 ffmpeg/whisper 组件的确认下载链路本身依赖 requests，
+        # 全新环境下先确保它可用，否则用户确认后安装会崩
+        lib_groups.append("requests")
+    elif content_type == "pdf":
+        lib_groups.append("pdf")
+    elif content_type == "epub":
+        lib_groups.append("epub")
+    elif content_type == "word" and Path(args.file).suffix.lower() == ".docx":
+        lib_groups.append("docx")
+    if lib_groups:
+        kinds = _missing_pipelib_kinds(lib_groups)
+        if kinds:
+            raise MissingDependencyError(kinds)
+
     if content_type == "youtube":
         video_id = extract_video_id(args.url)
         return extract_youtube(video_id) if video_id else {"error": "无法提取视频ID", "success": False}
@@ -833,7 +924,7 @@ def _run_extraction(args):
 def _handle_missing_deps(args, err):
     """列出缺失组件（名称/用途/来源/预计大小），经用户确认后下载安装并继续原任务。"""
     items = [_dep_detail(k) for k in err.kinds]
-    print("\n⚠️ 录/提取所需的以下组件缺失：", file=sys.stderr)
+    print("\n⚠️ 提取/转录所需的以下组件缺失：", file=sys.stderr)
     for it in items:
         print(f"  • {it['name']}（{it['purpose']}）"
               f"\n    来源: {it['source']}\n    预计大小: {it['est_size']}", file=sys.stderr)

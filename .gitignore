@@ -7,3 +7,7 @@ weixin-cookies.txt
 # 发布产物不入库（发布时才打包）
 publish/
 AGENT.md
+
+scripts/__pycache__/
+__pycache__/
+.git/

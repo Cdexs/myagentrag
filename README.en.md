@@ -41,7 +41,9 @@ python node_modules/@cdexs/smart-summarize/scripts/extract.py --file demo.pdf
 Place this directory into your agent's skill directory (e.g. `~/.pi/agent/skills/smart-summarize`), or run it in place:
 
 ```bash
-# Dependencies (pure Python, no compilation)
+# Dependencies (optional, pure Python): on first use of each format the script
+# detects missing libraries, lists them and installs on confirmation (out-of-box).
+# To pre-install everything:
 python -m pip install requests pdfplumber pymupdf python-docx ebooklib yt-dlp
 
 python scripts/extract.py --url "https://www.bilibili.com/video/BVxxxx"   # Bilibili subtitles
@@ -51,6 +53,24 @@ python scripts/extract.py --file lecture.mp3 --output srt                  # SRT
 ```
 
 For detailed usage, environment variables, and troubleshooting, see [SKILL.md](SKILL.md).
+
+## Runtime Environment & Dependencies
+
+The installed package works right away, but each feature has its own software requirements — all detected on first use:
+
+| Feature | Dependency | Notes |
+| --- | --- | --- |
+| All features | **Python 3.9+** | Always required; uses `python` from PATH by default, or set `SMART_SUMMARIZE_PYTHON` |
+| Web pages / Bilibili subtitles | `requests` | Detected on first use; installed via `pip` after confirmation; also required by the component download chain |
+| PDF | `pdfplumber` or `PyMuPDF` (either one) | Same on-demand detection + confirmed pip install |
+| Word `.docx` | `python-docx` | Same as above |
+| EPUB | `ebooklib` | Same as above |
+| YouTube subtitles | `yt-dlp` | Same as above |
+| Restricted YouTube content | **Node.js** (`node` on PATH) | Required as JS runtime by yt-dlp; see troubleshooting if missing |
+| Word `.doc` (legacy) | **pandoc** (on PATH) | Only for this format; not auto-downloaded |
+| Audio/video transcription | **ffmpeg + whisper-cli + ggml model** | On first use, each is listed with name/purpose/source/estimated size (~1.6–2.4 GB total); after confirmation they are downloaded into `~/.smart-summarize`, or point env vars at existing installs |
+
+Note: Python libraries require **no pre-installation**; everything is detected on first use and installed on confirmation.
 
 ## Environment Variables
 
