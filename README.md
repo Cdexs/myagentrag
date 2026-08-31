@@ -1,5 +1,7 @@
 # smart-summarize
 
+可自动进行网页、网络视频、本地文件（PDF/Word/EPUB/文本）、音视频进行读取、总结的技能，可对音视频进行文本、字幕转写。
+
 智能内容提取技能包（agent skill）——提取 YouTube/B站视频字幕、网页正文、本地文件（PDF/Word/EPUB/文本）与音视频语音转录。**只提取，不调用 LLM**；提取结果交给宿主 agent 总结。
 
 跨平台：Windows / macOS / Linux / WSL。
