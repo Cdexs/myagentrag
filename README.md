@@ -44,6 +44,18 @@ python scripts/extract.py --file lecture.mp3 --output srt                  # SRT
 | `SMART_SUMMARIZE_YOUTUBE_COOKIES`        | YouTube cookies 文件（默认 `~/.smart-summarize/cookies/youtube-cookies.txt`） |
 | `SMART_SUMMARIZE_WHISPERCPP_CMAKE_FLAGS` | 源码构建 whisper.cpp 时追加的 CMake 参数                                          |
 
+## Cookies（YouTube 受限内容）
+
+平时完全不需要 cookies。只有当脚本提示需要时（返回 JSON 中的 `cookieHint` 字段）：
+
+1. 浏览器安装扩展 **Get cookies.txt LOCALLY**（或同类）；
+2. 访问 youtube.com 并登录，导出 Netscape 格式 cookies；
+3. 保存到：`~/.smart-summarize/cookies/youtube-cookies.txt`
+   （Windows 即 `C:\Users\<你>\.smart-summarize\cookies\youtube-cookies.txt`）；
+4. 重新运行同一命令即可。
+
+如需自定义位置：`SMART_SUMMARIZE_YOUTUBE_COOKIES` 指向任意路径。cookies 等同账号会话，请勿提交到仓库或共享。
+
 ## License
 
 MIT

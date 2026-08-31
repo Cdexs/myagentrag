@@ -10,17 +10,17 @@ compatibility: Windows / macOS / Linux + Python 3.9+；音视频转录另需 ffm
 
 ## 支持的内容源
 
-| 类型 | 支持格式 | 说明 |
-|------|---------|------|
-| **YouTube** | 视频 URL | 通过 yt-dlp 提取手动/自动字幕和元数据 |
-| **B站** | 视频 URL | 提取 CC 字幕和视频信息（免登录 API） |
-| **网页** | HTTP/HTTPS 链接 | 通过 Jina Reader 提取正文 |
-| **文本文件** | `.txt`, `.md`, `.markdown`, `.rst`, `.csv` | 直接读取 |
-| **PDF** | `.pdf` | pdfplumber 或 PyMuPDF |
-| **Word** | `.docx`, `.doc` | python-docx；`.doc` 另需 pandoc |
-| **EPUB** | `.epub` | ebooklib |
-| **音频** | `.mp3`, `.wav`, `.aac`, `.m4a`, `.flac`, `.ogg`, `.wma` | ffmpeg 转 PCM 后用 whisper.cpp 转录 |
-| **视频** | `.mp4`, `.avi`, `.mkv`, `.mov`, `.wmv`, `.flv`, `.webm` | 先提取内置字幕，无字幕则提取音频转录 |
+| 类型          | 支持格式                                                    | 说明                             |
+| ----------- | ------------------------------------------------------- | ------------------------------ |
+| **YouTube** | 视频 URL                                                  | 通过 yt-dlp 提取手动/自动字幕和元数据        |
+| **B站**      | 视频 URL                                                  | 提取 CC 字幕和视频信息（免登录 API）         |
+| **网页**      | HTTP/HTTPS 链接                                           | 通过 Jina Reader 提取正文            |
+| **文本文件**    | `.txt`, `.md`, `.markdown`, `.rst`, `.csv`              | 直接读取                           |
+| **PDF**     | `.pdf`                                                  | pdfplumber 或 PyMuPDF           |
+| **Word**    | `.docx`, `.doc`                                         | python-docx；`.doc` 另需 pandoc   |
+| **EPUB**    | `.epub`                                                 | ebooklib                       |
+| **音频**      | `.mp3`, `.wav`, `.aac`, `.m4a`, `.flac`, `.ogg`, `.wma` | ffmpeg 转 PCM 后用 whisper.cpp 转录 |
+| **视频**      | `.mp4`, `.avi`, `.mkv`, `.mov`, `.wmv`, `.flv`, `.webm` | 先提取内置字幕，无字幕则提取音频转录             |
 
 ## 安装依赖
 
@@ -48,6 +48,31 @@ $Python = if ($env:SMART_SUMMARIZE_PYTHON) { $env:SMART_SUMMARIZE_PYTHON } else 
 
 音视频功能还需要单独安装 `ffmpeg`；`.doc` 文件还需要 `pandoc`。两者应安装到 PATH，或分别通过 `SMART_SUMMARIZE_FFMPEG`、系统包管理器配置。
 
+## 运行机制
+
+```
+extract.py 被调用（--url 或 --file）
+  ├─ ① 类型检测：youtube / bilibili / web / 本地文件（按后缀）
+  ├─ ② 分发
+  │    ├─ youtube  → yt-dlp 拉字幕（失败且疑似登录墙 → 输出 cookieHint）
+  │    ├─ bilibili → 免登录 API 拉 CC 字幕
+  │    ├─ web      → Jina Reader
+  │    └─ 本地文件 → 按 MIME 分派（文本直读/PDF/Word/EPUB 解析）
+  ├─ ③ 音视频：先查 ffmpeg/whisper-cli/ggml 模型
+  │     ├─ 全部就绪 → ffmpeg 转 WAV → whisper-cli 转录 → SRT/文本
+  │     └─ 有缺失  → 列出清单（名称/用途/来源/大小）→ 用户确认
+  │                    ├─ 同意 → 下载安装（仅装到 ~/.smart-summarize）→ 自动重跑原任务
+  │                    └─ 拒绝/非交互 → 返回 JSON 缺失清单，不下载
+  └─ ④ 输出 JSON（成功：title/author/transcript/content；失败：error/missing/cookieHint）
+```
+
+关键规则：
+
+- 提取与总结分离：脚本永不调用 LLM；
+- 组件只在缺失时、经确认后才下载，且只装进 `~/.smart-summarize`，不动系统目录；
+- 每次运行的中间文件用 `ss_*` 临时目录，正常退出即清理；
+- 无网络/组件缺失时返回结构化 JSON 错误，agent 可据此决定重试或向用户说明。
+
 ## 使用方法
 
 统一入口：
@@ -70,9 +95,14 @@ $Python = if ($env:SMART_SUMMARIZE_PYTHON) { $env:SMART_SUMMARIZE_PYTHON } else 
 
 输出格式：
 
-- `--output json`（默认）：完整 JSON（含 title/author/transcript/success）
+- `--output json`（默认）：完整 JSON（含 title/author/transcript/content/success）
 - `--output text`：标题+正文纯文本
 - `--output srt`：SRT 字幕（仅音视频转录）
+
+附加参数与字段：
+
+- `--download-deps`：缺组件时跳过交互确认直接下载安装（用于 agent 在征得用户同意后代为确认后重跑）；
+- 失败时 JSON 可能包含 `missing`（缺失组件清单）或 `cookieHint`（YouTube 需要登录验证的提示），agent 应原样展示给用户。
 
 > YouTube 需要代理时，先设置 `HTTPS_PROXY`。YouTube 受限内容可能需要 cookies；公开字幕通常不需要。
 
@@ -101,7 +131,7 @@ export SMART_SUMMARIZE_TMPDIR="$HOME/.cache/smart-summarize-tmp"
 
 ## ffmpeg 与 whisper.cpp
 
-**刎始安装不下载任何组件；实际使用时运行时检测。** 所有自动下载的组件都只装在用户目录（`~/.smart-summarize`），不写系统目录。
+**初始安装不下载任何组件；实际使用时运行时检测。** 所有自动下载的组件都只装在用户目录（`~/.smart-summarize`），不写系统目录。
 
 ### 检测顺序（每次转录前自动执行）
 
@@ -120,7 +150,7 @@ export SMART_SUMMARIZE_TMPDIR="$HOME/.cache/smart-summarize-tmp"
 下载来源与安装位置：
 
 - ffmpeg：Windows 用 gyan.dev zip、macOS 用 evermeet.cx、Linux x86_64/arm64 用 johnvansickle 静态包；安装到 `SMART_SUMMARIZE_HOME`（默认 `~/.smart-summarize/bin`）。
-- whisper-cli：按优先级安装：①macOS/Linux 有 Homebrew 时 `brew install whisper-cpp`；②Windows 下载 GitHub 官方预编译 zip（CPU 构建）；③源码构建兑底（需 git/cmake/编译器）。源码构建时自动检测 GPU 工具链：有 NVIDIA GPU + CUDA Toolkit 则启用 CUDA，有 Vulkan SDK 则启用 Vulkan，macOS 默认启用 Metal，都没有则 CPU（并明确告知）。也可用 `SMART_SUMMARIZE_WHISPERCPP_CMAKE_FLAGS` 追加自定义 CMake 参数；需要换后端时删除 `~/.smart-summarize/whisper.cpp` 构建目录及受管 bin 中的二进制后重试。
+- whisper-cli：按优先级安装：①macOS/Linux 有 Homebrew 时 `brew install whisper-cpp`；②Windows 下载 GitHub 官方预编译 zip（CPU 构建）；③源码构建兜底（需 git/cmake/编译器）。源码构建时自动检测 GPU 工具链：有 NVIDIA GPU + CUDA Toolkit 则启用 CUDA，有 Vulkan SDK 则启用 Vulkan，macOS 默认启用 Metal，都没有则 CPU（并明确告知）。也可用 `SMART_SUMMARIZE_WHISPERCPP_CMAKE_FLAGS` 追加自定义 CMake 参数；需要换后端时删除 `~/.smart-summarize/whisper.cpp` 构建目录及受管 bin 中的二进制后重试。
 - ggml 模型：从 HuggingFace `ggerganov/whisper.cpp` 下载（large-v3-turbo 约 1.6GB，q5_0 约 560MB），存到上述模型目录首个可用位置。
 
 ### GPU 加速边界
@@ -157,26 +187,41 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 
 ## 故障排除
 
-| 症状 | 处理 |
-|------|------|
-| 找不到 `python` | 设置 `SMART_SUMMARIZE_PYTHON` 为目标解释器的完整路径 |
+| 症状                             | 处理                                                     |
+| ------------------------------ | ------------------------------------------------------ |
+| 找不到 `python`                   | 设置 `SMART_SUMMARIZE_PYTHON` 为目标解释器的完整路径                |
 | YouTube yt-dlp 报 JS runtime 错误 | 安装 Node.js 并确保 `node` 在 PATH；脚本使用 `--js-runtimes node` |
-| 音视频提示 whisper.cpp 不可用 | 运行时检查会列出缺失组件与大小；同意后确认或由 agent 加 `--download-deps` 重跑 |
-| PDF 提取为空 | 扫描件没有文字层，属正常；本工具不做 OCR |
-| B站无字幕 | 该视频没有 CC 字幕，API 返回 `success:false`，属正常 |
+| 音视频提示 whisper.cpp 不可用          | 运行时检查会列出缺失组件与大小；同意后确认或由 agent 加 `--download-deps` 重跑   |
+| YouTube 提示需要 cookies                     | 按提示用浏览器扩展导出 Netscape 格式 cookies 保存到 `~/.smart-summarize/cookies/youtube-cookies.txt` 后重试 |
+| PDF 提取为空                                   | 扫描件没有文字层，属正常；本工具不做 OCR                                 |
+| B站无字幕                          | 该视频没有 CC 字幕，API 返回 `success:false`，属正常                 |
 
 ## 更新日志
 
+## 更新日志
+
+### v3.5.2（cookies 自动路径）
+- cookies 文件默认位置自动确定：`~/.smart-summarize/cookies/youtube-cookies.txt`，无需预先配置；
+- YouTube 遇登录墙/风控时输出 `cookieHint` 字段，提示用户手动导出 cookies 到该路径；
+- yt-dlp 优先从当前 Python 环境查找；视频缺 ffmpeg 时走统一的缺失提示而非静默失败。
+
+### v3.5.1（whisper-cli 三级安装与 GPU 检测）
+- whisper-cli 安装优先级：brew 预编译包 → GitHub 官方预编译 zip → 源码构建兑底；
+- 源码构建时自动检测 CUDA/Vulkan 工具链并如实告知；支持 `SMART_SUMMARIZE_WHISPERCPP_CMAKE_FLAGS`。
+
 ### v3.5（运行时确认下载）
+
 - 转录前运行时检测 ffmpeg/whisper-cli/ggml 模型；
 - 缺失时列出名称/用途/来源/预计大小，经用户确认后下载安装到 `~/.smart-summarize`，然后自动继续；
 - agent 代为确认后可用 `--download-deps` 非交互执行。
 
 ### v3.4（跨平台与隐私补丁）
+
 - 移除绝对 Python/venv 路径和 agent 专属表述；补充跨平台依赖安装命令；
 - 临时目录改为 OS 相关默认值，支持 Windows/macOS/Linux/WSL；
 - `whisper-cli` 按 OS 查找，ffmpeg 统一走 PATH/显式路径；
 - 不再从技能目录读取 cookies，改为用户显式配置路径。
 
 ### v3.3
+
 - 音频转录只走 whisper.cpp，移除 faster-whisper 回退与模型下载逻辑。
