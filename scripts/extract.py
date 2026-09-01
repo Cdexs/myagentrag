@@ -846,8 +846,10 @@ def _whispercpp_transcribe(file_path, model_name, want_srt):
         if r.returncode != 0 or not wav.exists():
             return None
         out_base = tmpdir / "out"
+        # 不用 -np：它会把 ggml 后端日志一起吞掉，导致 GPU 后端上报失效；
+        # 日志走 stderr，不影响 stdout 的 SRT/JSON 输出
         cmd = [str(cli), "-m", str(ggml), "-f", str(wav), "-l", "auto",
-               "-osrt", "-of", str(out_base), "-np"]
+               "-osrt", "-of", str(out_base)]
         if NO_GPU:
             cmd += ["-ng"]
         r = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=3600)
@@ -879,8 +881,8 @@ NO_GPU = False
 def _detect_backend_from_log(stderr_text):
     """从 whisper-cli 的 stderr 判断实际使用的计算后端，返回可读描述。"""
     text = stderr_text or ""
-    # ggml_vulkan: Found 1 Vulkan devices: / 0 | AMD Radeon 780M Graphics ...
-    m = re.search(r"ggml_vulkan:.*?\d+\s*\|\s*([^\r\n]+)", text)
+    # ggml_vulkan 设备行两种格式：新版 "0 | AMD Radeon..."，旧版 "0 = AMD Radeon..."
+    m = re.search(r"ggml_vulkan:.*?\d+\s*[\|=]\s*([A-Za-z][^\r\n]+)", text)
     if m:
         return f"Vulkan: {m.group(1).strip()[:80]}"
     m = re.search(r"ggml_cuda[^\n]*?device\s*\d*\s*\|?\s*([^\r\n]*)", text, re.I)
