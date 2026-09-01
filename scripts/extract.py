@@ -133,6 +133,36 @@ def _yt_cookies_args():
         return ['--cookies', str(cookies)]
     return []
 
+def _bilibili_cookie_header():
+    """B站 cookies：与 YouTube 同样的隐私规则，只走显式配置（环境变量或受管目录）。
+    支持 Netscape 格式（yt-dlp/浏览器导出）与原生 Cookie 头格式两种文件。
+    返回 Cookie 头值或空字符串。"""
+    configured = os.environ.get("SMART_SUMMARIZE_BILIBILI_COOKIES")
+    cookies = Path(configured).expanduser() if configured else MANAGED_HOME / "cookies" / "bilibili-cookies.txt"
+    if not (cookies.exists() and cookies.is_file() and cookies.stat().st_size > 0):
+        return ""
+    try:
+        text = cookies.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return ""
+    if "# Netscape" in text[:200]:
+        # Netscape 格式：domain\tflag\tpath\tsecure\texpiry\tname\tvalue（跳过注释行，取 .bilibili.com 域）
+        pairs = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) == 7 and "bilibili" in parts[0]:
+                pairs.append(f"{parts[5]}={parts[6]}")
+        return "; ".join(pairs)
+    # 非 Netscape：按 Cookie 头原样使用（如 "SESSDATA=xxx; bili_jct=yyy"）
+    stripped = text.strip()
+    if "=" in stripped:
+        return stripped
+    print(f"  ⚠️ B站 cookies 文件格式无法识别，已忽略: {cookies}", file=sys.stderr)
+    return ""
+
 def _find_ytdlp():
     """优先使用当前 Python 环境安装的 yt-dlp，再查 PATH。"""
     names = ("yt-dlp.exe", "yt-dlp") if os.name == "nt" else ("yt-dlp", "yt-dlp.exe")
@@ -207,6 +237,10 @@ def extract_bilibili(bvid):
     try:
         import requests
         headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.bilibili.com'}
+        cookie_header = _bilibili_cookie_header()
+        if cookie_header:
+            headers['Cookie'] = cookie_header
+            print("  🍪 已携带 B站登录态（支持 AI 字幕等登录墙内容）", file=sys.stderr)
 
         r = requests.get(f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}", headers=headers, timeout=30)
         data = r.json()

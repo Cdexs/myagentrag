@@ -192,7 +192,10 @@ GPU 是否启用取决于 whisper.cpp 二进制编译时包含的后端；CPU �
 
 技能包**不携带任何 cookies 文件**，也不再要求用户预先配置路径。
 
-- cookies 文件的约定位置自动确定：`~/.smart-summarize/cookies/youtube-cookies.txt`（或用 `SMART_SUMMARIZE_YOUTUBE_COOKIES` 指定任意位置）；
+- cookies 文件的约定位置自动确定：
+  - YouTube：`~/.smart-summarize/cookies/youtube-cookies.txt`（或用 `SMART_SUMMARIZE_YOUTUBE_COOKIES` 指定任意位置）
+  - B站：`~/.smart-summarize/cookies/bilibili-cookies.txt`（或用 `SMART_SUMMARIZE_BILIBILI_COOKIES` 指定任意位置；支持 Netscape 格式或原生 Cookie 头格式两种文件）
+  - B站 cookies 用于登录墙内容（如 **AI 自动字幕**——无登录态时接口返回空列表，只能拿到 UP 主手动上传的 CC 字幕）；
 - 平时（公开视频）不需要 cookies，脚本直接匿名访问；
 - 只有当 yt-dlp 因登录验证/风控/年龄限制失败时，脚本才会在 `cookieHint` 字段和 stderr 中提示用户：用浏览器扩展（如 Get cookies.txt LOCALLY）导出 Netscape 格式 cookies，**自己手动**保存到上述路径后重试；
 - 技能永不自动创建、收集或上传 cookies，文件只由用户手动放置。
@@ -221,6 +224,11 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 | B站无字幕                          | 该视频没有 CC 字幕，API 返回 `success:false`，属正常                 |
 
 ## 更新日志
+
+### v0.4.0（B站登录态 / AI 字幕支持）
+- 新增 `SMART_SUMMARIZE_BILIBILI_COOKIES`（或受管目录 `bilibili-cookies.txt`）：有登录态时 B站 AI 自动字幕、登录墙视频可正常提取；
+- 支持 Netscape 导出格式与原生 Cookie 头格式两种 cookies 文件；
+- 未配置时行为完全不变（免登录提取 UP 主 CC 字幕）。
 
 ### v3.5.3（Python 库运行时预检与确认安装）
 - 首次提取 PDF/Word(.docx)/EPUB/YouTube/网页时运行时检测对应 Python 库（pdfplumber/PyMuPDF/python-docx/ebooklib/yt-dlp/requests）；

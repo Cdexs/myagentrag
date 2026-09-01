@@ -1,6 +1,6 @@
 {
   "name": "@cdexs/smart-summarize",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Agent skill for intelligent content extraction: YouTube/Bilibili subtitles, web articles, local files (PDF/Word/EPUB/text), and audio/video transcription via whisper.cpp. Extraction only - no LLM calls.",
   "keywords": [
     "agent",

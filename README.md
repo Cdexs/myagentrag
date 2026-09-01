@@ -85,7 +85,11 @@ python scripts/extract.py --file lecture.mp3 --output srt                  # SRT
 | `SMART_SUMMARIZE_YOUTUBE_COOKIES`        | YouTube cookies 文件（默认 `~/.smart-summarize/cookies/youtube-cookies.txt`） |
 | `SMART_SUMMARIZE_WHISPERCPP_CMAKE_FLAGS` | 源码构建 whisper.cpp 时追加的 CMake 参数                                          |
 
-## Cookies（YouTube 受限内容）
+## Cookies（YouTube / B站 受限内容）
+
+平时完全不需要 cookies。只有当脚本提示需要时（返回 JSON 中的 `cookieHint` 字段）：
+
+**YouTube**：
 
 平时完全不需要 cookies。只有当脚本提示需要时（返回 JSON 中的 `cookieHint` 字段）：
 
@@ -94,6 +98,12 @@ python scripts/extract.py --file lecture.mp3 --output srt                  # SRT
 3. 保存到：`~/.smart-summarize/cookies/youtube-cookies.txt`
    （Windows 即 `C:\Users\<你>\.smart-summarize\cookies\youtube-cookies.txt`）；
 4. 重新运行同一命令即可。
+
+**B站**：AI 自动字幕、登录墙视频需要登录态：
+
+1. 同样用浏览器扩展导出 bilibili.com 的 Netscape cookies；
+2. 保存到：`~/.smart-summarize/cookies/bilibili-cookies.txt`；
+3. 重新运行即可（`SMART_SUMMARIZE_BILIBILI_COOKIES` 可指定任意路径，也支持原生 Cookie 头格式文件）。
 
 如需自定义位置：`SMART_SUMMARIZE_YOUTUBE_COOKIES` 指向任意路径。cookies 等同账号会话，请勿提交到仓库或共享。
 

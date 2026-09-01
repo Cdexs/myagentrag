@@ -86,7 +86,7 @@ Note: Python libraries require **no pre-installation**; everything is detected o
 | `SMART_SUMMARIZE_YOUTUBE_COOKIES`        | YouTube cookies file (defaults to `~/.smart-summarize/cookies/youtube-cookies.txt`) |
 | `SMART_SUMMARIZE_WHISPERCPP_CMAKE_FLAGS` | Extra CMake flags when building whisper.cpp from source                     |
 
-## Cookies (restricted YouTube content)
+## Cookies (restricted YouTube / Bilibili content)
 
 No cookies are needed for normal use. Only when the script says so (the `cookieHint` field in the returned JSON):
 
@@ -97,6 +97,12 @@ No cookies are needed for normal use. Only when the script says so (the `cookieH
 4. Re-run the same command.
 
 To use a custom location: point `SMART_SUMMARIZE_YOUTUBE_COOKIES` to any path. Cookies are equivalent to an account session — never commit or share them.
+
+**Bilibili**: AI auto-generated subtitles and login-walled videos require a logged-in session:
+
+1. Export bilibili.com cookies in Netscape format with the same browser extension;
+2. Save to: `~/.smart-summarize/cookies/bilibili-cookies.txt`;
+3. Re-run the same command. (`SMART_SUMMARIZE_BILIBILI_COOKIES` points to any path; raw Cookie-header-style files are also accepted.)
 
 ## License
 
