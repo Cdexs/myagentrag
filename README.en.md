@@ -6,7 +6,7 @@
 ![GitHub tag](https://img.shields.io/github/v/tag/Cdexs/smart-summarize?label=version&color=green)
 ![License](https://img.shields.io/npm/l/@cdexs/smart-summarize?color=orange)
 
-A skill that can automatically read and summarize web pages, online videos, and local files (PDF/Word/EPUB/text), as well as audio and video — including text and subtitle transcription for audio/video.
+A skill that can automatically read and summarize web pages, online videos, and local files (PDF/Word/EPUB/text), as well as audio and video. Local audio and video content can be transcribed with high accuracy into text and subtitle files using a local ASR model.
 
 An agent skill for intelligent content extraction — extract YouTube/Bilibili video subtitles, web page content, local files (PDF/Word/EPUB/text), and speech-to-text transcription of audio/video. **Extraction only — no LLM calls**; extracted results are handed to the host agent for summarization.
 
