@@ -3,7 +3,7 @@
 [English](README.en.md) | 中文
 
 ![Platform](https://img.shields.io/badge/platform-Windows_%7C_macOS_%7C_Linux_%7C_WSL-0078D4)
-![npm version](https://img.shields.io/npm/v/@cdexs/smart-summarize?label=version&color=green)
+![GitHub tag](https://img.shields.io/github/v/tag/Cdexs/smart-summarize?label=version&color=green)
 ![License](https://img.shields.io/npm/l/@cdexs/smart-summarize?color=orange)
 
 可自动进行网页、网络视频、本地文件（PDF/Word/EPUB/文本）、音视频进行读取、总结的技能，可对音视频进行文本、字幕转写。
