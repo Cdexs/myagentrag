@@ -160,6 +160,20 @@ export SMART_SUMMARIZE_TMPDIR="$HOME/.cache/smart-summarize-tmp"
   ③源码构建兜底（需 git/cmake/编译器），构建时自动按硬件选后端：NVIDIA + CUDA Toolkit → CUDA；AMD + ROCm → HIP（自动检测 gfx 架构）；有 Vulkan SDK → Vulkan（A 卡核显如 Radeon 780M、Intel 核显的唯一官方 GPU 路径）；都没有则 CPU（并明确告知）。也可用 `SMART_SUMMARIZE_WHISPERCPP_CMAKE_FLAGS` 追加自定义 CMake 参数；需要换后端时删除 `~/.smart-summarize/whisper.cpp` 构建目录及受管 bin 中的二进制后重试。
 - ggml 模型：从 HuggingFace `ggerganov/whisper.cpp` 下载（large-v3-turbo 约 1.6GB，q5_0 约 560MB），存到上述模型目录首个可用位置。
 
+### 默认下载版本矩阵（whisper-cli）
+
+按"预编译优先、GPU 编译作为显式升级路径"原则，各环境首次自动安装的版本：
+
+| 用户环境 | 首次自动安装的版本 | GPU 加速？ |
+|---------|-------------------|-----------|
+| Windows + NVIDIA | 官方 cublas 预编译（自带 CUDA 运行库） | ✅ 是 |
+| Windows + AMD/Intel GPU | 官方 CPU 预编译 + 升级指引（装 Vulkan SDK 重跑） | ❌ 否，需显式升级 |
+| Linux（任意 GPU） | 官方 ubuntu CPU 预编译 / brew | ❌ 否（源码构建时检测到 Toolkit/ROCm/Vulkan SDK 才编出 GPU 版） |
+| WSL | 同 Linux | ❌ 否（GPU 版还需 WSL 驱动透传） |
+| macOS | brew install whisper-cpp | ✅ 是（Metal 默认开启） |
+
+官方预编译资产只有 Windows N 卡 cublas、macOS xcframework 和各平台 CPU 版；A 卡/Intel 的 Vulkan 与 Linux CUDA 只有源码/Docker 形式，因此技能不会静默编译，只给出明确升级指引。
+
 ### GPU 加速支持矩阵
 
 转录完成后，stderr 会标注实际使用的计算后端（`🎮 GPU 加速: Vulkan: AMD Radeon 780M...` / `🖥 CPU`）。加 `--no-gpu` 可强制 CPU。
