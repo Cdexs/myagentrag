@@ -496,6 +496,54 @@ WHISPERCPP_PREBUILT_ASSETS = {
     ("nt", "AMD64"): "whisper-bin-x64.zip",
     ("nt", "ARM64"): "whisper-bin-arm64.zip",
 }
+# NVIDIA 官方 cublas 预编译版（自带 CUDA 运行库，无需安装 CUDA Toolkit）；
+# 11.8.0 兼容老驱动（270MB），12.4.0 覆盖新卡（671MB），按优先级尝试
+def _detect_gpu():
+    """检测本机 GPU 厂商，返回 (vendor, device_desc, gpu_hint)。"""
+    if sys.platform == "darwin":
+        return ("apple", "Apple Silicon / Metal", "macOS 构建默认启用 Metal，无需额外操作")
+    if shutil.which("nvidia-smi"):
+        name = ""
+        try:
+            r = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                               capture_output=True, text=True, timeout=20)
+            name = (r.stdout or "").strip().splitlines()[0] if r.stdout.strip() else ""
+        except Exception:
+            pass
+        return ("nvidia", name or "NVIDIA GPU", "官方 cublas 预编译版可用（自带 CUDA 运行库，无需 CUDA Toolkit）")
+    if os.name == "nt":
+        names = ""
+        try:
+            r = subprocess.run(["powershell", "-NoProfile", "-Command",
+                                "(Get-CimInstance Win32_VideoController).Name -join '; '"],
+                               capture_output=True, text=True, timeout=40)
+            names = (r.stdout or "").strip()
+        except Exception:
+            pass
+        low = names.lower()
+        if "radeon" in low or "amd" in low:
+            return ("amd", names, "官方无 A 卡 GPU 预编译；安装 Vulkan SDK 后可源码构建 Vulkan 版")
+        if "intel" in low:
+            return ("intel", names, "安装 Vulkan SDK 后可源码构建 Vulkan 版")
+        return ("cpu", names or "未知", "")
+    # Linux / WSL
+    names = ""
+    try:
+        if shutil.which("lspci"):
+            r = subprocess.run(["lspci"], capture_output=True, text=True, timeout=20)
+            vga = [l.split(":", 2)[-1].strip() for l in (r.stdout or "").splitlines()
+                   if "vga" in l.lower() or "display" in l.lower()]
+            names = "; ".join(vga)
+    except Exception:
+        pass
+    low = names.lower()
+    if "nvidia" in low or shutil.which("nvidia-smi"):
+        return ("nvidia", names, "安装 CUDA Toolkit 后源码构建，或使用官方 main-cuda Docker 镜像")
+    if "amd" in low or "radeon" in low:
+        return ("amd", names, "独显可装 ROCm 后源码构建 HIP 版；核显/无 ROCm 时装 Vulkan SDK 构建 Vulkan 版")
+    if "intel" in low:
+        return ("intel", names, "安装 Vulkan SDK 后可源码构建 Vulkan 版")
+    return ("cpu", names or "未知", "")
 
 def install_whispercli():
     """用户确认后安装 whisper.cpp：优先包管理器/官方预编译，源码构建兜底。"""
@@ -515,9 +563,13 @@ def install_whispercli():
             return Path(shutil.which("whisper-cli"))
         print("  ⚠️ brew 安装未成功，改用其他方式", file=sys.stderr)
 
-    # 2) Windows：官方预编译版（CPU 构建）
-    asset = WHISPERCPP_PREBUILT_ASSETS.get((os.name, platform.machine().upper()))
-    if asset:
+    # 2) Windows：官方预编译版（NVIDIA → cublas GPU 版；其他 → CPU 版）
+    gpu_vendor, gpu_name, gpu_hint = _detect_gpu()
+    prebuilt_assets = []
+    if os.name == "nt" and gpu_vendor == "nvidia":
+        prebuilt_assets += WHISPERCPP_CUBLAS_ASSETS
+    prebuilt_assets += [WHISPERCPP_PREBUILT_ASSETS.get((os.name, platform.machine().upper()))]
+    for asset in [a for a in prebuilt_assets if a]:
         url = f"https://github.com/ggml-org/whisper.cpp/releases/latest/download/{asset}"
         try:
             MANAGED_BIN.mkdir(parents=True, exist_ok=True)
@@ -535,15 +587,21 @@ def install_whispercli():
                     shutil.copy2(built, dest)
                     # 官方预编译 exe 依赖同目录的 DLL（whisper.dll/ggml.dll 等），必须一起拷
                     for extra in built.parent.iterdir():
-                        if extra.is_file() and extra.suffix.lower() == ".dll":
+                        if extra.is_file() and extra.suffix.lower() in (".dll", ".so"):
                             shutil.copy2(extra, dest.parent)
                             print(f"  + DLL: {extra.name}", file=sys.stderr)
-                    print("  ⚠️ 预编译版为 CPU 构建；如需 GPU 加速请安装 Vulkan SDK/CUDA Toolkit "
-                          "后删除受管二进制重新构建，或用 SMART_SUMMARIZE_WHISPERCPP_CLI 指向 GPU 预编译版",
-                          file=sys.stderr)
+                    if asset.startswith("whisper-cublas"):
+                        print(f"  🎮 已安装 NVIDIA cublas GPU 版（自带 CUDA 运行库，无需 CUDA Toolkit）", file=sys.stderr)
+                    elif gpu_vendor == "amd":
+                        print(f"  ⚠️ 已安装 CPU 版。检测到 AMD GPU（{gpu_name}）但官方无 A 卡 GPU 预编译；"
+                              "如需 GPU 加速：安装 Vulkan SDK 后删除受管二进制重跑（将源码构建 Vulkan 版），"
+                              "或用 SMART_SUMMARIZE_WHISPERCPP_CLI 指向已有的 GPU 构建", file=sys.stderr)
+                    elif gpu_vendor in ("intel",):
+                        print(f"  ⚠️ 已安装 CPU 版。检测到 Intel GPU（{gpu_name}）；"
+                              "安装 Vulkan SDK 后删除受管二进制重跑可构建 Vulkan GPU 版", file=sys.stderr)
                     return dest
         except Exception as e:
-            print(f"  ⚠️ 官方预编译包下载失败（{e}），改用源码构建", file=sys.stderr)
+            print(f"  ⚠️ 官方预编译包 {asset} 下载失败（{e}），尝试下一个方式", file=sys.stderr)
 
     # 3) 源码构建兜底（需要 git/cmake/编译器）
     for tool in ("git", "cmake"):
@@ -559,31 +617,44 @@ def install_whispercli():
             raise RuntimeError(f"git clone 失败: {(r.stderr or '').strip()[-300:]}")
     build_dir = repo_dir / "build"
 
-    # GPU 后端自动检测：有条件就启用，没有则明确告知走 CPU。
+    # GPU 后端自动检测：按硬件厂商与工具链选择后端，没有则明确告知走 CPU。
     # macOS 无需处理：ggml CMake 默认启用 Metal。
+    gpu_vendor, gpu_name, gpu_hint = _detect_gpu()
     gpu_flags = []
-    if os.name != "nt" and sys.platform == "darwin":
+    if gpu_vendor == "apple":
         print("  🔧 macOS：CMake 默认启用 Metal GPU 加速", file=sys.stderr)
     else:
-        has_nvidia_gpu = bool(shutil.which("nvidia-smi"))
         has_nvcc = bool(shutil.which("nvcc"))
-        if has_nvidia_gpu and has_nvcc:
-            gpu_flags += ["-DGGML_CUDA=ON"]
-            print("  🎮 检测到 NVIDIA GPU + CUDA toolchain，启用 CUDA 后端", file=sys.stderr)
-        elif has_nvidia_gpu and not has_nvcc:
-            print("  ⚠️ 检测到 NVIDIA GPU 但未安装 CUDA Toolkit (nvcc)，本次构建为 CPU 版；"
-                  "如需 GPU 加速请安装 CUDA Toolkit 后删除构建目录重试", file=sys.stderr)
+        if gpu_vendor == "nvidia":
+            if has_nvcc:
+                gpu_flags += ["-DGGML_CUDA=ON"]
+                print(f"  🎮 检测到 NVIDIA GPU（{gpu_name}）+ CUDA Toolkit，启用 CUDA 后端", file=sys.stderr)
+            else:
+                print("  ⚠️ 检测到 NVIDIA GPU 但未安装 CUDA Toolkit (nvcc)，本次构建为 CPU 版；"
+                      "如需 GPU 加速请安装 CUDA Toolkit 后删除构建目录重试", file=sys.stderr)
+        elif gpu_vendor == "amd" and shutil.which("rocminfo"):
+            # A 卡独显走 ROCm/HIP；核显（APU）ROCm 不支持，用户可自行改用 Vulkan
+            try:
+                r = subprocess.run(["rocminfo"], capture_output=True, text=True, timeout=30)
+                gfx = next((l.strip().split(":")[-1].strip()
+                            for l in (r.stdout or "").splitlines() if "gfx" in l.lower()), "")
+            except Exception:
+                gfx = ""
+            targets = [t for t in (gfx, "gfx1100", "gfx1201") if t]
+            gpu_flags += ["-DGGML_HIP=ON", f"-DAMDGPU_TARGETS={';'.join(dict.fromkeys(targets))}"]
+            print(f"  🎮 检测到 AMD GPU（{gpu_name or gfx}），启用 HIP/ROCm 后端（目标: {targets[0]}）", file=sys.stderr)
         else:
             # VULKAN_SDK 环境变量 / glslc（SDK 自带）才代表真正装了 SDK；
             # System32 里的 vulkaninfo 只是驱动附带的运行时工具，不能用来编译。
             has_vulkan = bool(os.environ.get("VULKAN_SDK")) or bool(shutil.which("glslc"))
             if has_vulkan:
                 gpu_flags += ["-DGGML_VULKAN=ON"]
-                print("  🎮 检测到 Vulkan SDK，启用 Vulkan 后端", file=sys.stderr)
+                print(f"  🎮 检测到 Vulkan SDK，启用 Vulkan 后端（适用于 {gpu_name or '所有支持 Vulkan 的 GPU'}）", file=sys.stderr)
             else:
-                print("  ⚠️ 未检测到可用 GPU 工具链（CUDA Toolkit 或 Vulkan SDK），本次构建为 CPU 版；"
-                      "如需 GPU 加速请安装后删除构建目录重试，或使用官方预编译 GPU 构建并通过 "
-                      "SMART_SUMMARIZE_WHISPERCPP_CLI 指向", file=sys.stderr)
+                hint = f"（{gpu_hint}）" if gpu_hint else ""
+                print(f"  ⚠️ 未检测到可用 GPU 工具链，本次构建为 CPU 版{hint}；"
+                      "如需 GPU 加速请安装对应 SDK（NVIDIA: CUDA Toolkit / AMD-Intel: Vulkan SDK）"
+                      "后删除构建目录重试", file=sys.stderr)
     custom_flags = os.environ.get("SMART_SUMMARIZE_WHISPERCPP_CMAKE_FLAGS", "").split()
     cmake_args = ["cmake", "-S", str(repo_dir), "-B", str(build_dir),
                   "-DCMAKE_BUILD_TYPE=Release", "-DWHISPER_BUILD_TESTS=OFF"] + gpu_flags + custom_flags
@@ -777,12 +848,20 @@ def _whispercpp_transcribe(file_path, model_name, want_srt):
         out_base = tmpdir / "out"
         cmd = [str(cli), "-m", str(ggml), "-f", str(wav), "-l", "auto",
                "-osrt", "-of", str(out_base), "-np"]
+        if NO_GPU:
+            cmd += ["-ng"]
         r = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=3600)
         srt_file = tmpdir / "out.srt"
         if not srt_file.exists():
             return None
         content = srt_file.read_text(encoding="utf-8", errors="replace")
-        print(f"  ✅ whisper.cpp 转录完成: {model_name}", file=sys.stderr)
+        backend = _detect_backend_from_log(r.stderr or "")
+        if NO_GPU:
+            print(f"  🖥 转录完成（已强制 CPU）: {model_name}", file=sys.stderr)
+        elif backend:
+            print(f"  🎮 转录完成（GPU 加速: {backend}）: {model_name}", file=sys.stderr)
+        else:
+            print(f"  ✅ 转录完成（CPU）: {model_name}", file=sys.stderr)
         if want_srt:
             return content.strip() or None
         lines = [l.strip() for l in content.splitlines()
@@ -794,6 +873,24 @@ def _whispercpp_transcribe(file_path, model_name, want_srt):
         return None
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+NO_GPU = False
+
+def _detect_backend_from_log(stderr_text):
+    """从 whisper-cli 的 stderr 判断实际使用的计算后端，返回可读描述。"""
+    text = stderr_text or ""
+    # ggml_vulkan: Found 1 Vulkan devices: / 0 | AMD Radeon 780M Graphics ...
+    m = re.search(r"ggml_vulkan:.*?\d+\s*\|\s*([^\r\n]+)", text)
+    if m:
+        return f"Vulkan: {m.group(1).strip()[:80]}"
+    m = re.search(r"ggml_cuda[^\n]*?device\s*\d*\s*\|?\s*([^\r\n]*)", text, re.I)
+    if m:
+        return f"CUDA: {m.group(1).strip()[:80]}"
+    if "ggml_metal" in text or "Metal" in text:
+        return "Metal"
+    if re.search(r"ggml_hip|ROCm", text, re.I):
+        return "ROCm/HIP"
+    return None
 
 def extract_audio_text(file_path, model="large-v3-turbo"):
     """提取音频文件内容（语音转文字）- 返回纯文本"""
@@ -971,9 +1068,12 @@ def main():
     parser.add_argument('--file', help='要提取的本地文件')
     parser.add_argument('--output', choices=['json', 'text', 'srt'], default='json', help='输出格式 (srt 仅支持音频/视频转字幕)')
     parser.add_argument('--model', default='large-v3-turbo', help='Whisper 模型名称 (默认: large-v3-turbo; 可选 large-v3-turbo-q5_0 快速档)')
+    parser.add_argument('--no-gpu', action='store_true', help='强制 CPU 转录（禁用 GPU 后端）')
     parser.add_argument('--download-deps', action='store_true',
                         help='缺组件时跳过交互确认，直接下载安装（用于 agent 代为确认后调用）')
     args = parser.parse_args()
+    global NO_GPU
+    NO_GPU = args.no_gpu
 
     if not args.url and not args.file:
         print("错误：请提供 --url 或 --file", file=sys.stderr)

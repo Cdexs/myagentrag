@@ -154,19 +154,25 @@ export SMART_SUMMARIZE_TMPDIR="$HOME/.cache/smart-summarize-tmp"
 下载来源与安装位置：
 
 - ffmpeg：Windows 用 gyan.dev zip、macOS 用 evermeet.cx、Linux x86_64/arm64 用 johnvansickle 静态包；安装到 `SMART_SUMMARIZE_HOME`（默认 `~/.smart-summarize/bin`）。
-- whisper-cli：按优先级安装：①macOS/Linux 有 Homebrew 时 `brew install whisper-cpp`；②Windows 下载 GitHub 官方预编译 zip（CPU 构建）；③源码构建兜底（需 git/cmake/编译器）。源码构建时自动检测 GPU 工具链：有 NVIDIA GPU + CUDA Toolkit 则启用 CUDA，有 Vulkan SDK 则启用 Vulkan，macOS 默认启用 Metal，都没有则 CPU（并明确告知）。也可用 `SMART_SUMMARIZE_WHISPERCPP_CMAKE_FLAGS` 追加自定义 CMake 参数；需要换后端时删除 `~/.smart-summarize/whisper.cpp` 构建目录及受管 bin 中的二进制后重试。
+- whisper-cli：按硬件自动选版本安装：
+  ①macOS/Linux 有 Homebrew 时 `brew install whisper-cpp`（macOS Metal 默认启用）；
+  ②Windows：检测到 **NVIDIA GPU** 时优先下载官方 **cublas 预编译版**（自带 CUDA 运行库，无需 CUDA Toolkit，约 270MB）；否则下载官方 CPU 预编译 zip，并按 GPU 厂商给出升级指引（AMD/Intel：装 Vulkan SDK 后删受管二进制重跑即可源码构建 Vulkan 版）；
+  ③源码构建兜底（需 git/cmake/编译器），构建时自动按硬件选后端：NVIDIA + CUDA Toolkit → CUDA；AMD + ROCm → HIP（自动检测 gfx 架构）；有 Vulkan SDK → Vulkan（A 卡核显如 Radeon 780M、Intel 核显的唯一官方 GPU 路径）；都没有则 CPU（并明确告知）。也可用 `SMART_SUMMARIZE_WHISPERCPP_CMAKE_FLAGS` 追加自定义 CMake 参数；需要换后端时删除 `~/.smart-summarize/whisper.cpp` 构建目录及受管 bin 中的二进制后重试。
 - ggml 模型：从 HuggingFace `ggerganov/whisper.cpp` 下载（large-v3-turbo 约 1.6GB，q5_0 约 560MB），存到上述模型目录首个可用位置。
 
-### GPU 加速边界
+### GPU 加速支持矩阵
 
-脚本不会根据 OS 自动开启 GPU。GPU 是否启用取决于 whisper.cpp 二进制编译时包含的后端及其运行环境：
+转录完成后，stderr 会标注实际使用的计算后端（`🎮 GPU 加速: Vulkan: AMD Radeon 780M...` / `🖥 CPU`）。加 `--no-gpu` 可强制 CPU。
 
-- Windows + Vulkan/CUDA 构建：可使用对应 GPU；
-- macOS + Metal 构建：可使用 Metal；
-- Linux/WSL + Vulkan/CUDA 构建：满足驱动和设备透传条件时可使用；
-- CPU 构建，或 GPU 后端/驱动不可用：回退为 CPU（不会自动安装驱动或重新编译）。
+| GPU | 推荐后端 | Windows 获取方式 | Linux/macOS 获取方式 |
+|-----|---------|----------------|---------------------|
+| **NVIDIA** | CUDA | 官方 cublas 预编译 zip（自动选用，自带 CUDA 运行库） | 源码构建（需 CUDA Toolkit）或官方 main-cuda Docker 镜像 |
+| **AMD 独显** | ROCm/HIP 或 Vulkan | 源码构建（Vulkan SDK 或 ROCm） | 源码构建（有 ROCm 用 HIP，否则 Vulkan SDK） |
+| **AMD/Intel 核显** | Vulkan | 源码构建（需 Vulkan SDK，官方无 A 卡 GPU 预编译） | 同左 |
+| **Apple Silicon** | Metal | — | 默认启用，无需任何配置 |
 
-可直接运行 `whisper-cli -h` 或执行一次转录查看其启动日志，确认实际加载的 backend。`large-v3-turbo-q5_0` 仅是量化模型，不等于 GPU 加速。
+GPU 是否启用取决于 whisper.cpp 二进制编译时包含的后端；CPU 构建或 GPU 后端/驱动不可用时回退为 CPU。可从转录 stderr 日志确认实际加载的 backend。`large-v3-turbo-q5_0` 仅是量化模型，不等于 GPU 加速。
+
 
 ## Cookies 隐私规则
 
