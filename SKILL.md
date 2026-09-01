@@ -225,6 +225,10 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 
 ## 更新日志
 
+### v0.4.1（B站直连修复）
+- B站 API 请求默认绕过 Windows 系统代理直连（系统代理转发国内站常报 SSL EOF，导致 B站提取整体失败）；
+- 用户显式设置 `SMART_SUMMARIZE_PROXY` 或终端 `HTTPS_PROXY` 时尊重该代理；
+
 ### v0.4.0（B站登录态 / AI 字幕支持）
 - 新增 `SMART_SUMMARIZE_BILIBILI_COOKIES`（或受管目录 `bilibili-cookies.txt`）：有登录态时 B站 AI 自动字幕、登录墙视频可正常提取；
 - 支持 Netscape 导出格式与原生 Cookie 头格式两种 cookies 文件；

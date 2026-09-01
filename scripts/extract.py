@@ -241,15 +241,23 @@ def extract_bilibili(bvid):
         if cookie_header:
             headers['Cookie'] = cookie_header
             print("  🍪 已携带 B站登录态（支持 AI 字幕等登录墙内容）", file=sys.stderr)
+        # B站是国内站：Windows 系统代理（注册表）常会把国内站转发失败（SSL EOF），
+        # 默认绕过系统代理直连；用户显式设置 SMART_SUMMARIZE_PROXY 时尊重该代理。
+        if os.environ.get("SMART_SUMMARIZE_PROXY"):
+            proxies = None  # 交给 requests/环境变量处理
+        elif os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy"):
+            proxies = None  # 用户显式设置了终端代理，尊重之
+        else:
+            proxies = {"http": None, "https": None}
 
-        r = requests.get(f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}", headers=headers, timeout=30)
+        r = requests.get(f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}", headers=headers, timeout=30, proxies=proxies)
         data = r.json()
         if data.get('code') == 0:
             result["title"] = data['data'].get('title', '')
             result["author"] = data['data'].get('owner', {}).get('name', '')
             cid = data['data'].get('cid', '')
             if cid:
-                sr = requests.get(f"https://api.bilibili.com/x/player/wbi/v2?cid={cid}&bvid={bvid}", headers=headers, timeout=30)
+                sr = requests.get(f"https://api.bilibili.com/x/player/wbi/v2?cid={cid}&bvid={bvid}", headers=headers, timeout=30, proxies=proxies)
                 sd = sr.json()
                 if sd.get('code') == 0:
                     subs = sd.get('data', {}).get('subtitle', {}).get('subtitles', [])
@@ -258,7 +266,7 @@ def extract_bilibili(bvid):
                         if sub_url:
                             if sub_url.startswith('//'):
                                 sub_url = 'https:' + sub_url
-                            tr = requests.get(sub_url, headers=headers, timeout=30)
+                            tr = requests.get(sub_url, headers=headers, timeout=30, proxies=proxies)
                             result["transcript"] = clean_subtitle('\n'.join([b.get('content', '') for b in tr.json().get('body', [])]))
                             result["success"] = True
     except Exception as e:
