@@ -105,7 +105,7 @@ python scripts/extract.py --file lecture.mp3 --output srt                  # SRT
 2. 保存到：`~/.smart-summarize/cookies/bilibili-cookies.txt`；
 3. 重新运行即可（`SMART_SUMMARIZE_BILIBILI_COOKIES` 可指定任意路径，也支持原生 Cookie 头格式文件）。
 
-如需自定义位置：`SMART_SUMMARIZE_YOUTUBE_COOKIES` 指向任意路径。cookies 等同账号会话，请勿提交到仓库或共享。
+如需自定义位置：`SMART_SUMMARIZE_YOUTUBE_COOKIES` 指向任意路径。
 
 ## License
 
