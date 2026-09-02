@@ -547,7 +547,7 @@ def write_slices(title, source_path, content, args_slice=None):
     try:
         chunk_dir.mkdir(parents=True, exist_ok=True)
         for i, ch in enumerate(chunks, 1):
-            fname = "chunk-{:03d}.txt".format(i)
+            fname = "chunk-{:03d}.md".format(i)
             (chunk_dir / fname).write_text(ch, encoding="utf-8")
             chunk_entries.append({"file": fname, "chars": len(ch),
                                   "sha256": hashlib.sha256(ch.encode("utf-8")).hexdigest()[:16]})

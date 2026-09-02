@@ -194,7 +194,7 @@ GPU 是否启用取决于 whisper.cpp 二进制编译时包含的后端；CPU �
 
 单个文档提取内容超过 256K 字符时，脚本**不会**把全文塞进 stdout（防截断与上下文溢出），而是：
 
-1. 在受管临时目录落盘分片：`ss_slice_<hash>/chunk-001.txt ...`，每片 ≤40K 字符、段落边界对齐、相邻片重叠 300 字符；
+1. 在受管临时目录落盘分片：`ss_slice_<hash>/chunk-001.md ...`（Markdown 结构化文本），每片 ≤40K 字符、段落边界对齐、相邻片重叠 300 字符；
 2. stdout 只输出**清单 JSON**（<1KB）：title / total_chars / total_chunks / chunk_dir / 每片文件名与校验和。
 
 agent 收到清单后的标准流程（写入 SKILL.md 供所有 agent 遵循）：
