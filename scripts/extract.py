@@ -408,34 +408,80 @@ def extract_excel_text(file_path):
         return None
 
 def extract_pptx_text(file_path):
-    """提取 PowerPoint (.pptx)：每张幻灯片一段（含表格与演讲者备注）"""
+    """提取 PowerPoint (.pptx)：还原幻灯片内结构层级——
+    标题占位符 → "## 幻灯片 N: 标题"；副标题/节标题 → "### ..."；
+    正文与表格 → 普通行；组合形状递归展开；含演讲者备注"""
     try:
         from pptx import Presentation
+        from pptx.enum.shapes import MSO_SHAPE_TYPE
+        from pptx.enum.shapes import PP_PLACEHOLDER
     except ImportError:
         print("  ⚠️ 未安装 python-pptx")
         return None
+
+    def _shape_kind(shape):
+        """返回 (kind, ph_type)：kind ∈ title/subtitle/body/table/group"""
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            return ("group", None)
+        ph = getattr(shape, "placeholder_format", None)
+        ph_type = None
+        try:
+            ph_type = ph.type if ph is not None and ph.idx is not None else None
+        except Exception:
+            ph_type = None
+        if ph_type in (PP_PLACEHOLDER.TITLE, PP_PLACEHOLDER.CENTER_TITLE):
+            return ("title", ph_type)
+        if ph_type == PP_PLACEHOLDER.SUBTITLE:
+            return ("subtitle", ph_type)
+        if getattr(shape, "has_table", False):
+            return ("table", ph_type)
+        return ("body", ph_type)
+
+    def _collect(shape, lines, title_seen):
+        kind, _ = _shape_kind(shape)
+        if kind == "group":
+            for sub in shape.shapes:
+                _collect(sub, lines, title_seen)
+            return
+        if kind == "table":
+            for row in shape.table.rows:
+                cells = [c.text.strip()[:500] for c in row.cells]
+                if any(cells):
+                    lines.append(" | ".join(cells))
+            return
+        if not shape.has_text_frame:
+            return
+        paras = ["".join(run.text for run in para.runs).strip()
+                 for para in shape.text_frame.paragraphs]
+        paras = [x for x in paras if x]
+        if not paras:
+            return
+        if kind == "title":
+            if not title_seen[0]:
+                lines.append("# " + paras[0])
+                title_seen[0] = True
+                lines.extend(paras[1:])
+            else:
+                lines.extend(paras)
+        elif kind == "subtitle":
+            lines.extend("### " + x for x in paras)
+        else:
+            lines.extend(paras)
+
     try:
         prs = Presentation(file_path)
         parts = []
         for i, slide in enumerate(prs.slides, 1):
-            texts = []
+            lines = []
+            title_seen = [False]
             for shape in slide.shapes:
-                if shape.has_text_frame:
-                    for para in shape.text_frame.paragraphs:
-                        line = "".join(run.text for run in para.runs).strip()
-                        if line:
-                            texts.append(line)
-                if getattr(shape, "has_table", False):
-                    for row in shape.table.rows:
-                        cells = [c.text.strip()[:500] for c in row.cells]
-                        if any(cells):
-                            texts.append(" | ".join(cells))
+                _collect(shape, lines, title_seen)
             if slide.has_notes_slide:
                 notes = slide.notes_slide.notes_text_frame.text.strip()
                 if notes:
-                    texts.append(f"[演讲者备注] {notes[:2000]}")
-            if texts:
-                parts.append(f"## 幻灯片 {i}\n" + "\n".join(texts))
+                    lines.append(f"[演讲者备注] {notes[:2000]}")
+            if lines:
+                parts.append(f"## 幻灯片 {i}\n" + "\n".join(lines))
         return "\n\n".join(parts) if parts else None
     except Exception as e:
         print(f"  ⚠️ PowerPoint 提取错误: {e}")

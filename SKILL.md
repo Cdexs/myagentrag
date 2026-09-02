@@ -20,7 +20,7 @@ compatibility: Windows / macOS / Linux + Python 3.9+；音视频转录另需 ffm
 | **Word**    | `.docx`, `.doc`                                         | python-docx；`.doc` 另需 pandoc   |
 | **EPUB**    | `.epub`                                                 | ebooklib                       |
 | **Excel**   | `.xlsx`, `.xlsm`                                        | openpyxl（每个工作表一段，行以 " \| " 连接） |
-| **PowerPoint** | `.pptx`                                              | python-pptx（每张幻灯片一段，含表格与演讲者备注） |
+| **PowerPoint** | `.pptx`                                              | python-pptx（每张幻灯片一段，结构化输出：`## 幻灯片 N` + `#` 标题 + `###` 副标题/正文/表格/演讲者备注） |
 | **音频**      | `.mp3`, `.wav`, `.aac`, `.m4a`, `.flac`, `.ogg`, `.wma` | ffmpeg 转 PCM 后用 whisper.cpp 转录 |
 | **视频**      | `.mp4`, `.avi`, `.mkv`, `.mov`, `.wmv`, `.flv`, `.webm` | 先提取内置字幕，无字幕则提取音频转录             |
 
