@@ -1,6 +1,6 @@
 ---
 name: smart-summarize
-description: 智能内容提取工具：提取 YouTube/B站视频字幕、网页正文、本地文件（PDF/Word/EPUB/文本）与音视频语音转录。只提取，不调用 LLM；提取结果由当前 agent 阅读并总结。
+description: 智能内容提取工具：提取 YouTube/B站视频字幕、网页正文、本地文件（PDF/Word/Excel/PowerPoint/EPUB/文本）与音视频语音转录。只提取，不调用 LLM；提取结果由当前 agent 阅读并总结。
 compatibility: Windows / macOS / Linux + Python 3.9+；音视频转录另需 ffmpeg、whisper.cpp 及 ggml 模型
 ---
 
@@ -19,6 +19,8 @@ compatibility: Windows / macOS / Linux + Python 3.9+；音视频转录另需 ffm
 | **PDF**     | `.pdf`                                                  | pdfplumber 或 PyMuPDF           |
 | **Word**    | `.docx`, `.doc`                                         | python-docx；`.doc` 另需 pandoc   |
 | **EPUB**    | `.epub`                                                 | ebooklib                       |
+| **Excel**   | `.xlsx`, `.xlsm`                                        | openpyxl（每个工作表一段，行以 " \| " 连接） |
+| **PowerPoint** | `.pptx`                                              | python-pptx（每张幻灯片一段，含表格与演讲者备注） |
 | **音频**      | `.mp3`, `.wav`, `.aac`, `.m4a`, `.flac`, `.ogg`, `.wma` | ffmpeg 转 PCM 后用 whisper.cpp 转录 |
 | **视频**      | `.mp4`, `.avi`, `.mkv`, `.mov`, `.wmv`, `.flv`, `.webm` | 先提取内置字幕，无字幕则提取音频转录             |
 
@@ -188,6 +190,23 @@ export SMART_SUMMARIZE_TMPDIR="$HOME/.cache/smart-summarize-tmp"
 GPU 是否启用取决于 whisper.cpp 二进制编译时包含的后端；CPU 构建或 GPU 后端/驱动不可用时回退为 CPU。可从转录 stderr 日志确认实际加载的 backend。`large-v3-turbo-q5_0` 仅是量化模型，不等于 GPU 加速。
 
 
+## 大文档处理协议（slice protocol）
+
+单个文档提取内容超过 256K 字符时，脚本**不会**把全文塞进 stdout（防截断与上下文溢出），而是：
+
+1. 在受管临时目录落盘分片：`ss_slice_<hash>/chunk-001.txt ...`，每片 ≤40K 字符、段落边界对齐、相邻片重叠 300 字符；
+2. stdout 只输出**清单 JSON**（<1KB）：title / total_chars / total_chunks / chunk_dir / 每片文件名与校验和。
+
+agent 收到清单后的标准流程（写入 SKILL.md 供所有 agent 遵循）：
+
+1. 读清单，确认 `total_chunks`；
+2. 按序读取分片文件，**每片读完立即产出一段要点摘要**（不要攒到最后）；
+3. 全部片读完后合并摘要做最终总结；
+4. 校验已读片数 == total_chunks，缺片时用 `--slice N` 或直接补读缺失文件；
+5. 上下文紧张时可隔片抽取要点，但结尾片必须读（结论通常在末尾）。
+
+`--slice N` 可让提取器直接输出第 N 片内容（JSON），适合不支持读文件工具的环境。小文档（≤256K 字符）行为不变，stdout 直出。
+
 ## Cookies 隐私规则
 
 技能包**不携带任何 cookies 文件**，也不再要求用户预先配置路径。
@@ -224,6 +243,11 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 | B站无字幕                          | 该视频没有 CC 字幕，API 返回 `success:false`，属正常                 |
 
 ## 更新日志
+
+### v0.5.0（Excel/PowerPoint 支持 + 大文档分片协议）
+- 新增 Excel (.xlsx/.xlsm) 与 PowerPoint (.pptx) 提取（运行时按需确认安装 openpyxl/python-pptx）；
+- 大文档处理协议：>256K 字符自动分片落盘（段落边界 + 300 字符重叠窗口 + 每片校验和），stdout 只输出清单；`--slice N` 可直接取单片；
+- SKILL.md 新增「大文档处理协议」章节，供所有 agent 遵循分页读取与增量总结流程。
 
 ### v0.4.1（B站直连修复）
 - B站 API 请求默认绕过 Windows 系统代理直连（系统代理转发国内站常报 SSL EOF，导致 B站提取整体失败）；

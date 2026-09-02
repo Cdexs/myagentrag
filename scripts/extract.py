@@ -93,6 +93,10 @@ def detect_content_type(url_or_path):
             return "word"
         elif ext == '.epub':
             return "epub"
+        elif ext in ['.xlsx', '.xlsm']:
+            return "excel"
+        elif ext == '.pptx':
+            return "pptx"
         elif ext in ['.mp3', '.wav', '.aac', '.m4a', '.flac', '.ogg', '.wma']:
             return "audio"
         elif ext in ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm']:
@@ -382,6 +386,146 @@ def extract_epub_text(file_path):
         print(f"  ⚠️ EPUB 提取错误: {e}")
     return None
 
+def extract_excel_text(file_path):
+    """提取 Excel (.xlsx/.xlsm)：每个工作表一段，行以 " | " 连接"""
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        print("  ⚠️ 未安装 openpyxl")
+        return None
+    try:
+        wb = load_workbook(file_path, read_only=True, data_only=True)
+        parts = []
+        for ws in wb.worksheets:
+            parts.append(f"## 工作表: {ws.title}")
+            for row in ws.iter_rows(values_only=True):
+                cells = ["" if c is None else str(c).strip()[:500] for c in row]
+                if any(cells):
+                    parts.append(" | ".join(cells))
+        return "\n\n".join(parts) if parts else None
+    except Exception as e:
+        print(f"  ⚠️ Excel 提取错误: {e}")
+        return None
+
+def extract_pptx_text(file_path):
+    """提取 PowerPoint (.pptx)：每张幻灯片一段（含表格与演讲者备注）"""
+    try:
+        from pptx import Presentation
+    except ImportError:
+        print("  ⚠️ 未安装 python-pptx")
+        return None
+    try:
+        prs = Presentation(file_path)
+        parts = []
+        for i, slide in enumerate(prs.slides, 1):
+            texts = []
+            for shape in slide.shapes:
+                if shape.has_text_frame:
+                    for para in shape.text_frame.paragraphs:
+                        line = "".join(run.text for run in para.runs).strip()
+                        if line:
+                            texts.append(line)
+                if getattr(shape, "has_table", False):
+                    for row in shape.table.rows:
+                        cells = [c.text.strip()[:500] for c in row.cells]
+                        if any(cells):
+                            texts.append(" | ".join(cells))
+            if slide.has_notes_slide:
+                notes = slide.notes_slide.notes_text_frame.text.strip()
+                if notes:
+                    texts.append(f"[演讲者备注] {notes[:2000]}")
+            if texts:
+                parts.append(f"## 幻灯片 {i}\n" + "\n".join(texts))
+        return "\n\n".join(parts) if parts else None
+    except Exception as e:
+        print(f"  ⚠️ PowerPoint 提取错误: {e}")
+        return None
+
+# ==================== 大文档分片（slice protocol） ====================
+# 设计：<=SLICE_THRESHOLD_CHARS 走 stdout 直出；超过则分片落盘到受管临时目录，
+# stdout 只输出清单（<2KB），agent 按需读分片文件——塞爆上下文的物理上限被提取器锁死。
+import hashlib
+
+SLICE_THRESHOLD_CHARS = 256 * 1024
+CHUNK_CHARS = 40000          # 每片字符数上限
+CHUNK_OVERLAP_CHARS = 300    # 相邻片重叠窗口
+
+def _split_paragraphs(text):
+    """优先空行分段，退化到单行"""
+    paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if len(paras) <= 1:
+        paras = [p.strip() for p in text.splitlines() if p.strip()]
+    return paras or [text]
+
+def _hard_split(par, limit):
+    """超长段落在句子边界处切（兜底任意字符）"""
+    out = []
+    while len(par) > limit:
+        window = par[:limit]
+        best = max(window.rfind("。"), window.rfind("！"), window.rfind("？"),
+                   window.rfind("."), window.rfind("!"), window.rfind("?"),
+                   window.rfind("\n"))
+        cut = best + 1 if best > limit // 2 else limit
+        out.append(par[:cut].strip())
+        par = par[cut:].strip()
+    if par:
+        out.append(par)
+    return out
+
+def make_chunks(text, chunk_chars=CHUNK_CHARS, overlap=CHUNK_OVERLAP_CHARS):
+    """纯函数：文本 -> 分片列表（段落边界对齐 + 相邻片重叠窗口），确定性输出"""
+    paras = _split_paragraphs(text)
+    chunks, cur, cur_len = [], [], 0
+    for p in paras:
+        pieces = [p] if len(p) <= chunk_chars else _hard_split(p, chunk_chars)
+        for piece in pieces:
+            add = len(piece) + (1 if cur else 0)
+            if cur and cur_len + add > chunk_chars:
+                chunks.append("\n\n".join(cur))
+                tail = chunks[-1][-overlap:].strip()
+                cur = [tail] if tail else []
+                cur_len = len(tail)
+            cur.append(piece)
+            cur_len += len(piece) + 1
+    if cur:
+        chunks.append("\n\n".join(cur))
+    return chunks
+
+def write_slices(title, source_path, content, args_slice=None):
+    """大文档分片落盘；args_slice 非 None 时只返回该片内容。"""
+    import io as _io
+    content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:8]
+    chunk_dir = TEMP_BASE_DIR / ("ss_slice_" + content_hash[:8])
+    chunks = make_chunks(content)
+    chunk_entries = []
+    try:
+        chunk_dir.mkdir(parents=True, exist_ok=True)
+        for i, ch in enumerate(chunks, 1):
+            fname = "chunk-{:03d}.txt".format(i)
+            (chunk_dir / fname).write_text(ch, encoding="utf-8")
+            chunk_entries.append({"file": fname, "chars": len(ch),
+                                  "sha256": hashlib.sha256(ch.encode("utf-8")).hexdigest()[:16]})
+        manifest = {
+            "platform": "slices", "title": title,
+            "source_filepath": str(source_path),
+            "total_chars": len(content), "chunk_chars": CHUNK_CHARS,
+            "total_chunks": len(chunks), "chunk_dir": str(chunk_dir),
+            "content_hash": "sha256:" + content_hash, "chunks": chunk_entries,
+        }
+        _io.open(chunk_dir / "manifest.json", "w", encoding="utf-8").write(
+            json.dumps(manifest, ensure_ascii=False, indent=2))
+    except Exception as e:
+        return {"platform": "slices", "title": title, "success": False,
+                "error": "分片写入失败: " + str(e)}
+    if args_slice is not None:
+        if not (1 <= args_slice <= len(chunks)):
+            return {"platform": "slices", "success": False,
+                    "error": "片号超出范围 1..%d" % len(chunks)}
+        return {"platform": "slices", "title": title, "chunk": args_slice,
+                "total_chunks": len(chunks), "chars": len(chunks[args_slice - 1]),
+                "content": chunks[args_slice - 1], "success": True}
+    return manifest
+
 # ==================== 运行时依赖检测与确认下载 ====================
 
 class MissingDependencyError(Exception):
@@ -401,6 +545,16 @@ PIP_LIB_GROUPS = {
     "docx": {
         "packages": ["python-docx"],
         "purpose": "Word (.docx) 文本提取",
+    },
+    "excel": {
+        "packages": ["openpyxl"],
+        "import": "openpyxl",
+        "purpose": "Excel (.xlsx/.xlsm) 表格文本提取",
+    },
+    "pptx": {
+        "packages": ["python-pptx"],
+        "import": "pptx",
+        "purpose": "PowerPoint (.pptx) 幻灯片文本提取",
     },
     "epub": {
         "packages": ["ebooklib"],
@@ -435,7 +589,7 @@ def _missing_pipelib_kinds(groups):
                 kinds.append(f"pip:{g}")
         else:
             spec = PIP_LIB_GROUPS.get(g)
-            import_name = "docx" if g == "docx" else g
+            import_name = spec.get("import", g) if spec else ("docx" if g == "docx" else g)
             if spec and not _import_ok(import_name):
                 kinds.append(f"pip:{g}")
     return kinds
@@ -1004,6 +1158,10 @@ def extract_local_file(file_path, output_format='json', model='large-v3-turbo'):
         content = extract_word_text(file_path)
     elif ext == '.epub':
         content = extract_epub_text(file_path)
+    elif ext in ['.xlsx', '.xlsm']:
+        content = extract_excel_text(file_path)
+    elif ext == '.pptx':
+        content = extract_pptx_text(file_path)
     elif ext in ['.mp3', '.wav', '.aac', '.m4a', '.flac', '.ogg', '.wma']:
         # 支持 SRT 格式输出
         if output_format == 'srt':
@@ -1043,6 +1201,10 @@ def _run_extraction(args):
         lib_groups.append("pdf")
     elif content_type == "epub":
         lib_groups.append("epub")
+    elif content_type == "excel":
+        lib_groups.append("excel")
+    elif content_type == "pptx":
+        lib_groups.append("pptx")
     elif content_type == "word" and Path(args.file).suffix.lower() == ".docx":
         lib_groups.append("docx")
     if lib_groups:
@@ -1058,7 +1220,7 @@ def _run_extraction(args):
         return extract_bilibili(bvid) if bvid else {"error": "无法提取BV号", "success": False}
     if content_type == "web":
         return extract_web(args.url)
-    if content_type in ["text", "pdf", "word", "epub", "audio", "video"]:
+    if content_type in ["text", "pdf", "word", "excel", "pptx", "epub", "audio", "video"]:
         return extract_local_file(args.file, output_format=args.output, model=args.model)
     return {"error": f"不支持的内容类型: {content_type}", "success": False}
 
@@ -1113,6 +1275,8 @@ def main():
     parser.add_argument('--output', choices=['json', 'text', 'srt'], default='json', help='输出格式 (srt 仅支持音频/视频转字幕)')
     parser.add_argument('--model', default='large-v3-turbo', help='Whisper 模型名称 (默认: large-v3-turbo; 可选 large-v3-turbo-q5_0 快速档)')
     parser.add_argument('--no-gpu', action='store_true', help='强制 CPU 转录（禁用 GPU 后端）')
+    parser.add_argument('--slice', type=int, metavar='N',
+                        help='大文档模式下仅输出第 N 片内容（配合清单使用）')
     parser.add_argument('--download-deps', action='store_true',
                         help='缺组件时跳过交互确认，直接下载安装（用于 agent 代为确认后调用）')
     args = parser.parse_args()
@@ -1133,6 +1297,12 @@ def main():
     except MissingDependencyError as e:
         result = _handle_missing_deps(args, e)
 
+    if args.output == 'json' and result.get("success") and isinstance(result.get("content"), str)             and len(result["content"]) > SLICE_THRESHOLD_CHARS:
+        # slice protocol：超过阈值的内容分片落盘，stdout 只输出清单——
+        # agent 按清单逐片读取（塞爆上下文的物理上限被提取器锁死）
+        title = result.get("title") or result.get("filename") or str(args.file)
+        result = write_slices(title, args.file, result["content"],
+                              args_slice=args.slice)
     if args.output == 'json':
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.output == 'srt':
@@ -1155,3 +1325,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# APPEND-MARKER
+# W-MARKER

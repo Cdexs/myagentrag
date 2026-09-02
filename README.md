@@ -6,7 +6,7 @@
 ![GitHub tag](https://img.shields.io/github/v/tag/Cdexs/smart-summarize?label=version&color=green)
 ![License](https://img.shields.io/npm/l/@cdexs/smart-summarize?color=orange)
 
-可自动进行网页、网络视频、本地文件（PDF/Word/EPUB/文本）、音视频进行读取、总结，支持通过本地 ASR 模型将本地音频、视频内容高准确率地转写到文本和字幕文件。
+可自动进行网页、网络视频、本地文件（PDF/Word/Excel/PowerPoint/EPUB/文本）、音视频进行读取、总结，支持通过本地 ASR 模型将本地音频、视频内容高准确率地转写到文本和字幕文件。
 
 智能内容提取技能包（agent skill）——提取 YouTube/B站视频字幕、网页正文、本地文件（PDF/Word/EPUB/文本）与音视频语音转录。**只提取，不调用 LLM**；提取结果交给宿主 agent 总结。
 
