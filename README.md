@@ -89,6 +89,18 @@ python scripts/extract.py --file lecture.mp3 --output srt                  # SRT
 | `SMART_SUMMARIZE_YOUTUBE_COOKIES`        | YouTube cookies 文件（默认 `~/.smart-summarize/cookies/youtube-cookies.txt`） |
 | `SMART_SUMMARIZE_WHISPERCPP_CMAKE_FLAGS` | 源码构建 whisper.cpp 时追加的 CMake 参数                                          |
 
+## 超大文档总结优化（slice protocol）
+
+提取单个文档的内容超过 **256K 字符**（约 8.5 万汉字）时，脚本不会把全文塞进 stdout 让 agent 一次性读入——那样会**撑爆 agent 上下文窗口，触发上下文压缩/截断，导致总结丢失细节、质量明显下降**。
+
+取而代之的处理方式：
+
+1. 全文自动**分片落盘**到受管临时目录（`ss_slice_<hash>/chunk-001.md ...`）：每片 ≤40K 字符、按段落边界对齐、相邻片重叠 300 字符保住跨片上下文、每片带 SHA256 校验和；
+2. stdout 只输出一份 **<1KB 的清单 JSON**（标题、总字符数、片数、分片目录、每片文件名与校验和）——塞爆上下文的物理上限被提取器锁死；
+3. agent 按清单**逐片读取、逐片定向摘要**（用户的总结指令中的关注维度必须原样注入每片摘要），全部片完成后合并为最终总结，并校验已读片数 == 总片数。
+
+这让超大书籍、长转录（配合 GPU 加速）、大表格也能被**完整而高质量地总结**，而不是在上下文压缩中损失内容。≤256K 字符的文档行为不变（stdout 直出，零额外开销）。也可以用 `--slice N` 直接输出第 N 片。
+
 ## Cookies（YouTube / B站 受限内容）
 
 平时完全不需要 cookies。只有当脚本提示需要时（返回 JSON 中的 `cookieHint` 字段）：

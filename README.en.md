@@ -90,6 +90,18 @@ Note: Python libraries require **no pre-installation**; everything is detected o
 | `SMART_SUMMARIZE_YOUTUBE_COOKIES`        | YouTube cookies file (defaults to `~/.smart-summarize/cookies/youtube-cookies.txt`) |
 | `SMART_SUMMARIZE_WHISPERCPP_CMAKE_FLAGS` | Extra CMake flags when building whisper.cpp from source                     |
 
+## Large-document summarization optimization (slice protocol)
+
+When extracted content of a single document exceeds **256K chars** (~85K Chinese characters), the script does not dump the full text into stdout for the agent to swallow in one go — that would blow the agent context window, trigger context compaction/truncation, and visibly degrade summary quality.
+
+Instead:
+
+1. The full text is automatically **chunked to disk** under a managed temp directory (`ss_slice_<hash>/chunk-001.md ...`): ≤40K chars per chunk, aligned to paragraph boundaries, 300-char overlap between neighboring chunks, SHA256 checksum per chunk;
+2. stdout only emits a **<1KB manifest JSON** (title, total chars, chunk count, chunk directory, per-chunk filename + checksum) — the extractor physically caps how much can blow up the context;
+3. The agent then reads chunks in order and produces **per-chunk directed summaries** (the user's custom instructions are carried verbatim into every chunk summary), merges them into the final summary, and verifies the chunk count.
+
+This keeps very large books, long transcriptions (with GPU acceleration), and big spreadsheets fully summarizable instead of losing content to context compaction. Documents ≤256K chars behave exactly as before (stdout, zero overhead). `--slice N` outputs chunk N directly.
+
 ## Cookies (restricted YouTube / Bilibili content)
 
 No cookies are needed for normal use. Only when the script says so (the `cookieHint` field in the returned JSON):
