@@ -35,5 +35,10 @@
   ],
   "engines": {
     "node": ">=16"
+  },
+  "pi": {
+    "skills": [
+      "SKILL.md"
+    ]
   }
 }
