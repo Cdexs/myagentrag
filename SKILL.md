@@ -351,7 +351,8 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 - **音视频时间戳索引与定位回放**：入库音视频统一 whisper SRT 转录 → 分片带 start_ms/end_ms → 播放器探测链按 OS 参数化定位播放；缺播放器输出结构化 JSON 交由 agent 处理；
 - **双语反馈**：messages.py 集中管理 zh/en 文案，`--lang` 显式覆盖 / locale 自动探测；自有错误文案带 `error_i18n` 双份；
 - **FTS 环境自动检测**：SQLite <3.34 或缺 FTS5 时探测本机可用解释器自动切换重跑，全部失败给出按 OS 安装指引；不做降级检索；
-- 修复拆分过程与历史遗留缺陷：extract_local_file 丢失、deps 缺 import、WHISPERCPP_CUBLAS_ASSETS 未定义（NVIDIA cublas 安装链路）、YouTube 元数据静默丢失（缺 import json）、YouTube 临时目录绕过受管链路、连续切片重叠窗口失效。
+- 修复拆分过程与历史遗留缺陷：extract_local_file 丢失、deps 缺 import、WHISPERCPP_CUBLAS_ASSETS 未定义（NVIDIA cublas 安装链路）、YouTube 元数据静默丢失（缺 import json）、YouTube 临时目录绕过受管链路、连续切片重叠窗口失效；
+- 修复存量缺陷（端侧验证发现）：EPUB 依赖检测永远误报缺失（deps.py epub 组缺 `import: "ebooklib"` 声明，组名被当作导入名）。
 
 > 版本号说明：早期条目的 v3.x 为历史内部功能版本号，自 v0.4.0 起与 npm 包版本号对齐。
 

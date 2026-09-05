@@ -127,6 +127,7 @@ PIP_LIB_GROUPS = {
     },
     "docx": {
         "packages": ["python-docx"],
+        "import": "docx",
         "purpose": "Word (.docx) 文本提取",
     },
     "excel": {
@@ -141,6 +142,7 @@ PIP_LIB_GROUPS = {
     },
     "epub": {
         "packages": ["ebooklib"],
+        "import": "ebooklib",
         "purpose": "EPUB 电子书文本提取",
     },
     "yt-dlp": {

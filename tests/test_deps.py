@@ -91,3 +91,22 @@ def test_install_dep_unknown_kind():
     import pytest
     with pytest.raises(RuntimeError):
         deps._install_dep("nope:kind")
+
+
+def test_epub_group_uses_ebooklib_import_name(monkeypatch):
+    """回归（端侧验证发现，v0.5.x 起存量）：epub 组名≠导入名（ebooklib），
+    未声明 import 时 _missing_pipelib_kinds 会 import 不存在的 "epub" 模块，
+    导致已安装 ebooklib 仍永远误报缺失。"""
+    real = deps._import_ok
+    # 模拟：ebooklib 已安装、名为 epub 的模块不存在
+    monkeypatch.setattr(deps, "_import_ok",
+                        lambda name: True if name == "ebooklib" else real(name))
+    assert deps._missing_pipelib_kinds(["epub"]) == []
+
+
+def test_pip_groups_import_names_declared():
+    """声明完整性：组名与实际导入名不一致的组必须显式声明 import 字段。"""
+    assert deps.PIP_LIB_GROUPS["epub"]["import"] == "ebooklib"
+    assert deps.PIP_LIB_GROUPS["docx"]["import"] == "docx"
+    assert deps.PIP_LIB_GROUPS["excel"]["import"] == "openpyxl"
+    assert deps.PIP_LIB_GROUPS["pptx"]["import"] == "pptx"
