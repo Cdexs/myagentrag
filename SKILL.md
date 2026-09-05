@@ -10,19 +10,19 @@ compatibility: Windows / macOS / Linux + Python 3.9+；音视频转录另需 ffm
 
 ## 支持的内容源
 
-| 类型          | 支持格式                                                    | 说明                             |
-| ----------- | ------------------------------------------------------- | ------------------------------ |
-| **YouTube** | 视频 URL                                                  | 通过 yt-dlp 提取手动/自动字幕和元数据        |
-| **B站**      | 视频 URL                                                  | 提取 CC 字幕和视频信息（免登录 API）         |
-| **网页**      | HTTP/HTTPS 链接                                           | 通过 Jina Reader 提取正文            |
-| **文本文件**    | `.txt`, `.md`, `.markdown`, `.rst`, `.csv`              | 直接读取                           |
-| **PDF**     | `.pdf`                                                  | pdfplumber 或 PyMuPDF           |
-| **Word**    | `.docx`, `.doc`                                         | python-docx；`.doc` 另需 pandoc   |
-| **EPUB**    | `.epub`                                                 | ebooklib                       |
-| **Excel**   | `.xlsx`, `.xlsm`                                        | openpyxl（每个工作表一段，行以 " \| " 连接） |
-| **PowerPoint** | `.pptx`                                              | python-pptx（每张幻灯片一段，结构化输出：`## 幻灯片 N` + `#` 标题 + `###` 副标题/正文/表格/演讲者备注） |
-| **音频**      | `.mp3`, `.wav`, `.aac`, `.m4a`, `.flac`, `.ogg`, `.wma` | ffmpeg 转 PCM 后用 whisper.cpp 转录 |
-| **视频**      | `.mp4`, `.avi`, `.mkv`, `.mov`, `.wmv`, `.flv`, `.webm` | 先提取内置字幕，无字幕则提取音频转录             |
+| 类型             | 支持格式                                                    | 说明                                                                     |
+| -------------- | ------------------------------------------------------- | ---------------------------------------------------------------------- |
+| **YouTube**    | 视频 URL                                                  | 通过 yt-dlp 提取手动/自动字幕和元数据                                                |
+| **B站**         | 视频 URL                                                  | 提取 CC 字幕和视频信息（免登录 API）                                                 |
+| **网页**         | HTTP/HTTPS 链接                                           | 通过 Jina Reader 提取正文                                                    |
+| **文本文件**       | `.txt`, `.md`, `.markdown`, `.rst`, `.csv`              | 直接读取                                                                   |
+| **PDF**        | `.pdf`                                                  | pdfplumber 或 PyMuPDF                                                   |
+| **Word**       | `.docx`, `.doc`                                         | python-docx；`.doc` 另需 pandoc                                           |
+| **EPUB**       | `.epub`                                                 | ebooklib                                                               |
+| **Excel**      | `.xlsx`, `.xlsm`                                        | openpyxl（每个工作表一段，行以 " \| " 连接）                                         |
+| **PowerPoint** | `.pptx`                                                 | python-pptx（每张幻灯片一段，结构化输出：`## 幻灯片 N` + `#` 标题 + `###` 副标题/正文/表格/演讲者备注） |
+| **音频**         | `.mp3`, `.wav`, `.aac`, `.m4a`, `.flac`, `.ogg`, `.wma` | ffmpeg 转 PCM 后用 whisper.cpp 转录                                         |
+| **视频**         | `.mp4`, `.avi`, `.mkv`, `.mov`, `.wmv`, `.flv`, `.webm` | 先提取内置字幕，无字幕则提取音频转录                                                     |
 
 ## 安装依赖
 
@@ -166,13 +166,13 @@ export SMART_SUMMARIZE_TMPDIR="$HOME/.cache/smart-summarize-tmp"
 
 按"预编译优先、GPU 编译作为显式升级路径"原则，各环境首次自动安装的版本：
 
-| 用户环境 | 首次自动安装的版本 | GPU 加速？ |
-|---------|-------------------|-----------|
-| Windows + NVIDIA | 官方 cublas 预编译（自带 CUDA 运行库） | ✅ 是 |
-| Windows + AMD/Intel GPU | 官方 CPU 预编译 + 升级指引（装 Vulkan SDK 重跑） | ❌ 否，需显式升级 |
-| Linux（任意 GPU） | 官方 ubuntu CPU 预编译 / brew | ❌ 否（源码构建时检测到 Toolkit/ROCm/Vulkan SDK 才编出 GPU 版） |
-| WSL | 同 Linux | ❌ 否（GPU 版还需 WSL 驱动透传） |
-| macOS | brew install whisper-cpp | ✅ 是（Metal 默认开启） |
+| 用户环境                    | 首次自动安装的版本                          | GPU 加速？                                         |
+| ----------------------- | ---------------------------------- | ----------------------------------------------- |
+| Windows + NVIDIA        | 官方 cublas 预编译（自带 CUDA 运行库）         | ✅ 是                                             |
+| Windows + AMD/Intel GPU | 官方 CPU 预编译 + 升级指引（装 Vulkan SDK 重跑） | ❌ 否，需显式升级                                       |
+| Linux（任意 GPU）           | 官方 ubuntu CPU 预编译 / brew           | ❌ 否（源码构建时检测到 Toolkit/ROCm/Vulkan SDK 才编出 GPU 版） |
+| WSL                     | 同 Linux                            | ❌ 否（GPU 版还需 WSL 驱动透传）                           |
+| macOS                   | brew install whisper-cpp           | ✅ 是（Metal 默认开启）                                 |
 
 官方预编译资产只有 Windows N 卡 cublas、macOS xcframework 和各平台 CPU 版；A 卡/Intel 的 Vulkan 与 Linux CUDA 只有源码/Docker 形式，因此技能不会静默编译，只给出明确升级指引。
 
@@ -180,15 +180,14 @@ export SMART_SUMMARIZE_TMPDIR="$HOME/.cache/smart-summarize-tmp"
 
 转录完成后，stderr 会标注实际使用的计算后端（`🎮 GPU 加速: Vulkan: AMD Radeon 780M...` / `🖥 CPU`）。加 `--no-gpu` 可强制 CPU。
 
-| GPU | 推荐后端 | Windows 获取方式 | Linux/macOS 获取方式 |
-|-----|---------|----------------|---------------------|
-| **NVIDIA** | CUDA | 官方 cublas 预编译 zip（自动选用，自带 CUDA 运行库） | 源码构建（需 CUDA Toolkit）或官方 main-cuda Docker 镜像 |
-| **AMD 独显** | ROCm/HIP 或 Vulkan | 源码构建（Vulkan SDK 或 ROCm） | 源码构建（有 ROCm 用 HIP，否则 Vulkan SDK） |
-| **AMD/Intel 核显** | Vulkan | 源码构建（需 Vulkan SDK，官方无 A 卡 GPU 预编译） | 同左 |
-| **Apple Silicon** | Metal | — | 默认启用，无需任何配置 |
+| GPU               | 推荐后端              | Windows 获取方式                        | Linux/macOS 获取方式                            |
+| ----------------- | ----------------- | ----------------------------------- | ------------------------------------------- |
+| **NVIDIA**        | CUDA              | 官方 cublas 预编译 zip（自动选用，自带 CUDA 运行库） | 源码构建（需 CUDA Toolkit）或官方 main-cuda Docker 镜像 |
+| **AMD 独显**        | ROCm/HIP 或 Vulkan | 源码构建（Vulkan SDK 或 ROCm）             | 源码构建（有 ROCm 用 HIP，否则 Vulkan SDK）            |
+| **AMD/Intel 核显**  | Vulkan            | 源码构建（需 Vulkan SDK，官方无 A 卡 GPU 预编译）  | 同左                                          |
+| **Apple Silicon** | Metal             | —                                   | 默认启用，无需任何配置                                 |
 
 GPU 是否启用取决于 whisper.cpp 二进制编译时包含的后端；CPU 构建或 GPU 后端/驱动不可用时回退为 CPU。可从转录 stderr 日志确认实际加载的 backend。`large-v3-turbo-q5_0` 仅是量化模型，不等于 GPU 加速。
-
 
 ## 大文档处理协议（slice protocol）
 
@@ -234,43 +233,49 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 
 ## 故障排除
 
-| 症状                             | 处理                                                     |
-| ------------------------------ | ------------------------------------------------------ |
-| 找不到 `python`                   | 设置 `SMART_SUMMARIZE_PYTHON` 为目标解释器的完整路径                |
-| YouTube yt-dlp 报 JS runtime 错误 | 安装 Node.js 并确保 `node` 在 PATH；脚本使用 `--js-runtimes node` |
-| 音视频提示 whisper.cpp 不可用          | 运行时检查会列出缺失组件与大小；同意后确认或由 agent 加 `--download-deps` 重跑   |
-| YouTube 提示需要 cookies                     | 按提示用浏览器扩展导出 Netscape 格式 cookies 保存到 `~/.smart-summarize/cookies/youtube-cookies.txt` 后重试 |
-| PDF 提取为空                                   | 扫描件没有文字层，属正常；本工具不做 OCR                                 |
-| B站无字幕                          | 该视频没有 CC 字幕，API 返回 `success:false`，属正常                 |
+| 症状                             | 处理                                                                                       |
+| ------------------------------ | ---------------------------------------------------------------------------------------- |
+| 找不到 `python`                   | 设置 `SMART_SUMMARIZE_PYTHON` 为目标解释器的完整路径                                                  |
+| YouTube yt-dlp 报 JS runtime 错误 | 安装 Node.js 并确保 `node` 在 PATH；脚本使用 `--js-runtimes node`                                   |
+| 音视频提示 whisper.cpp 不可用          | 运行时检查会列出缺失组件与大小；同意后确认或由 agent 加 `--download-deps` 重跑                                     |
+| YouTube 提示需要 cookies           | 按提示用浏览器扩展导出 Netscape 格式 cookies 保存到 `~/.smart-summarize/cookies/youtube-cookies.txt` 后重试 |
+| PDF 提取为空                       | 扫描件没有文字层，属正常；本工具不做 OCR                                                                   |
+| B站无字幕                          | 该视频没有 CC 字幕，API 返回 `success:false`，属正常                                                   |
 
 ## 更新日志
 
 ### v0.5.0（Excel/PowerPoint 支持 + 大文档分片协议）
+
 - 新增 Excel (.xlsx/.xlsm) 与 PowerPoint (.pptx) 提取（运行时按需确认安装 openpyxl/python-pptx）；
 - 大文档处理协议：>256K 字符自动分片落盘（段落边界 + 300 字符重叠窗口 + 每片校验和），stdout 只输出清单；`--slice N` 可直接取单片；
 - SKILL.md 新增「大文档处理协议」章节，供所有 agent 遵循分页读取与增量总结流程。
 - 协议硬规则：分片模式下逐片摘要必须原样保留用户总结指令中的关注维度（关系型/全局型任务防丢线索）。
 
 ### v0.4.1（B站直连修复）
+
 - B站 API 请求默认绕过 Windows 系统代理直连（系统代理转发国内站常报 SSL EOF，导致 B站提取整体失败）；
 - 用户显式设置 `SMART_SUMMARIZE_PROXY` 或终端 `HTTPS_PROXY` 时尊重该代理；
 
 ### v0.4.0（B站登录态 / AI 字幕支持）
+
 - 新增 `SMART_SUMMARIZE_BILIBILI_COOKIES`（或受管目录 `bilibili-cookies.txt`）：有登录态时 B站 AI 自动字幕、登录墙视频可正常提取；
 - 支持 Netscape 导出格式与原生 Cookie 头格式两种 cookies 文件；
 - 未配置时行为完全不变（免登录提取 UP 主 CC 字幕）。
 
 ### v3.5.3（Python 库运行时预检与确认安装）
+
 - 首次提取 PDF/Word(.docx)/EPUB/YouTube/网页时运行时检测对应 Python 库（pdfplumber/PyMuPDF/python-docx/ebooklib/yt-dlp/requests）；
 - 缺失时与 ffmpeg/whisper 组件同一机制：列出名称/用途/安装命令，经用户确认后用当前解释器 pip 安装并自动继续；agent 可用 `--download-deps` 代为确认；
 - 原先缺库仅 stderr 一句警告且 JSON 分不清“库缺失”与“文件损坏”，现在错误结构化为 `missing` 清单。
 
 ### v3.5.2（cookies 自动路径）
+
 - cookies 文件默认位置自动确定：`~/.smart-summarize/cookies/youtube-cookies.txt`，无需预先配置；
 - YouTube 遇登录墙/风控时输出 `cookieHint` 字段，提示用户手动导出 cookies 到该路径；
 - yt-dlp 优先从当前 Python 环境查找；视频缺 ffmpeg 时走统一的缺失提示而非静默失败。
 
 ### v3.5.1（whisper-cli 三级安装与 GPU 检测）
+
 - whisper-cli 安装优先级：brew 预编译包 → GitHub 官方预编译 zip → 源码构建兜底；
 - 源码构建时自动检测 CUDA/Vulkan 工具链并如实告知；支持 `SMART_SUMMARIZE_WHISPERCPP_CMAKE_FLAGS`。
 

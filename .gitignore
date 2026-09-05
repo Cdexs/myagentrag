@@ -11,3 +11,6 @@ AGENT.md
 scripts/__pycache__/
 __pycache__/
 .git/
+
+# 设计文档目录（评审稿，不入库）
+docs/
