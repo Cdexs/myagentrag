@@ -208,6 +208,111 @@ MESSAGES = {
         "zh": "  ⚠️ 视频处理错误: {err}",
         "en": "  ⚠️ Video processing error: {err}",
     },
+    # ---- workspace.py：管理与检索反馈（v1.3 §8A 实施范围） ----
+    "ws_name_invalid": {
+        "zh": "workspace 名称只能包含字母/数字/中文/-/_：{name}",
+        "en": "workspace name may only contain letters/digits/CJK/-/_: {name}",
+    },
+    "ws_not_found": {
+        "zh": "workspace 不存在: {name}",
+        "en": "workspace not found: {name}",
+    },
+    "ws_exists": {
+        "zh": "workspace 已存在: {name}",
+        "en": "workspace already exists: {name}",
+    },
+    "ws_created": {
+        "zh": "workspace 已创建: {name}",
+        "en": "workspace created: {name}",
+    },
+    "ws_no_workspaces": {
+        "zh": "尚无任何 workspace（用 --workspace <名> --create 创建，或提取时加 --workspace 隐式创建）",
+        "en": "No workspaces yet (create one with --workspace <name> --create, or pass --workspace while extracting)",
+    },
+    "ws_renamed": {
+        "zh": "workspace 已重命名: {old} → {new}",
+        "en": "workspace renamed: {old} → {new}",
+    },
+    "ws_confirm_required": {
+        "zh": "该操作不可逆，需要二次确认：加 --yes 后重试",
+        "en": "This operation is irreversible; add --yes to confirm and retry",
+    },
+    "ws_entry_not_found": {
+        "zh": "条目不存在: {eid}（workspace: {ws}）",
+        "en": "Entry not found: {eid} (workspace: {ws})",
+    },
+    "ws_entry_removed": {
+        "zh": "条目已删除: {eid}",
+        "en": "Entry removed: {eid}",
+    },
+    "ws_verify_ok": {
+        "zh": "完整性校验通过",
+        "en": "Integrity verification passed",
+    },
+    "ws_reindexed": {
+        "zh": "FTS 索引已重建",
+        "en": "FTS index rebuilt",
+    },
+    "ws_vacuumed": {
+        "zh": "VACUUM 完成",
+        "en": "VACUUM completed",
+    },
+    "ws_search_empty": {
+        "zh": "请提供 --search 查询词",
+        "en": "A --search query is required",
+    },
+    "ingest_empty": {
+        "zh": "提取内容为空，未入库",
+        "en": "Extracted content is empty; nothing ingested",
+    },
+    "ingest_ok": {
+        "zh": "已入库 workspace[{ws}]：{title}（{chars} 字符 / {chunks} 片）",
+        "en": "Ingested into workspace[{ws}]: {title} ({chars} chars / {chunks} chunks)",
+    },
+    "source_copy_warn": {
+        "zh": "  ⚠️ 来源文件副本保存失败: {err}",
+        "en": "  ⚠️ Failed to save the source file copy: {err}",
+    },
+    "play_no_player": {
+        "zh": "无可用媒体播放器 / no media player found",
+        "en": "no media player found",
+    },
+    "play_no_player_hint": {
+        "zh": "建议安装 VLC 后重试",
+        "en": "suggest installing VLC, then retry",
+    },
+    "play_no_media": {
+        "zh": "该条目没有本地媒体文件副本（入库时可能使用了 --no-keep-source）",
+        "en": "No local media file copy for this entry (it may have been ingested with --no-keep-source)",
+    },
+    "play_at_invalid": {
+        "zh": "--at 时间格式应为 mm:ss / hh:mm:ss / 秒数: {v}",
+        "en": "--at must be mm:ss / hh:mm:ss / seconds: {v}",
+    },
+    "play_launched": {
+        "zh": "已调用播放器 {player}",
+        "en": "Launched player {player}",
+    },
+    "play_degraded": {
+        "zh": "系统默认方式打开，不支持定位（从头播放）",
+        "en": "Opened with the system default app; seeking is not supported (plays from the start)",
+    },
+    "env_fts_missing": {
+        "zh": "当前 Python 的 SQLite 缺少 FTS5/trigram 能力，workspace 功能不可用（不做降级检索）",
+        "en": "This Python's SQLite lacks FTS5/trigram; workspace features unavailable (no degraded search)",
+    },
+    "env_fts_hint": {
+        "zh": "安装任一 Python ≥3.9 官方构建后重试，技能会自动检测并切换",
+        "en": "Install any official Python ≥3.9 build and retry; the skill will detect and switch automatically",
+    },
+    "env_fts_switch": {
+        "zh": "  ↻ 当前解释器不支持 FTS5/trigram，切换到可用解释器重跑: {python}",
+        "en": "  ↻ Current interpreter lacks FTS5/trigram, switching to a capable interpreter: {python}",
+    },
+    "env_fts_install_try": {
+        "zh": "  ⬇ 未找到可用解释器，尝试为技能安装 Python（--download-deps 已确认）...",
+        "en": "  ⬇ No capable interpreter found; installing Python for the skill (--download-deps confirmed)...",
+    },
 }
 
 _lang = None

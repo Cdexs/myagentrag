@@ -169,7 +169,10 @@ def extract_youtube(video_id):
 
             for f in sorted(tmpdir.glob(f"{video_id}.*")):
                 if f.suffix in ('.srt', '.vtt'):
-                    result["transcript"] = clean_subtitle(f.read_text(encoding='utf-8', errors='ignore'))
+                    # 原始字幕一并返回（入库 workspace 时存为 source/ 快照并解析时间戳）
+                    result["raw_subtitle"] = f.read_text(encoding='utf-8', errors='ignore')
+                    result["raw_subtitle_ext"] = f.suffix[1:]
+                    result["transcript"] = clean_subtitle(result["raw_subtitle"])
                     result["success"] = True
                     break
         finally:
@@ -221,7 +224,16 @@ def extract_bilibili(bvid):
                             if sub_url.startswith('//'):
                                 sub_url = 'https:' + sub_url
                             tr = requests.get(sub_url, headers=headers, timeout=30, proxies=proxies)
-                            result["transcript"] = clean_subtitle('\n'.join([b.get('content', '') for b in tr.json().get('body', [])]))
+                            body = tr.json().get('body', [])
+                            # B站字幕 JSON 自带 from/to 秒级时间戳 → 段数组（入库时做时间戳索引）
+                            result["subtitle_segments"] = [
+                                {"start_ms": int(round(b.get('from', 0) * 1000)),
+                                 "end_ms": int(round(b.get('to', 0) * 1000)),
+                                 "text": b.get('content', '')}
+                                for b in body if b.get('content')]
+                            result["raw_subtitle"] = json.dumps(body, ensure_ascii=False)
+                            result["raw_subtitle_ext"] = "json"
+                            result["transcript"] = clean_subtitle('\n'.join([b.get('content', '') for b in body]))
                             result["success"] = True
     except Exception as e:
         result["error"] = str(e)
