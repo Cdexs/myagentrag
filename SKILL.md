@@ -1,7 +1,7 @@
 ---
 name: smart-summarize
-description: 智能内容提取工具：提取 YouTube/B站视频字幕、网页正文、本地文件（PDF/Word/Excel/PowerPoint/EPUB/文本）与音视频语音转录。只提取，不调用 LLM；提取结果由当前 agent 阅读并总结。
-compatibility: Windows / macOS / Linux + Python 3.9+；音视频转录另需 ffmpeg、whisper.cpp 及 ggml 模型
+description: 智能内容提取工具：提取 YouTube/B站视频字幕、网页正文、本地文件（PDF/Word/Excel/PowerPoint/EPUB/文本）与音视频语音转录；可选知识库 workspace（SQLite FTS5 全文检索 + 音视频时间戳定位回放）。只提取，不调用 LLM；提取结果由当前 agent 阅读并总结。
+compatibility: Windows / macOS / Linux / WSL + Python 3.9+；音视频转录另需 ffmpeg、whisper.cpp 及 ggml 模型；知识库需 SQLite ≥3.34（CPython 官方构建默认满足）
 ---
 
 # 智能内容提取工具 (smart-summarize)
@@ -56,6 +56,21 @@ $Python = if ($env:SMART_SUMMARIZE_PYTHON) { $env:SMART_SUMMARIZE_PYTHON } else 
 
 ## 运行机制
 
+模块结构（v0.6 起模块化，`extract.py` 只保留 CLI 入口与调度）：
+
+```
+scripts/extract.py      CLI 入口与调度
+scripts/slicing.py      大文档分片协议（slice protocol）
+scripts/extractors.py   内容提取器（YouTube/B站/网页/文档格式）
+scripts/transcribe.py   whisper.cpp 转录（GPU 后端识别上报）
+scripts/deps.py         组件定位、缺失检测与确认安装（ffmpeg/whisper/模型/pip 库）
+scripts/messages.py     zh/en 双语反馈（--lang 覆盖 / locale 自动探测）
+scripts/workspace.py    知识库 workspace（FTS5 检索 / 时间戳索引 / 定位回放）
+tests/                  自动化测试（test_<模块>.py）
+```
+
+提取流程：
+
 ```
 extract.py 被调用（--url 或 --file）
   ├─ ① 类型检测：youtube / bilibili / web / 本地文件（按后缀）
@@ -108,6 +123,7 @@ $Python = if ($env:SMART_SUMMARIZE_PYTHON) { $env:SMART_SUMMARIZE_PYTHON } else 
 附加参数与字段：
 
 - `--download-deps`：缺组件时跳过交互确认直接下载安装（用于 agent 在征得用户同意后代为确认后重跑）；
+- `--lang zh|en`：反馈语言。默认按系统语言自动探测（环境变量 `SMART_SUMMARIZE_LANG` 亦可覆盖）；自有错误文案在 JSON 中同时提供 `error_i18n: {"zh": ..., "en": ...}` 双份，agent 可按界面语言选用（原始异常文本不翻译）；
 - 失败时 JSON 可能包含 `missing`（缺失组件清单）或 `cookieHint`（YouTube 需要登录验证的提示），agent 应原样展示给用户。
 
 > YouTube 需要代理时，先设置 `HTTPS_PROXY`。YouTube 受限内容可能需要 cookies；公开字幕通常不需要。
@@ -207,6 +223,90 @@ agent 收到清单后的标准流程（写入 SKILL.md 供所有 agent 遵循）
 
 `--slice N` 可让提取器直接输出第 N 片内容（JSON），适合不支持读文件工具的环境。小文档（≤256K 字符）行为不变，stdout 直出。
 
+## 知识库 workspace（SQLite FTS5 全文检索 + 时间戳定位回放）
+
+提取的内容可入库到本地知识库（workspace）供后续检索与精读。**只提取与索引，不调用 LLM**；检索引擎为 Python 标准库 sqlite3 内置的 FTS5（trigram 分词器），零外部依赖，支持 BM25 相关性排序、snippet 摘要、短语/布尔/前缀/NEAR 查询。
+
+### 摄入（提取时入库）
+
+```bash
+# --workspace 带上即入库；库名不存在时隐式创建（也支持显式 --workspace <名> --create）
+"$PYTHON" "$EXTRACTOR" --file "document.pdf" --workspace 我的资料
+"$PYTHON" "$EXTRACTOR" --url "https://www.bilibili.com/video/BVxxxx" --workspace 我的资料
+# 元数据可选指定（title/author/publisher/publish-date），缺省自动取自内容或文件名
+"$PYTHON" "$EXTRACTOR" --file "lecture.mp3" --workspace 我的资料 --title "讲座标题" --author "作者"
+```
+
+入库规则：
+
+- **幂等**：条目 id = 内容 sha256 前 16 位；同内容重灌只更新元数据，不产生重复条目；
+- **来源副本**：本地文件与网页快照默认复制到 `source/<id>/`（音视频默认复制——回放必需），`--no-keep-source` 可关；
+- **音视频时间戳索引**：入库的音视频统一走 whisper SRT 转录，段级时间戳存 `transcript.json`，每个分片带 `start_ms`/`end_ms`（普通提取不受影响：视频仍先试内置字幕）。
+
+### 检索
+
+```bash
+"$PYTHON" "$EXTRACTOR" --workspace 我的资料 --search "全文检索"
+"$PYTHON" "$EXTRACTOR" --workspace 我的资料 --search 'publisher:出版社名 AND 关键词'
+"$PYTHON" "$EXTRACTOR" --search "关键词" --all-workspaces     # 跨全部库，结果标注来源库名
+```
+
+查询语法：≥3 字词进 trigram 索引（输入自动转义）；`AND`/`OR`/`NOT`/`NEAR(a b, 5)`/`前缀*` 原样透传；`title:`/`author:`/`publisher:`/`publish_date:` 可限定列；**<3 字中文词**（trigram 物理限制）自动回退 chunks 表 LIKE 并在结果中标注 `like-low-precision`。
+
+### 读取（agent 精读对象是 full.md）
+
+```bash
+"$PYTHON" "$EXTRACTOR" --workspace 我的资料 --entry <entry-id>            # full.md 全文
+"$PYTHON" "$EXTRACTOR" --workspace 我的资料 --entry <entry-id> --chunk 3  # 指定分片
+```
+
+检索命中输出 `full_path + offset + chars`——agent 按偏移精读 full.md 上下文（与分片协议同一原则：读全量提取文本，不读原始二进制）。
+
+### 管理操作全集
+
+| 操作 | 命令 |
+| --- | --- |
+| 显式创建 | `--workspace <名> --create` |
+| 列举库 | `--workspace-list` |
+| 删除库 | `--workspace <名> --delete-workspace`（需 `--yes`） |
+| 重命名 | `--workspace <旧名> --rename <新名>` |
+| 统计 | `--workspace <名> --stats`（条目/字符/分片/来源分布/db 体积） |
+| 条目列举 | `--workspace <名> --list` |
+| 条目删除 | `--workspace <名> --remove <entry-id>`（需 `--yes`） |
+| 完整性校验 | `--workspace <名> --verify`（片数/逐片一致性/覆盖/FTS 索引比对） |
+| 索引重建 | `--workspace <名> --reindex` |
+| 空间回收 | `--workspace <名> --vacuum` |
+
+删除类操作默认只输出 `confirm_required: true` 与将删除的路径——agent 须向用户确认后加 `--yes` 重跑。跨机器迁移 = 直接拷贝 workspace 目录（自包含），无需命令。
+
+### 定位回放（音视频）
+
+```bash
+"$PYTHON" "$EXTRACTOR" --workspace 我的资料 --play <entry-id> --at 12:33 [--duration 60]
+```
+
+- 播放器探测链按平台参数化：Windows `VLC → PotPlayer → mpv → 系统关联`；macOS `VLC → IINA → mpv → open`；Linux `VLC → mpv → xdg-open`；WSL `wslview → Windows 侧 VLC`；
+- VLC/mpv/PotPlayer 支持从命中时间点起播（可加 `--duration` 限定时长）；系统默认方式只能从头播（结果标注 `degraded: true`）；
+- **检测不到播放器时输出结构化 JSON**（`candidates`/`hint`/`play_cmd: null`）交由 agent 处理（向用户说明、经确认后代装 VLC 等），技能不弹界面。
+
+### 环境要求（不降级）
+
+workspace 需要 SQLite ≥3.34（FTS5 trigram）。CPython 官方构建（python.org/Homebrew/Xcode CLT/发行版）3.9+ 默认满足；当前解释器不满足时技能自动探测本机其他解释器并切换重跑（优先 `SMART_SUMMARIZE_PYTHON`），全部失败时输出结构化错误与按 OS 的安装指引交由 agent 转述——**宁可明确报错，不做低精度降级检索**。
+
+### 目录结构（workspace 自包含，拷走目录即完成迁移）
+
+```
+~/.smart-summarize/workspaces/<库名>/
+├── workspace.db            # SQLite（WAL 模式）：entries / chunks / entries_fts
+├── source/<entry-id>/      # 原始来源副本（音视频/网页快照/字幕原始文件）
+└── entries/<entry-id>/
+    ├── meta.json           # 元数据（标题/来源/作者/出版信息/分片数/副本文件名）
+    ├── full.md             # 全量提取文本（检索命中按 offset 精读）
+    └── transcript.json     # 音视频段级时间戳（含每段在 full.md 中的字符区间）
+```
+
+workspace 根目录可用 `SMART_SUMMARIZE_WORKSPACES_DIR` 覆盖（默认 `~/.smart-summarize/workspaces/`；WSL 内注意勿放 /mnt/c 下，避免性能与文件锁问题）。
+
 ## Cookies 隐私规则
 
 技能包**不携带任何 cookies 文件**，也不再要求用户预先配置路径。
@@ -243,6 +343,17 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 | B站无字幕                          | 该视频没有 CC 字幕，API 返回 `success:false`，属正常                                                   |
 
 ## 更新日志
+
+### v0.6.0（模块化拆分 + 知识库 workspace + 双语反馈）
+
+- **模块化**：单文件 extract.py（1375 行）拆分为 slicing / extractors / transcribe / deps / messages / workspace 六个模块，CLI 只保留入口与调度（纯重构，按 7.6 规则并入本版本不发单独版）；
+- **新增知识库 workspace**：SQLite FTS5+trigram 全文检索（标准库零依赖、BM25 排序、snippet 摘要、布尔/前缀/NEAR/列限定查询、<3 字自动 LIKE 回退）、来源文件副本、full.md 偏移精读、13 项管理操作、完整性校验（含 FTS 索引逐行比对）、索引重建/VACUUM、跨库检索；
+- **音视频时间戳索引与定位回放**：入库音视频统一 whisper SRT 转录 → 分片带 start_ms/end_ms → 播放器探测链按 OS 参数化定位播放；缺播放器输出结构化 JSON 交由 agent 处理；
+- **双语反馈**：messages.py 集中管理 zh/en 文案，`--lang` 显式覆盖 / locale 自动探测；自有错误文案带 `error_i18n` 双份；
+- **FTS 环境自动检测**：SQLite <3.34 或缺 FTS5 时探测本机可用解释器自动切换重跑，全部失败给出按 OS 安装指引；不做降级检索；
+- 修复拆分过程与历史遗留缺陷：extract_local_file 丢失、deps 缺 import、WHISPERCPP_CUBLAS_ASSETS 未定义（NVIDIA cublas 安装链路）、YouTube 元数据静默丢失（缺 import json）、YouTube 临时目录绕过受管链路、连续切片重叠窗口失效。
+
+> 版本号说明：早期条目的 v3.x 为历史内部功能版本号，自 v0.4.0 起与 npm 包版本号对齐。
 
 ### v0.5.0（Excel/PowerPoint 支持 + 大文档分片协议）
 

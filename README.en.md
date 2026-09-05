@@ -6,7 +6,7 @@
 ![GitHub tag](https://img.shields.io/github/v/tag/Cdexs/smart-summarize?label=version&color=green)
 ![License](https://img.shields.io/npm/l/@cdexs/smart-summarize?color=orange)
 
-A skill that can automatically read and summarize web pages, online videos, and local files (PDF/Word/Excel/PowerPoint/EPUB/text), as well as audio and video. Local audio and video content can be transcribed with high accuracy into text and subtitle files using a local ASR model.
+A skill that can automatically read and summarize web pages, online videos, and local files (PDF/Word/Excel/PowerPoint/EPUB/text), as well as audio and video. Local audio and video content can be transcribed with high accuracy into text and subtitle files using a local ASR model, and extracted content can be stored into a local knowledge base (SQLite FTS5 full-text search + audio/video timestamp-based playback).
 
 An agent skill for intelligent content extraction — extract YouTube/Bilibili video subtitles, web page content, local files (PDF/Word/EPUB/text), and speech-to-text transcription of audio/video. **Extraction only — no LLM calls**; extracted results are handed to the host agent for summarization.
 
@@ -17,6 +17,8 @@ Cross-platform: Windows / macOS / Linux / WSL.
 - **Extraction only**: no LLM calls; outputs JSON/text/SRT for the current agent to read and summarize
 - **Zero hardcoded paths**: components are discovered in the order env vars → PATH → user directory (`~/.smart-summarize`)
 - **Runtime on-demand install**: on first audio/video transcription, missing components are detected and listed (name / purpose / source / estimated size); they are downloaded only after user confirmation, then the original task continues — never silently
+- **Knowledge-base workspace**: SQLite FTS5+trigram full-text search (standard library only, zero extra dependencies), source-file snapshots, offset-based deep reading, 13 management operations, timestamp-based media playback
+- **Bilingual feedback (zh/en)**: `--lang` flag or automatic locale detection; JSON errors carry an `error_i18n` pair
 - **Privacy safe**: no cookies are shipped with or read from the skill directory; YouTube cookies are read from `~/.smart-summarize/cookies/youtube-cookies.txt` (exported manually by the user) and only requested when a login wall is hit
 - **GPU neutral**: whether GPU is used depends on the user's whisper.cpp build (Vulkan/Metal/CUDA); during source builds the toolchain is auto-detected and honestly reported
 
@@ -89,6 +91,8 @@ Note: Python libraries require **no pre-installation**; everything is detected o
 | `SMART_SUMMARIZE_WHISPERCPP_MODELS_DIR`  | GGML model directory                                                       |
 | `SMART_SUMMARIZE_YOUTUBE_COOKIES`        | YouTube cookies file (defaults to `~/.smart-summarize/cookies/youtube-cookies.txt`) |
 | `SMART_SUMMARIZE_WHISPERCPP_CMAKE_FLAGS` | Extra CMake flags when building whisper.cpp from source                     |
+| `SMART_SUMMARIZE_WORKSPACES_DIR`         | Knowledge-base workspace root (default `~/.smart-summarize/workspaces/`)    |
+| `SMART_SUMMARIZE_LANG`                   | Feedback language zh/en (`--lang` flag wins; auto-detected by default)      |
 
 ## Large-document summarization optimization (slice protocol)
 
@@ -101,6 +105,18 @@ Instead:
 3. The agent then reads chunks in order and produces **per-chunk directed summaries** (the user's custom instructions are carried verbatim into every chunk summary), merges them into the final summary, and verifies the chunk count.
 
 This keeps very large books, long transcriptions (with GPU acceleration), and big spreadsheets fully summarizable instead of losing content to context compaction. Documents ≤256K chars behave exactly as before (stdout, zero overhead). `--slice N` outputs chunk N directly.
+
+## Knowledge-base workspace (optional)
+
+Extracted content can be stored into a local knowledge base for search and deep reading: SQLite FTS5+trigram full-text search (built into the Python standard library — zero extra dependencies; BM25 ranking, snippet highlights, boolean/NEAR queries), source-file snapshots, timestamp indexing with seeked playback for audio/video (VLC/PotPlayer/mpv/system default, probed per platform), and 13 management operations (create/list/delete/rename/stats/verify/reindex/vacuum…).
+
+```bash
+python scripts/extract.py --file document.pdf --workspace my-docs          # extract + ingest
+python scripts/extract.py --workspace my-docs --search "keyword"           # search (with offset/chunk locators)
+python scripts/extract.py --workspace my-docs --play <entry-id> --at 12:33 # seeked playback
+```
+
+A workspace directory is self-contained (copy it to migrate); destructive operations require a `--yes` confirmation. The knowledge base requires SQLite ≥3.34 (satisfied by official CPython builds; if the current interpreter lacks it, the skill auto-switches to a capable one instead of degrading search quality). See the "Knowledge-base workspace" section in [SKILL.md](SKILL.md).
 
 ## Cookies (restricted YouTube / Bilibili content)
 

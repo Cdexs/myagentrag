@@ -6,7 +6,7 @@
 ![GitHub tag](https://img.shields.io/github/v/tag/Cdexs/smart-summarize?label=version&color=green)
 ![License](https://img.shields.io/npm/l/@cdexs/smart-summarize?color=orange)
 
-可自动进行网页、网络视频、本地文件（PDF/Word/Excel/PowerPoint/EPUB/文本）、音视频进行读取、总结，支持通过本地 ASR 模型将本地音频、视频内容高准确率地转写到文本和字幕文件。
+可自动进行网页、网络视频、本地文件（PDF/Word/Excel/PowerPoint/EPUB/文本）、音视频进行读取、总结，支持通过本地 ASR 模型将本地音频、视频内容高准确率地转写到文本和字幕文件，并可将提取内容存入本地知识库（SQLite FTS5 全文检索 + 音视频时间戳定位回放）。
 
 智能内容提取技能包（agent skill）——提取 YouTube/B站视频字幕、网页正文、本地文件（PDF/Word/EPUB/文本）与音视频语音转录。**只提取，不调用 LLM**；提取结果交给宿主 agent 总结。
 
@@ -17,6 +17,8 @@
 - **纯提取**：不调用任何 LLM，输出 JSON/文本/SRT，由当前 agent 阅读总结
 - **零硬编码路径**：所有组件按 环境变量 → PATH → 用户目录（`~/.smart-summarize`）的顺序发现
 - **运行时按需安装**：首次使用音视频转录时检测缺失组件，列出名称/用途/来源/预计大小，经用户确认后下载安装，随后自动继续；不会静默下载
+- **知识库 workspace**：SQLite FTS5+trigram 全文检索（标准库零依赖）、来源副本、偏移精读、13 项管理操作、音视频时间戳定位回放
+- **中英双语反馈**：`--lang` 或 locale 自动探测，JSON 错误带 `error_i18n` 双份
 - **隐私安全**：不携带、不读取技能目录内的任何 cookies；YouTube cookies 默认从 `~/.smart-summarize/cookies/youtube-cookies.txt` 读取（由用户手动导出放置），仅遇登录墙时才提示需要
 - **GPU 中立**：是否启用 GPU 取决于用户安装的 whisper.cpp 构建（Vulkan/Metal/CUDA）；自动构建时会检测工具链并如实告知
 
@@ -88,6 +90,8 @@ python scripts/extract.py --file lecture.mp3 --output srt                  # SRT
 | `SMART_SUMMARIZE_WHISPERCPP_MODELS_DIR`  | ggml 模型目录                                                               |
 | `SMART_SUMMARIZE_YOUTUBE_COOKIES`        | YouTube cookies 文件（默认 `~/.smart-summarize/cookies/youtube-cookies.txt`） |
 | `SMART_SUMMARIZE_WHISPERCPP_CMAKE_FLAGS` | 源码构建 whisper.cpp 时追加的 CMake 参数                                          |
+| `SMART_SUMMARIZE_WORKSPACES_DIR`         | 知识库 workspace 根目录（默认 `~/.smart-summarize/workspaces/`）                  |
+| `SMART_SUMMARIZE_LANG`                   | 反馈语言 zh/en（`--lang` 参数优先，默认按系统语言自动探测）                       |
 
 ## 超大文档总结优化（slice protocol）
 
@@ -101,13 +105,23 @@ python scripts/extract.py --file lecture.mp3 --output srt                  # SRT
 
 这让超大书籍、长转录（配合 GPU 加速）、大表格也能被**完整而高质量地总结**，而不是在上下文压缩中损失内容。≤256K 字符的文档行为不变（stdout 直出，零额外开销）。也可以用 `--slice N` 直接输出第 N 片。
 
+## 知识库 workspace（可选）
+
+提取的内容可存入本地知识库做检索与精读：SQLite FTS5+trigram 全文检索（Python 标准库内置，零外部依赖，BM25 排序/snippet 摘要/布尔与 NEAR 查询）、来源文件副本、音视频时间戳索引与定位回放（VLC/PotPlayer/mpv/系统关联按平台探测）、13 项管理操作（创建/列举/删除/改名/统计/校验/重建/压缩等）。
+
+```bash
+python scripts/extract.py --file document.pdf --workspace 我的资料        # 提取并入库
+python scripts/extract.py --workspace 我的资料 --search "全文检索"         # 检索（含偏移/分片定位）
+python scripts/extract.py --workspace 我的资料 --play <entry-id> --at 12:33  # 音视频定位回放
+```
+
+workspace 目录自包含（拷走即迁移）；删除类操作需 `--yes` 二次确认。知识库需要 SQLite ≥3.34（CPython 官方构建默认满足，不满足时自动切换可用解释器，不做降级检索）。详见 [SKILL.md](SKILL.md)「知识库 workspace」章节。
+
 ## Cookies（YouTube / B站 受限内容）
 
 平时完全不需要 cookies。只有当脚本提示需要时（返回 JSON 中的 `cookieHint` 字段）：
 
 **YouTube**：
-
-平时完全不需要 cookies。只有当脚本提示需要时（返回 JSON 中的 `cookieHint` 字段）：
 
 1. 浏览器安装扩展 **Get cookies.txt LOCALLY**（或同类）；
 2. 访问 youtube.com 并登录，导出 Netscape 格式 cookies；
