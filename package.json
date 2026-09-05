@@ -36,7 +36,8 @@
     "scripts/extractors.py",
     "scripts/transcribe.py",
     "scripts/deps.py",
-    "scripts/messages.py"
+    "scripts/messages.py",
+    "scripts/workspace.py"
   ],
   "engines": {
     "node": ">=16"

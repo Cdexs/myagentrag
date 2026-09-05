@@ -7,7 +7,8 @@
 变更（节选）：
 - v0.6: 模块化拆分——slicing.py（分片协议）/ extractors.py（提取器）/
   transcribe.py（whisper 转录）/ deps.py（依赖检测与安装）/
-  messages.py（zh/en 双语反馈，--lang 覆盖 + locale 自动探测）；
+  messages.py（zh/en 双语反馈，--lang 覆盖 + locale 自动探测）/
+  workspace.py（知识库：SQLite FTS5 检索 / 时间戳索引 / 定位回放）；
   extract.py 只保留 CLI 入口与调度
 - v3.5: 运行时检测缺失组件（ffmpeg/whisper-cli/ggml 模型），提示大小并经用户确认后下载安装，随后继续原任务
 - v3.4: 按操作系统寻找 whisper-cli，临时目录和 ffmpeg 查找跨平台化；cookies 改为显式环境变量
@@ -17,6 +18,7 @@
 import sys
 import json
 import argparse
+import subprocess
 from pathlib import Path
 
 from slicing import write_slices, SLICE_THRESHOLD_CHARS
@@ -29,6 +31,7 @@ from transcribe import extract_audio_text, extract_audio_srt, extract_video_text
 import transcribe as _transcribe_mod
 from deps import MissingDependencyError, _missing_pipelib_kinds, _dep_detail, _install_dep
 import messages
+import workspace
 
 # Windows 管道输出默认 GBK，emoji/特殊字符会 UnicodeEncodeError 崩溃，强制 UTF-8
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
@@ -79,6 +82,120 @@ def extract_local_file(file_path, output_format='json', model='large-v3-turbo'):
     return result
 
 
+# ==================== 知识库 workspace（v1.3 §1/§4/§5） ====================
+
+# §1 专用环境：无可用解释器时给 agent 的按 OS 安装指引（安装动作须用户确认）
+ENV_INSTALL_HINTS = {
+    "windows": "winget install --id Python.Python.3.12",
+    "macos": "brew install python3",
+    "linux": "apt-get install python3",
+}
+
+
+def _fts_gate(args):
+    """workspace 功能前置：FTS5/trigram 环境检测。必要时切换解释器重跑或输出结构化错误。"""
+    r = workspace.ensure_fts_env(allow_install=args.download_deps)
+    if r["status"] == "ok":
+        return
+    if r["status"] == "switch":
+        print(messages.msg("env_fts_switch", python=" ".join(r["python_cmd"])), file=sys.stderr)
+        script = Path(__file__).resolve()
+        proc = subprocess.run([*r["python_cmd"], str(script), *sys.argv[1:]])
+        sys.exit(proc.returncode)
+    err = messages.err_result("env_fts_missing")
+    err.update({"capability": "SQLite FTS5 + trigram tokenizer (SQLite >= 3.34)",
+                "current": r.get("current"),
+                "install_attempted": r.get("install_attempted", False),
+                "hint": messages.msg("env_fts_hint"),
+                "hint_i18n": messages.msg_pair("env_fts_hint"),
+                "install_hint": ENV_INSTALL_HINTS})
+    print(json.dumps(err, ensure_ascii=False, indent=2))
+    sys.exit(1)
+
+
+def _run_workspace_ops(args):
+    """§4 管理操作全集（13 项）。返回 result dict；无匹配操作返回 None。"""
+    W = args.workspace
+    if args.workspace_list:
+        return workspace.list_workspaces()
+    needs_ws = (args.create or args.delete_workspace or args.rename or args.stats
+                or args.list or args.entry or args.remove or args.verify
+                or args.reindex or args.vacuum or args.play
+                or (args.search and not args.all_workspaces))
+    if needs_ws and not W:
+        return messages.err_result("ws_name_required")
+    if args.create:
+        return workspace.create_workspace(W)
+    if args.delete_workspace:
+        return workspace.delete_workspace(W, yes=args.yes)
+    if args.rename:
+        return workspace.rename_workspace(W, args.rename)
+    if args.stats:
+        return workspace.ws_stats(W)
+    if args.list:
+        return workspace.ws_list_entries(W)
+    if args.search:
+        return workspace.ws_search(W, args.search, all_workspaces=args.all_workspaces)
+    if args.entry:
+        return workspace.ws_read_entry(W, args.entry, chunk_no=args.chunk)
+    if args.remove:
+        return workspace.ws_remove_entry(W, args.remove, yes=args.yes)
+    if args.verify:
+        return workspace.ws_verify(W)
+    if args.reindex:
+        return workspace.ws_reindex(W)
+    if args.vacuum:
+        return workspace.ws_vacuum(W)
+    if args.play:
+        return workspace.ws_play(W, args.play, args.at, duration=args.duration)
+    return None
+
+
+def _maybe_ingest(args, result):
+    """提取成功且带 --workspace 时入库（§5）。返回追加 workspace 信息的 result。"""
+    if not args.workspace or not result.get("success"):
+        return result
+    ct = detect_content_type(args.url or args.file)
+    source_ref = args.url if args.url else (str(args.file) if args.file else None)
+    kwargs = {
+        "title": args.title or result.get("title") or result.get("filename"),
+        "source_ref": source_ref,
+        "author": args.author or result.get("author") or None,
+        "publisher": args.publisher,
+        "publish_date": args.publish_date,
+        "keep_source": not args.no_keep_source,
+    }
+    if ct == "youtube":
+        raw = result.get("raw_subtitle")
+        ext = result.get("raw_subtitle_ext")
+        segs = None
+        if raw:
+            segs = workspace.parse_vtt(raw) if ext == "vtt" else workspace.parse_srt(raw)
+        kwargs.update(source_type="youtube", segments=segs or None,
+                      raw_subtitle=raw, raw_subtitle_ext=ext,
+                      content=result.get("transcript") or None)
+    elif ct == "bilibili":
+        kwargs.update(source_type="bilibili", segments=result.get("subtitle_segments"),
+                      raw_subtitle=result.get("raw_subtitle"), raw_subtitle_ext=result.get("raw_subtitle_ext"),
+                      content=result.get("transcript") or None)
+    elif ct == "web":
+        kwargs.update(source_type="web", content=result.get("content"))
+    elif ct in ("audio", "video"):
+        kwargs.update(source_type=ct, srt_text=result.get("_srt"), source_file=args.file)
+    else:
+        kwargs.update(source_type=ct, content=result.get("content"), source_file=args.file)
+
+    ing = workspace.ws_ingest(args.workspace, **kwargs)
+    if ing.get("success"):
+        result["workspace"] = {"name": args.workspace, "entry_id": ing["entry_id"],
+                               "chunk_count": ing["chunk_count"],
+                               "total_chars": ing["total_chars"], "updated": ing["updated"]}
+        print(f"  📥 {ing['message']}", file=sys.stderr)
+    else:
+        result["workspace_error"] = ing
+    return result
+
+
 # ==================== 主函数 ====================
 
 def _run_extraction(args):
@@ -120,6 +237,22 @@ def _run_extraction(args):
     if content_type == "web":
         return extract_web(args.url)
     if content_type in ["text", "pdf", "word", "excel", "pptx", "epub", "audio", "video"]:
+        if args.workspace and content_type in ("audio", "video"):
+            # 入库的音视频统一走 whisper SRT 转录以获得时间戳索引（v1.3 §6.4）；
+            # 不入库的普通提取行为不变（视频先试内置字幕）
+            srt = extract_audio_srt(args.file, model=args.model)
+            result = {"platform": "file", "filepath": str(Path(args.file)),
+                      "filename": Path(args.file).name, "content": "",
+                      "type": content_type, "success": False}
+            if srt:
+                segments = workspace.parse_srt(srt)
+                result["content"], _ = workspace.text_from_segments(segments)
+                result["success"] = True
+                result["_srt"] = srt
+            else:
+                result["error"], result["error_i18n"] = messages.err_field(
+                    "cannot_extract", ext=f".{content_type}")
+            return result
         return extract_local_file(args.file, output_format=args.output, model=args.model)
     return messages.err_result("unsupported_type", t=content_type)
 
@@ -177,9 +310,47 @@ def main():
                         help='缺组件时跳过交互确认，直接下载安装（用于 agent 代为确认后调用）')
     parser.add_argument('--lang', choices=['zh', 'en'], default=None,
                         help='反馈语言 (默认: 按系统语言自动探测，可用 SMART_SUMMARIZE_LANG 覆盖)')
+    # ---- 知识库 workspace（v1.3 §4 管理操作全集） ----
+    parser.add_argument('--workspace', metavar='名', help='知识库 workspace 名称（提取时带上即入库）')
+    parser.add_argument('--create', action='store_true', help='显式创建 workspace')
+    parser.add_argument('--workspace-list', action='store_true', help='列举全部 workspace（名称/条目数/总字符数/最后更新）')
+    parser.add_argument('--delete-workspace', action='store_true', help='删除整个 workspace 目录（需 --yes 二次确认）')
+    parser.add_argument('--rename', metavar='新名', help='重命名 workspace')
+    parser.add_argument('--stats', action='store_true', help='workspace 统计（条目/字符/分片/来源分布）')
+    parser.add_argument('--list', action='store_true', help='列举 workspace 条目')
+    parser.add_argument('--search', metavar='查询', help='FTS5 检索（支持 AND/OR/NOT/NEAR/前缀*，短语加引号）')
+    parser.add_argument('--all-workspaces', action='store_true', help='跨全部 workspace 检索（与 --search 搭配）')
+    parser.add_argument('--entry', metavar='ID', help='读取条目 full.md 全文')
+    parser.add_argument('--chunk', type=int, metavar='N', help='配合 --entry 读取指定分片')
+    parser.add_argument('--remove', metavar='ID', help='删除条目（需 --yes 二次确认）')
+    parser.add_argument('--verify', action='store_true', help='完整性校验（片数/逐片一致性/覆盖/FTS 行数）')
+    parser.add_argument('--reindex', action='store_true', help='重建 FTS 索引')
+    parser.add_argument('--vacuum', action='store_true', help='VACUUM 压缩 db')
+    parser.add_argument('--play', metavar='ID', help='定位回放音视频条目（调用外部播放器）')
+    parser.add_argument('--at', metavar='mm:ss', help='回放起点（mm:ss / hh:mm:ss / 秒数）')
+    parser.add_argument('--duration', type=int, metavar='秒', help='回放时长（秒，可选）')
+    parser.add_argument('--no-keep-source', action='store_true', help='入库时不保存来源文件副本')
+    parser.add_argument('--yes', action='store_true', help='跳过删除类操作的二次确认（agent 已向用户确认后使用）')
+    parser.add_argument('--title', help='入库条目标题（默认自动取自内容）')
+    parser.add_argument('--author', help='入库作者')
+    parser.add_argument('--publisher', help='入库出版社/发布方')
+    parser.add_argument('--publish-date', help='入库出版/发布时间（ISO 8601，可只到年）')
     args = parser.parse_args()
     messages.init(args.lang)
     _transcribe_mod.NO_GPU = args.no_gpu
+
+    if args.chunk and not args.entry:
+        parser.error(messages.msg("chunk_needs_entry"))
+
+    ws_mgmt = any([args.workspace_list, args.create, args.delete_workspace, args.rename,
+                   args.stats, args.list, args.search, args.entry, args.remove,
+                   args.verify, args.reindex, args.vacuum, args.play])
+    if ws_mgmt or args.workspace:
+        _fts_gate(args)
+    if ws_mgmt:
+        result = _run_workspace_ops(args)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        sys.exit(0 if result.get("success") else 1)
 
     if not args.url and not args.file:
         print(messages.msg("no_input"), file=sys.stderr)
@@ -194,6 +365,8 @@ def main():
         result = _run_extraction(args)
     except MissingDependencyError as e:
         result = _handle_missing_deps(args, e)
+
+    result = _maybe_ingest(args, result)
 
     if (args.output == 'json' and result.get("success")
             and isinstance(result.get("content"), str)

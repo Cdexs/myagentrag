@@ -261,6 +261,14 @@ MESSAGES = {
         "zh": "请提供 --search 查询词",
         "en": "A --search query is required",
     },
+    "ws_name_required": {
+        "zh": "该操作需要 --workspace <名>",
+        "en": "This operation requires --workspace <name>",
+    },
+    "chunk_needs_entry": {
+        "zh": "--chunk N 需与 --entry <id> 搭配使用",
+        "en": "--chunk N must be used together with --entry <id>",
+    },
     "ingest_empty": {
         "zh": "提取内容为空，未入库",
         "en": "Extracted content is empty; nothing ingested",
