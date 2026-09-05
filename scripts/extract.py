@@ -35,6 +35,11 @@ from extractors import (  # noqa: F401 (re-export)
     extract_bilibili, extract_web, extract_text_file, extract_pdf_text,
     extract_word_text, extract_epub_text, extract_excel_text, extract_pptx_text,
 )
+from transcribe import (  # noqa: F401 (re-export)
+    extract_audio_text, extract_audio_srt, extract_video_text,
+    _detect_backend_from_log, WHISPERCPP_GGML_MAP,
+)
+import transcribe as _transcribe_mod
 
 # Windows 管道输出默认 GBK，emoji/特殊字符会 UnicodeEncodeError 崩溃，强制 UTF-8
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
@@ -499,238 +504,6 @@ def _install_dep(kind):
         return install_model(kind.split(":", 1)[1])
     raise RuntimeError(f"未知组件类型: {kind}")
 
-# ==================== whisper.cpp（唯一转录引擎） ====================
-# 是否使用 GPU 取决于用户安装的 whisper.cpp 构建：Vulkan/Metal/CUDA 构建会使用
-# 对应后端；普通 CPU 构建不会。脚本不强行下载或编译二进制。
-def _default_whispercpp_dir():
-    return MANAGED_BIN
-
-def _default_whispercpp_models_dir():
-    return MANAGED_MODELS
-
-WHISPERCPP_DIR = Path(os.environ.get(
-    "SMART_SUMMARIZE_WHISPERCPP_DIR",
-    str(_default_whispercpp_dir()),
-)).expanduser()
-WHISPERCPP_MODELS_DIR = Path(os.environ.get(
-    "SMART_SUMMARIZE_WHISPERCPP_MODELS_DIR",
-    str(_default_whispercpp_models_dir()),
-)).expanduser()
-# faster-whisper 风格模型名 -> whisper.cpp ggml 模型文件
-WHISPERCPP_GGML_MAP = {
-    "large-v3-turbo": "ggml-large-v3-turbo.bin",          # fp16，参考精度（默认）
-    "large-v3-turbo-q5_0": "ggml-large-v3-turbo-q5_0.bin",  # 量化快速档
-}
-
-def _find_ffmpeg():
-    configured = os.environ.get("SMART_SUMMARIZE_FFMPEG")
-    if configured:
-        p = Path(configured).expanduser()
-        if p.exists() and p.is_file():
-            return str(p)
-    p = shutil.which("ffmpeg")
-    if p:
-        return p
-    exe = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
-    managed = MANAGED_BIN / exe
-    if managed.exists() and managed.is_file():
-        return str(managed)
-    return None
-
-def _find_whispercpp_cli():
-    configured = os.environ.get("SMART_SUMMARIZE_WHISPERCPP_CLI")
-    if configured:
-        p = Path(configured).expanduser()
-        if p.exists() and p.is_file():
-            return p
-
-    # 先查 PATH，便于 macOS/Linux 通过包管理器或自行安装后直接使用。
-    path_cli = shutil.which("whisper-cli")
-    if path_cli:
-        return Path(path_cli)
-
-    names = ("whisper-cli.exe", "whisper-cli") if os.name == "nt" else ("whisper-cli", "whisper-cli.exe")
-    for name in names:
-        for base in (WHISPERCPP_DIR, MANAGED_BIN):
-            candidate = base / name
-            if candidate.exists() and candidate.is_file():
-                return candidate
-    return None
-
-def _model_candidates(model_name):
-    """该模型所有可能的位置（按查找/下载优先级）"""
-    fname = WHISPERCPP_GGML_MAP.get(model_name, f"ggml-{model_name}.bin")
-    dirs = []
-    for d in (WHISPERCPP_MODELS_DIR, MANAGED_MODELS):
-        d = Path(d).expanduser()
-        if d not in dirs:
-            dirs.append(d)
-    return [d / fname for d in dirs]
-
-def _find_model_file(model_name):
-    for p in _model_candidates(model_name):
-        if p.exists() and p.is_file():
-            return p
-    return None
-
-def _whispercpp_available(model_name):
-    cli = _find_whispercpp_cli()
-    return cli is not None and _find_model_file(model_name) is not None
-
-def _whispercpp_transcribe(file_path, model_name, want_srt):
-    """使用本机 whisper.cpp 构建转录；成功返回 SRT 或纯文本，失败返回 None。"""
-    cli = _find_whispercpp_cli()
-    ggml = _find_model_file(model_name)
-    ffmpeg = _find_ffmpeg()
-    if not (cli and ggml and ffmpeg):
-        return None
-    tmpdir = make_tmpdir(f"ss_wcpp_{Path(file_path).stem}_")
-    try:
-        wav = tmpdir / "audio16k.wav"
-        cmd = [ffmpeg, "-i", str(file_path), "-vn", "-acodec", "pcm_s16le",
-               "-ar", "16000", "-ac", "1", str(wav), "-y"]
-        r = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=600)
-        if r.returncode != 0 or not wav.exists():
-            return None
-        out_base = tmpdir / "out"
-        # 不用 -np：它会把 ggml 后端日志一起吞掉，导致 GPU 后端上报失效；
-        # 日志走 stderr，不影响 stdout 的 SRT/JSON 输出
-        cmd = [str(cli), "-m", str(ggml), "-f", str(wav), "-l", "auto",
-               "-osrt", "-of", str(out_base)]
-        if NO_GPU:
-            cmd += ["-ng"]
-        r = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=3600)
-        srt_file = tmpdir / "out.srt"
-        if not srt_file.exists():
-            return None
-        content = srt_file.read_text(encoding="utf-8", errors="replace")
-        backend = _detect_backend_from_log(r.stderr or "")
-        if NO_GPU:
-            print(f"  🖥 转录完成（已强制 CPU）: {model_name}", file=sys.stderr)
-        elif backend:
-            print(f"  🎮 转录完成（GPU 加速: {backend}）: {model_name}", file=sys.stderr)
-        else:
-            print(f"  ✅ 转录完成（CPU）: {model_name}", file=sys.stderr)
-        if want_srt:
-            return content.strip() or None
-        lines = [l.strip() for l in content.splitlines()
-                 if l.strip() and "-->" not in l and not re.fullmatch(r"\d+", l.strip())]
-        text = " ".join(lines).strip()
-        return text if len(text) > 10 else None
-    except Exception as e:
-        print(f"  ⚠️ whisper.cpp 转录错误: {e}", file=sys.stderr)
-        return None
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-
-NO_GPU = False
-
-def _detect_backend_from_log(stderr_text):
-    """从 whisper-cli 的 stderr 判断实际使用的计算后端，返回可读描述。"""
-    text = stderr_text or ""
-    # ggml_vulkan 设备行两种格式：新版 "0 | AMD Radeon..."，旧版 "0 = AMD Radeon..."
-    m = re.search(r"ggml_vulkan:.*?\d+\s*[\|=]\s*([A-Za-z][^\r\n]+)", text)
-    if m:
-        return f"Vulkan: {m.group(1).strip()[:80]}"
-    m = re.search(r"ggml_cuda[^\n]*?device\s*\d*\s*\|?\s*([^\r\n]*)", text, re.I)
-    if m:
-        return f"CUDA: {m.group(1).strip()[:80]}"
-    if "ggml_metal" in text or "Metal" in text:
-        return "Metal"
-    if re.search(r"ggml_hip|ROCm", text, re.I):
-        return "ROCm/HIP"
-    return None
-
-def extract_audio_text(file_path, model="large-v3-turbo"):
-    """提取音频文件内容（语音转文字）- 返回纯文本"""
-    kinds = _missing_dep_kinds(model)
-    if kinds:
-        raise MissingDependencyError(kinds)
-    return _whispercpp_transcribe(file_path, model, want_srt=False)
-
-
-def extract_audio_srt(file_path, model="large-v3-turbo"):
-    """提取音频文件内容（语音转文字）- 返回 SRT 格式"""
-    kinds = _missing_dep_kinds(model)
-    if kinds:
-        raise MissingDependencyError(kinds)
-    return _whispercpp_transcribe(file_path, model, want_srt=True)
-
-def extract_video_text(file_path):
-    """提取视频文件内容"""
-    tmpdir = make_tmpdir(f"ss_vid_{Path(file_path).stem}_")
-
-    try:
-        ffmpeg = _find_ffmpeg()
-        if not ffmpeg:
-            raise MissingDependencyError(["ffmpeg"])
-        # 先尝试提取内置字幕
-        try:
-            output_file = tmpdir / 'subtitle.srt'
-            cmd = [ffmpeg, '-i', file_path, '-map', '0:s:0', str(output_file), '-y']
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-            if result.returncode == 0 and output_file.exists():
-                content = output_file.read_text(encoding='utf-8', errors='ignore')
-                text = re.sub(r'\d+\n\d{2}:\d{2}:\d{2}.*?\n\n', '', content, flags=re.DOTALL)
-                if text.strip():
-                    return text.strip()
-        except Exception:
-            pass
-
-        # 提取音频并转录
-        audio_file = tmpdir / 'audio.wav'
-        cmd = [ffmpeg, '-i', file_path, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', str(audio_file), '-y']
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        if result.returncode == 0 and audio_file.exists():
-            return extract_audio_text(str(audio_file))
-    except MissingDependencyError:
-        raise
-    except Exception as e:
-        print(f"  ⚠️ 视频处理错误: {e}", file=sys.stderr)
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-    return None
-
-def extract_local_file(file_path, output_format='json', model='large-v3-turbo'):
-    """根据文件类型自动选择提取方法"""
-    path = Path(file_path)
-    if not path.exists():
-        return {"error": f"文件不存在: {file_path}", "success": False}
-
-    ext = path.suffix.lower()
-    result = {"platform": "file", "filepath": str(path), "filename": path.name, "content": "", "type": ext[1:], "success": False}
-
-    content = None
-    if ext in ['.txt', '.md', '.markdown', '.rst', '.csv']:
-        content = extract_text_file(file_path)
-    elif ext == '.pdf':
-        content = extract_pdf_text(file_path)
-    elif ext in ['.docx', '.doc']:
-        content = extract_word_text(file_path)
-    elif ext == '.epub':
-        content = extract_epub_text(file_path)
-    elif ext in ['.xlsx', '.xlsm']:
-        content = extract_excel_text(file_path)
-    elif ext == '.pptx':
-        content = extract_pptx_text(file_path)
-    elif ext in ['.mp3', '.wav', '.aac', '.m4a', '.flac', '.ogg', '.wma']:
-        # 支持 SRT 格式输出
-        if output_format == 'srt':
-            content = extract_audio_srt(file_path, model=model)
-        else:
-            content = extract_audio_text(file_path, model=model)
-    elif ext in ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm']:
-        content = extract_video_text(file_path)
-
-    if content:
-        result["content"] = content
-        result["success"] = True
-    else:
-        result["error"] = f"无法提取 {ext} 文件内容"
-
-    return result
-
-
 # ==================== 主函数 ====================
 
 def _run_extraction(args):
@@ -831,8 +604,7 @@ def main():
     parser.add_argument('--download-deps', action='store_true',
                         help='缺组件时跳过交互确认，直接下载安装（用于 agent 代为确认后调用）')
     args = parser.parse_args()
-    global NO_GPU
-    NO_GPU = args.no_gpu
+    _transcribe_mod.NO_GPU = args.no_gpu
 
     if not args.url and not args.file:
         print("错误：请提供 --url 或 --file", file=sys.stderr)
