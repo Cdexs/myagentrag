@@ -6,7 +6,8 @@
 
 变更（节选）：
 - v0.6: 模块化拆分——slicing.py（分片协议）/ extractors.py（提取器）/
-  transcribe.py（whisper 转录）/ deps.py（依赖检测与安装）；
+  transcribe.py（whisper 转录）/ deps.py（依赖检测与安装）/
+  messages.py（zh/en 双语反馈，--lang 覆盖 + locale 自动探测）；
   extract.py 只保留 CLI 入口与调度
 - v3.5: 运行时检测缺失组件（ffmpeg/whisper-cli/ggml 模型），提示大小并经用户确认后下载安装，随后继续原任务
 - v3.4: 按操作系统寻找 whisper-cli，临时目录和 ffmpeg 查找跨平台化；cookies 改为显式环境变量
@@ -27,6 +28,7 @@ from extractors import (
 from transcribe import extract_audio_text, extract_audio_srt, extract_video_text
 import transcribe as _transcribe_mod
 from deps import MissingDependencyError, _missing_pipelib_kinds, _dep_detail, _install_dep
+import messages
 
 # Windows 管道输出默认 GBK，emoji/特殊字符会 UnicodeEncodeError 崩溃，强制 UTF-8
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
@@ -41,7 +43,7 @@ def extract_local_file(file_path, output_format='json', model='large-v3-turbo'):
     """根据文件类型自动选择提取方法（文档 → extractors，音视频 → transcribe）"""
     path = Path(file_path)
     if not path.exists():
-        return {"error": f"文件不存在: {file_path}", "success": False}
+        return messages.err_result("file_not_found", path=file_path)
 
     ext = path.suffix.lower()
     result = {"platform": "file", "filepath": str(path), "filename": path.name, "content": "", "type": ext[1:], "success": False}
@@ -72,7 +74,7 @@ def extract_local_file(file_path, output_format='json', model='large-v3-turbo'):
         result["content"] = content
         result["success"] = True
     else:
-        result["error"] = f"无法提取 {ext} 文件内容"
+        result["error"], result["error_i18n"] = messages.err_field("cannot_extract", ext=ext)
 
     return result
 
@@ -111,23 +113,24 @@ def _run_extraction(args):
 
     if content_type == "youtube":
         video_id = extract_video_id(args.url)
-        return extract_youtube(video_id) if video_id else {"error": "无法提取视频ID", "success": False}
+        return extract_youtube(video_id) if video_id else messages.err_result("video_id_fail")
     if content_type == "bilibili":
         bvid = extract_bvid(args.url)
-        return extract_bilibili(bvid) if bvid else {"error": "无法提取BV号", "success": False}
+        return extract_bilibili(bvid) if bvid else messages.err_result("bvid_fail")
     if content_type == "web":
         return extract_web(args.url)
     if content_type in ["text", "pdf", "word", "excel", "pptx", "epub", "audio", "video"]:
         return extract_local_file(args.file, output_format=args.output, model=args.model)
-    return {"error": f"不支持的内容类型: {content_type}", "success": False}
+    return messages.err_result("unsupported_type", t=content_type)
 
 def _handle_missing_deps(args, err):
     """列出缺失组件（名称/用途/来源/预计大小），经用户确认后下载安装并继续原任务。"""
     items = [_dep_detail(k) for k in err.kinds]
-    print("\n⚠️ 提取/转录所需的以下组件缺失：", file=sys.stderr)
+    print(messages.msg("deps_header"), file=sys.stderr)
     for it in items:
-        print(f"  • {it['name']}（{it['purpose']}）"
-              f"\n    来源: {it['source']}\n    预计大小: {it['est_size']}", file=sys.stderr)
+        print(f"  • {it['name']}（{it['purpose']}）", file=sys.stderr)
+        print(f"    {messages.msg('deps_item_source')}: {it['source']}", file=sys.stderr)
+        print(f"    {messages.msg('deps_item_size')}: {it['est_size']}", file=sys.stderr)
 
     allowed = args.download_deps
     if not allowed:
@@ -137,32 +140,28 @@ def _handle_missing_deps(args, err):
         except Exception:
             interactive = False
         if not interactive:
-            print("\n（非交互环境：可在用户确认后加 --download-deps 重新运行）", file=sys.stderr)
+            print(messages.msg("deps_noninteractive"), file=sys.stderr)
         else:
             try:
-                ans = input("\n是否立即下载并安装以上组件，然后继续任务? [y/N] ")
+                ans = input(messages.msg("deps_prompt"))
                 allowed = ans.strip().lower() in ("y", "yes")
             except (EOFError, KeyboardInterrupt, OSError):
                 allowed = False
 
     if not allowed:
-        return {"success": False,
-                "error": "缺少必需组件，未下载。请确认后重试。",
-                "missing": items}
+        return messages.err_result("deps_declined") | {"missing": items}
 
     all_ok = True
     for it in items:
         try:
             path = _install_dep(it["kind"])
-            print(f"  ✅ 已安装 {it['name']} → {path}", file=sys.stderr)
+            print(messages.msg("deps_installed", name=it["name"], path=path), file=sys.stderr)
         except Exception as e:
             all_ok = False
-            print(f"  ❌ {it['name']} 安装失败: {e}", file=sys.stderr)
+            print(messages.msg("deps_install_fail", name=it["name"], err=e), file=sys.stderr)
     if not all_ok:
-        return {"success": False,
-                "error": "部分组件安装失败（见 stderr）。可手动安装后重试。",
-                "missing": items}
-    print("  ↻ 组件就绪，继续执行原任务...", file=sys.stderr)
+        return messages.err_result("deps_partial_fail") | {"missing": items}
+    print(messages.msg("deps_ready"), file=sys.stderr)
     return _run_extraction(args)
 
 def main():
@@ -176,16 +175,19 @@ def main():
                         help='大文档模式下仅输出第 N 片内容（配合清单使用）')
     parser.add_argument('--download-deps', action='store_true',
                         help='缺组件时跳过交互确认，直接下载安装（用于 agent 代为确认后调用）')
+    parser.add_argument('--lang', choices=['zh', 'en'], default=None,
+                        help='反馈语言 (默认: 按系统语言自动探测，可用 SMART_SUMMARIZE_LANG 覆盖)')
     args = parser.parse_args()
+    messages.init(args.lang)
     _transcribe_mod.NO_GPU = args.no_gpu
 
     if not args.url and not args.file:
-        print("错误：请提供 --url 或 --file", file=sys.stderr)
+        print(messages.msg("no_input"), file=sys.stderr)
         sys.exit(1)
 
     # 本地文件不存在时提前报错（否则会被当成 unknown 类型，报错误导人）
     if args.file and not Path(args.file).exists():
-        print(json.dumps({"error": f"文件不存在: {args.file}", "success": False}, ensure_ascii=False))
+        print(json.dumps(messages.err_result("file_not_found", path=args.file), ensure_ascii=False))
         sys.exit(1)
 
     try:
@@ -208,7 +210,8 @@ def main():
         if result.get("success"):
             print(result.get('content', ''))
         else:
-            print(f"提取失败: {result.get('error', '未知错误')}", file=sys.stderr)
+            print(messages.msg("extract_fail",
+                               err=result.get('error') or messages.msg("unknown_error")), file=sys.stderr)
             sys.exit(1)
     else:
         # text 格式
@@ -218,7 +221,8 @@ def main():
                 print(f"作者: {result['author']}")
             print(f"\n内容:\n{result.get('transcript', result.get('content', ''))}")
         else:
-            print(f"提取失败: {result.get('error', '未知错误')}", file=sys.stderr)
+            print(messages.msg("extract_fail",
+                               err=result.get('error') or messages.msg("unknown_error")), file=sys.stderr)
             sys.exit(1)
 
 if __name__ == "__main__":

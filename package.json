@@ -35,7 +35,8 @@
     "scripts/slicing.py",
     "scripts/extractors.py",
     "scripts/transcribe.py",
-    "scripts/deps.py"
+    "scripts/deps.py",
+    "scripts/messages.py"
   ],
   "engines": {
     "node": ">=16"

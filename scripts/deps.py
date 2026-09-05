@@ -489,32 +489,37 @@ def _missing_dep_kinds(model_name):
     return kinds
 
 def _dep_detail(kind):
+    import messages
     if kind.startswith("pip:"):
         group = kind.split(":", 1)[1]
         spec = PIP_LIB_GROUPS.get(group)
         pkgs = " ".join(spec["packages"]) if spec else group
-        purpose = spec["purpose"] if spec else "Python 库"
+        purpose_key = f"dep_purpose_{group}"
+        if purpose_key in messages.MESSAGES:
+            purpose = messages.msg(purpose_key)
+        else:
+            purpose = spec["purpose"] if spec else messages.msg("dep_unknown_group")
         return {"kind": kind, "name": pkgs,
                 "purpose": purpose,
-                "source": f"安装到当前 Python 解释器：\"{sys.executable}\" -m pip install {pkgs}",
-                "est_size": "合计数 MB"}
+                "source": messages.msg("dep_source_pip", python=sys.executable, pkgs=pkgs),
+                "est_size": messages.msg("dep_size_pip")}
     if kind == "ffmpeg":
         url = _ffmpeg_source_url()
         size = _content_length(url) if url else 0
         return {"kind": kind, "name": "ffmpeg",
-                "purpose": "音视频解码与音频提取",
+                "purpose": messages.msg("dep_purpose_ffmpeg"),
                 "source": url or "系统包管理器（apt/dnf/pacman/brew）",
-                "est_size": _human_size(size) if size else "约 100 MB（以实际下载为准）"}
+                "est_size": _human_size(size) if size else messages.msg("dep_size_ffmpeg_est")}
     if kind == "whisper-cli":
         return {"kind": kind, "name": "whisper-cli (whisper.cpp)",
-                "purpose": "本地语音转录",
-                "source": "依次尝试：brew 预编译包 → GitHub 官方预编译版 → 源码构建（需 git/cmake/编译器）",
-                "est_size": "仓库约 60MB + 编译时间"}
+                "purpose": messages.msg("dep_purpose_whispercli"),
+                "source": messages.msg("dep_source_whispercli"),
+                "est_size": messages.msg("dep_size_whispercli")}
     model_name = kind.split(":", 1)[1]
     fname = WHISPERCPP_GGML_MAP.get(model_name, f"ggml-{model_name}.bin")
     size = _content_length(MODEL_URL_BASE + fname) or KNOWN_MODEL_SIZES.get(fname, 0)
     return {"kind": kind, "name": fname,
-            "purpose": f"whisper 转录模型 ({model_name})",
+            "purpose": messages.msg("dep_purpose_model", model=model_name),
             "source": MODEL_URL_BASE + fname,
             "est_size": _human_size(size)}
 

@@ -7,12 +7,12 @@
 import re
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 from deps import (MissingDependencyError, _missing_dep_kinds, _find_ffmpeg,  # noqa: F401 (re-export)
                   _find_whispercpp_cli, _find_model_file)
 from slicing import make_tmpdir
+import messages
 
 NO_GPU = False
 
@@ -46,11 +46,11 @@ def _whispercpp_transcribe(file_path, model_name, want_srt):
         content = srt_file.read_text(encoding="utf-8", errors="replace")
         backend = _detect_backend_from_log(r.stderr or "")
         if NO_GPU:
-            print(f"  🖥 转录完成（已强制 CPU）: {model_name}", file=sys.stderr)
+            messages.warn("trans_done_cpu_forced", model=model_name)
         elif backend:
-            print(f"  🎮 转录完成（GPU 加速: {backend}）: {model_name}", file=sys.stderr)
+            messages.warn("trans_done_gpu", backend=backend, model=model_name)
         else:
-            print(f"  ✅ 转录完成（CPU）: {model_name}", file=sys.stderr)
+            messages.warn("trans_done_cpu", model=model_name)
         if want_srt:
             return content.strip() or None
         lines = [l.strip() for l in content.splitlines()
@@ -58,7 +58,7 @@ def _whispercpp_transcribe(file_path, model_name, want_srt):
         text = " ".join(lines).strip()
         return text if len(text) > 10 else None
     except Exception as e:
-        print(f"  ⚠️ whisper.cpp 转录错误: {e}", file=sys.stderr)
+        messages.warn("transcribe_error", err=e)
         return None
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
@@ -127,7 +127,7 @@ def extract_video_text(file_path):
     except MissingDependencyError:
         raise
     except Exception as e:
-        print(f"  ⚠️ 视频处理错误: {e}", file=sys.stderr)
+        messages.warn("video_error", err=e)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
     return None

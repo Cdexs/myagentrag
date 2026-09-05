@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 from slicing import make_tmpdir
+import messages
 
 # 受管组件根目录（与主入口共享，可用 SMART_SUMMARIZE_HOME 覆盖）
 MANAGED_HOME = Path(os.environ.get(
@@ -117,7 +118,7 @@ def _bilibili_cookie_header():
     stripped = text.strip()
     if "=" in stripped:
         return stripped
-    print(f"  ⚠️ B站 cookies 文件格式无法识别，已忽略: {cookies}", file=sys.stderr)
+    messages.warn("bilibili_cookie_bad", path=cookies)
     return ""
 
 
@@ -139,7 +140,7 @@ def extract_youtube(video_id):
         cookies_args = _yt_cookies_args()
         ytdlp = _find_ytdlp()
         if not ytdlp:
-            result["error"] = "未找到 yt-dlp，请安装依赖并确保其位于当前 Python 环境或 PATH"
+            result["error"], result["error_i18n"] = messages.err_field("ytdlp_missing")
             return result
 
         # 先取元数据（标题/作者），失败不阻塞字幕路径
@@ -193,7 +194,7 @@ def extract_bilibili(bvid):
         cookie_header = _bilibili_cookie_header()
         if cookie_header:
             headers['Cookie'] = cookie_header
-            print("  🍪 已携带 B站登录态（支持 AI 字幕等登录墙内容）", file=sys.stderr)
+            messages.warn("bilibili_cookie_ok")
         # B站是国内站：Windows 系统代理（注册表）常会把国内站转发失败（SSL EOF），
         # 默认绕过系统代理直连；用户显式设置 SMART_SUMMARIZE_PROXY 时尊重该代理。
         if os.environ.get("SMART_SUMMARIZE_PROXY"):
@@ -276,7 +277,7 @@ def extract_pdf_text(file_path):
     except ImportError:
         pass
     except Exception as e:
-        print(f"  ⚠️ pdfplumber 失败: {e}")
+        messages.warn("warn_pdfplumber_fail", err=e)
 
     try:
         try:
@@ -289,9 +290,9 @@ def extract_pdf_text(file_path):
                 text_parts.append(page.get_text())
         return '\n'.join(text_parts) if text_parts else None
     except ImportError:
-        print("  ⚠️ 未安装 pdfplumber 或 PyMuPDF")
+        messages.warn("warn_no_pdf_lib")
     except Exception as e:
-        print(f"  ⚠️ PDF 提取错误: {e}")
+        messages.warn("warn_doc_error", doc="PDF", err=e)
     return None
 
 
@@ -305,16 +306,16 @@ def extract_word_text(file_path):
             paragraphs = [para.text for para in doc.paragraphs if para.text.strip()]
             return '\n'.join(paragraphs) if paragraphs else None
         except ImportError:
-            print("  ⚠️ 未安装 python-docx")
+            messages.warn("warn_no_lib", lib="python-docx")
         except Exception as e:
-            print(f"  ⚠️ Word 提取错误: {e}")
+            messages.warn("warn_doc_error", doc="Word", err=e)
     elif ext == '.doc':
         try:
             result = subprocess.run(['pandoc', file_path, '-t', 'plain'], capture_output=True, text=True, timeout=60)
             if result.returncode == 0:
                 return result.stdout
         except Exception:
-            print("  ⚠️ pandoc 不可用")
+            messages.warn("warn_pandoc_missing")
     return None
 
 
@@ -333,9 +334,9 @@ def extract_epub_text(file_path):
                     text_parts.append(text)
         return '\n'.join(text_parts) if text_parts else None
     except ImportError:
-        print("  ⚠️ 未安装 ebooklib")
+        messages.warn("warn_no_lib", lib="ebooklib")
     except Exception as e:
-        print(f"  ⚠️ EPUB 提取错误: {e}")
+        messages.warn("warn_doc_error", doc="EPUB", err=e)
     return None
 
 
@@ -344,7 +345,7 @@ def extract_excel_text(file_path):
     try:
         from openpyxl import load_workbook
     except ImportError:
-        print("  ⚠️ 未安装 openpyxl")
+        messages.warn("warn_no_lib", lib="openpyxl")
         return None
     try:
         wb = load_workbook(file_path, read_only=True, data_only=True)
@@ -357,7 +358,7 @@ def extract_excel_text(file_path):
                     parts.append(" | ".join(cells))
         return "\n".join(parts) if parts else None
     except Exception as e:
-        print(f"  ⚠️ Excel 提取错误: {e}")
+        messages.warn("warn_doc_error", doc="Excel", err=e)
         return None
 
 
@@ -370,7 +371,7 @@ def extract_pptx_text(file_path):
         from pptx.enum.shapes import MSO_SHAPE_TYPE
         from pptx.enum.shapes import PP_PLACEHOLDER
     except ImportError:
-        print("  ⚠️ 未安装 python-pptx")
+        messages.warn("warn_no_lib", lib="python-pptx")
         return None
 
     def _shape_kind(shape):
@@ -438,5 +439,5 @@ def extract_pptx_text(file_path):
                 parts.append(f"## 幻灯片 {i}\n" + "\n".join(lines))
         return "\n\n".join(parts) if parts else None
     except Exception as e:
-        print(f"  ⚠️ PowerPoint 提取错误: {e}")
+        messages.warn("warn_doc_error", doc="PowerPoint", err=e)
         return None
