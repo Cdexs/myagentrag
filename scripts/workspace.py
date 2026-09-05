@@ -340,8 +340,9 @@ def chunks_with_offsets(text, chunk_chars=CHUNK_CHARS, overlap=CHUNK_OVERLAP_CHA
         add = e - s
         if cur_end is not None and (cur_end - cur_start) + add > chunk_chars:
             chunks.append((cur_start, cur_end))
-            new_start = max(cur_end - overlap, s)
-            cur_start, cur_end = new_start, e
+            # 重叠窗口：下一片从上一片尾部回退 overlap 字符起（保持精确子串语义）
+            cur_start = max(0, cur_end - overlap)
+            cur_end = e
         else:
             if cur_end is None:
                 cur_start = s
@@ -354,12 +355,12 @@ def chunks_with_offsets(text, chunk_chars=CHUNK_CHARS, overlap=CHUNK_OVERLAP_CHA
 # ==================== 时间戳（§6.4，v1.2） ====================
 
 def _ts_to_ms(ts):
-    """'hh:mm:ss,mmm' / 'hh:mm:ss.mmm' → 毫秒"""
-    m = re.fullmatch(r"(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})", ts.strip())
+    """'hh:mm:ss,mmm' / 'hh:mm:ss.mmm' / 'mm:ss.mmm'（WebVTT 短格式）→ 毫秒"""
+    m = re.fullmatch(r"(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[,.](\d{1,3})", ts.strip())
     if not m:
         return None
     h, mi, s, ms = m.groups()
-    return ((int(h) * 60 + int(mi)) * 60 + int(s)) * 1000 + int(ms.ljust(3, "0")[:3])
+    return ((int(h or 0) * 60 + int(mi)) * 60 + int(s)) * 1000 + int(ms.ljust(3, "0")[:3])
 
 
 def _ms_to_hms(ms):
@@ -478,7 +479,10 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
     文本来源三选一：content（文档/网页/字幕清洗文本）、srt_text（whisper SRT，
     解析为段数组）、segments（B站等自带时间戳的段数组）。
     """
-    d = _ensure_workspace(ws_name)
+    try:
+        d = _ensure_workspace(ws_name)
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
     # 构造全文与时间戳段
     char_spans = []
     if srt_text:
@@ -577,6 +581,8 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
 # ==================== 检索（§6 读取路径） ====================
 
 _FTS_KEYWORDS = {"AND", "OR", "NOT"}
+# FTS5 可限定的列名前缀（title:/author:/publisher:/publish_date:/chunk_text:）
+_COL_PREFIX_RE = re.compile(r"^(title|author|publisher|publish_date|chunk_text):(.+)$")
 
 
 def _tokenize_query(q):
@@ -598,8 +604,23 @@ def _tokenize_query(q):
             j = i
             while j < n and not q[j].isspace():
                 j += 1
-            toks.append(("word", q[i:j]))
+            word = q[i:j]
             i = j
+            if word.upper().startswith("NEAR(") and not word.endswith(")"):
+                # NEAR(a b, 5)：括号内含空格，吞并后续 token 直到括号闭合
+                depth = word.count("(") - word.count(")")
+                while depth > 0 and i < n:
+                    k = i
+                    while k < n and q[k].isspace():
+                        k += 1
+                    j2 = k
+                    while j2 < n and not q[j2].isspace():
+                        j2 += 1
+                    part = q[k:j2]
+                    word += " " + part
+                    i = j2
+                    depth += part.count("(") - part.count(")")
+            toks.append(("word", word))
     return toks
 
 
@@ -620,6 +641,14 @@ def build_fts_query(q):
             continue
         if tok.upper().startswith("NEAR("):
             parts.append(tok)
+            continue
+        cm = _COL_PREFIX_RE.match(tok)
+        if cm:
+            col, rest = cm.group(1), cm.group(2).strip('"')
+            if len(rest) >= 3:
+                parts.append(f'{col}:"{rest.replace(chr(34), chr(34) * 2)}"')
+            elif rest:
+                like_terms.append(rest)
             continue
         if tok.endswith("*") and len(tok) > 1:
             parts.append('"' + tok[:-1].replace('"', '""') + '"*')
@@ -909,11 +938,13 @@ def ws_verify(name):
             if actual != meta_count:
                 issues.append({"entry_id": eid, "issue": "chunk_count",
                                "detail": f"meta={meta_count} actual={actual}"})
-        fcount = con.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0]
-        ccount = con.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-        if fcount != ccount:
-            issues.append({"entry_id": None, "issue": "fts_rows",
-                           "detail": f"fts={fcount} chunks={ccount}"})
+        # FTS 索引与 chunks 的一致性：integrity-check(rank=1) 逐行比对索引与外部内容表。
+        # 注意 COUNT(*) 在外部内容表上会被优化为直查 chunks，检不出索引缺失/悬空。
+        try:
+            con.execute("INSERT INTO entries_fts(entries_fts, rank) VALUES('integrity-check', 1)")
+        except sqlite3.DatabaseError as e:
+            issues.append({"entry_id": None, "issue": "fts_index",
+                           "detail": str(e)[:120]})
     finally:
         con.close()
     for (eid, meta_count, _total) in entries:
