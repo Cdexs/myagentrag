@@ -190,6 +190,32 @@ def test_extract_bilibili_no_subtitles(monkeypatch):
     assert r["success"] is False and r["title"] == "无字幕"  # 无 CC 字幕 success:false 属正常
 
 
+# ---------- EPUB：常量模块路径回归（端侧验证发现，ebooklib 0.20） ----------
+
+def test_extract_epub_text(tmp_path):
+    """回归：ITEM_DOCUMENT 等常量必须取自顶层 ebooklib 模块。
+    ebooklib 0.20 起不再把常量暴露到 ebooklib.epub 命名空间，
+    旧写法 epub.ITEM_DOCUMENT 会 AttributeError → EPUB 提取整体失败。"""
+    pytest.importorskip("ebooklib")
+    from ebooklib import epub as epub_mod
+
+    book = epub_mod.EpubBook()
+    book.set_identifier("ss-test-id")
+    book.set_title("测试电子书")
+    book.set_language("zh")
+    chapter = epub_mod.EpubHtml(title="第一章", file_name="chap_01.xhtml", lang="zh")
+    chapter.content = "<html><body><p>第一章正文内容标记。</p></body></html>"
+    book.add_item(chapter)
+    book.add_item(epub_mod.EpubNcx())
+    book.add_item(epub_mod.EpubNav())
+    book.spine = ["nav", chapter]
+    p = tmp_path / "t.epub"
+    epub_mod.write_epub(str(p), book)
+
+    out = ex.extract_epub_text(str(p))
+    assert out and "第一章正文内容标记" in out
+
+
 # ---------- 网页 ----------
 
 def test_extract_web(monkeypatch):

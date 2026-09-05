@@ -334,11 +334,14 @@ def extract_word_text(file_path):
 def extract_epub_text(file_path):
     """提取 EPUB 电子书"""
     try:
+        import ebooklib
         from ebooklib import epub
         book = epub.read_epub(file_path)
         text_parts = []
         for item in book.get_items():
-            if item.get_type() == epub.ITEM_DOCUMENT:
+            # ITEM_DOCUMENT 等常量在顶层 ebooklib 模块（ebooklib 0.20 起不再暴露
+            # 到 ebooklib.epub 命名空间，官方文档亦用 ebooklib.ITEM_DOCUMENT）
+            if item.get_type() == ebooklib.ITEM_DOCUMENT:
                 html = item.get_content().decode('utf-8', errors='ignore')
                 text = re.sub(r'<[^>]+>', ' ', html)
                 text = re.sub(r'\s+', ' ', text).strip()
