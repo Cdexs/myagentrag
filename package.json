@@ -31,7 +31,11 @@
     "README.md",
     "README.en.md",
     "LICENSE",
-    "scripts/extract.py"
+    "scripts/extract.py",
+    "scripts/slicing.py",
+    "scripts/extractors.py",
+    "scripts/transcribe.py",
+    "scripts/deps.py"
   ],
   "engines": {
     "node": ">=16"

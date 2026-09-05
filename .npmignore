@@ -1,3 +1,7 @@
 publish/
 .git/
 scripts/__pycache__/
+__pycache__/
+docs/
+AGENT.md
+tests/

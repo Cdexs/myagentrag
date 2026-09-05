@@ -27,6 +27,27 @@ def _default_temp_base_dir():
 TEMP_BASE_DIR = _default_temp_base_dir()
 
 
+def _sweep_stale_tmpdirs(max_age_hours=72):
+    """清理异常退出遗留的 ss_* 临时目录（超过 max_age_hours 即删）"""
+    import datetime
+    now = datetime.datetime.now().timestamp()
+    try:
+        for p in TEMP_BASE_DIR.glob("ss_*"):
+            if p.is_dir() and now - p.stat().st_mtime > max_age_hours * 3600:
+                import shutil
+                shutil.rmtree(p, ignore_errors=True)
+    except Exception:
+        pass
+
+
+def make_tmpdir(prefix):
+    """在受管理的临时根目录下创建本次运行的工作目录"""
+    import tempfile
+    TEMP_BASE_DIR.mkdir(parents=True, exist_ok=True)
+    _sweep_stale_tmpdirs()
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=str(TEMP_BASE_DIR)))
+
+
 def _split_paragraphs(text):
     """优先空行分段，退化到单行"""
     paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]

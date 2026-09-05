@@ -4,12 +4,15 @@
 覆盖：类型检测 / YouTube / B站 / 网页 / 本地文件（文本、PDF、Word、EPUB、Excel、PowerPoint）
 原则：只提取，不调用 LLM；cookies 永不自动创建或收集。
 """
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+from slicing import make_tmpdir
 
 # 受管组件根目录（与主入口共享，可用 SMART_SUMMARIZE_HOME 覆盖）
 MANAGED_HOME = Path(os.environ.get(
@@ -154,7 +157,7 @@ def extract_youtube(video_id):
         except Exception:
             pass
 
-        tmpdir = Path(__import__("tempfile").mkdtemp(prefix="ss_yt_"))
+        tmpdir = make_tmpdir(f"ss_yt_{video_id}_")
         try:
             sub_cmd = [ytdlp, '--js-runtimes', 'node',
                        '--write-sub', '--write-auto-sub',

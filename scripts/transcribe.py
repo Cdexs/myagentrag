@@ -1,104 +1,20 @@
 # -*- coding: utf-8 -*-
 """whisper.cpp 转录模块 — smart-summarize v0.6.0 模块化拆分
 
-唯一转录引擎：查找本机 whisper.cpp 构建（含 GPU 后端检测/上报）、ffmpeg 转码、
-音频/视频转录入口。是否使用 GPU 取决于用户安装的构建（Vulkan/Metal/CUDA）。
+唯一转录引擎：ffmpeg 转码、音频/视频转录入口。是否使用 GPU 取决于用户安装的
+构建（Vulkan/Metal/CUDA）；组件定位与缺失检测见 deps.py。
 """
-import os
 import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from deps import MissingDependencyError, _missing_dep_kinds, MANAGED_BIN, MANAGED_MODELS
-from extractors import extract_text_file  # noqa: F401 (re-export for compat)
+from deps import (MissingDependencyError, _missing_dep_kinds, _find_ffmpeg,  # noqa: F401 (re-export)
+                  _find_whispercpp_cli, _find_model_file)
 from slicing import make_tmpdir
 
-
-def _default_whispercpp_dir():
-    return MANAGED_BIN
-
-
-def _default_whispercpp_models_dir():
-    return MANAGED_MODELS
-
-
-WHISPERCPP_DIR = Path(os.environ.get(
-    "SMART_SUMMARIZE_WHISPERCPP_DIR",
-    str(_default_whispercpp_dir()),
-)).expanduser()
-WHISPERCPP_MODELS_DIR = Path(os.environ.get(
-    "SMART_SUMMARIZE_WHISPERCPP_MODELS_DIR",
-    str(_default_whispercpp_models_dir()),
-)).expanduser()
-# faster-whisper 风格模型名 -> whisper.cpp ggml 模型文件
-WHISPERCPP_GGML_MAP = {
-    "large-v3-turbo": "ggml-large-v3-turbo.bin",          # fp16，参考精度（默认）
-    "large-v3-turbo-q5_0": "ggml-large-v3-turbo-q5_0.bin",  # 量化快速档
-}
-
 NO_GPU = False
-
-
-def _find_ffmpeg():
-    configured = os.environ.get("SMART_SUMMARIZE_FFMPEG")
-    if configured:
-        p = Path(configured).expanduser()
-        if p.exists() and p.is_file():
-            return str(p)
-    p = shutil.which("ffmpeg")
-    if p:
-        return p
-    exe = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
-    managed = MANAGED_BIN / exe
-    if managed.exists() and managed.is_file():
-        return str(managed)
-    return None
-
-
-def _find_whispercpp_cli():
-    configured = os.environ.get("SMART_SUMMARIZE_WHISPERCPP_CLI")
-    if configured:
-        p = Path(configured).expanduser()
-        if p.exists() and p.is_file():
-            return p
-
-    # 先查 PATH，便于 macOS/Linux 通过包管理器或自行安装后直接使用。
-    path_cli = shutil.which("whisper-cli")
-    if path_cli:
-        return Path(path_cli)
-
-    names = ("whisper-cli.exe", "whisper-cli") if os.name == "nt" else ("whisper-cli", "whisper-cli.exe")
-    for name in names:
-        for base in (WHISPERCPP_DIR, MANAGED_BIN):
-            candidate = base / name
-            if candidate.exists() and candidate.is_file():
-                return candidate
-    return None
-
-
-def _model_candidates(model_name):
-    """该模型所有可能的位置（按查找/下载优先级）"""
-    fname = WHISPERCPP_GGML_MAP.get(model_name, f"ggml-{model_name}.bin")
-    dirs = []
-    for d in (WHISPERCPP_MODELS_DIR, MANAGED_MODELS):
-        d = Path(d).expanduser()
-        if d not in dirs:
-            dirs.append(d)
-    return [d / fname for d in dirs]
-
-
-def _find_model_file(model_name):
-    for p in _model_candidates(model_name):
-        if p.exists() and p.is_file():
-            return p
-    return None
-
-
-def _whispercpp_available(model_name):
-    cli = _find_whispercpp_cli()
-    return cli is not None and _find_model_file(model_name) is not None
 
 
 def _whispercpp_transcribe(file_path, model_name, want_srt):
