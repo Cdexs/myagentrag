@@ -6,16 +6,18 @@
 
 变更（节选）：
 - v0.6: 模块化拆分——slicing.py（分片协议）/ extractors.py（提取器）/
-  transcribe.py（whisper 转录）/ deps.py（依赖检测与安装）/
+  transcribe.py（whisper 转录）/ deps.py（组件检测与安装）/
   messages.py（zh/en 双语反馈，--lang 覆盖 + locale 自动探测）/
-  workspace.py（知识库：SQLite FTS5 检索 / 时间戳索引 / 定位回放）；
-  extract.py 只保留 CLI 入口与调度
+  workspace.py（知识库：SQLite FTS5 检索 / 时间戳索引 / 定位回放）/
+  runtime.py（专用 Python 运行时：与用户系统环境彻底解耦，方案 v1.4 §8B）；
+  extract.py 只保留 CLI 入口、调度与运行时闸门
 - v3.5: 运行时检测缺失组件（ffmpeg/whisper-cli/ggml 模型），提示大小并经用户确认后下载安装，随后继续原任务
 - v3.4: 按操作系统寻找 whisper-cli，临时目录和 ffmpeg 查找跨平台化；cookies 改为显式环境变量
 - v3.3: 音频转录只走 whisper.cpp，移除 faster-whisper 回退
 """
 
 import sys
+import os
 import json
 import argparse
 import subprocess
@@ -29,9 +31,10 @@ from extractors import (
 )
 from transcribe import extract_audio_text, extract_audio_srt, extract_video_text
 import transcribe as _transcribe_mod
-from deps import MissingDependencyError, _missing_pipelib_kinds, _dep_detail, _install_dep
+from deps import MissingDependencyError, _dep_detail, _install_dep
 import messages
 import workspace
+import runtime
 
 # Windows 管道输出默认 GBK，emoji/特殊字符会 UnicodeEncodeError 崩溃，强制 UTF-8
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
@@ -82,33 +85,50 @@ def extract_local_file(file_path, output_format='json', model='large-v3-turbo'):
     return result
 
 
+# ==================== 专用运行时闸门（方案 v1.4 §8B） ====================
+
+def _switch_to_runtime(rt):
+    """以专用解释器重跑本脚本（透传全部参数），退出码透传。"""
+    print(messages.msg("runtime_switch", python=rt), file=sys.stderr)
+    proc = subprocess.run([str(rt), str(Path(__file__).resolve()), *sys.argv[1:]])
+    sys.exit(proc.returncode)
+
+
+def _runtime_gate(args):
+    """v1.4 §8B：技能只使用专用 Python 运行时，与用户系统环境彻底解耦。
+
+    - 已就绪且为当前进程 → 通过；
+    - 已就绪但当前是引导层 → 透明 re-exec；
+    - 缺失 → 复用组件确认 UI 引导安装（不回退用户环境），
+      SMART_SUMMARIZE_NO_RUNTIME=1 时跳过（测试用）。
+    """
+    if os.environ.get("SMART_SUMMARIZE_NO_RUNTIME"):
+        return
+    r = runtime.ensure_runtime(allow_install=args.download_deps)
+    if r["status"] == "ok-current":
+        return
+    if r["status"] in ("ok-switch", "install-attempt"):
+        _switch_to_runtime(r["python"])
+    # 缺失：走组件确认 UI（_handle_missing_deps），装好后由其信号切回本函数
+    result = _handle_missing_deps(args, MissingDependencyError(["runtime"]))
+    if result.get("_runtime_installed"):
+        _switch_to_runtime(runtime.find_runtime_python())
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    sys.exit(1)
+
+
 # ==================== 知识库 workspace（v1.3 §1/§4/§5） ====================
 
-# §1 专用环境：无可用解释器时给 agent 的按 OS 安装指引（安装动作须用户确认）
-ENV_INSTALL_HINTS = {
-    "windows": "winget install --id Python.Python.3.12",
-    "macos": "brew install python3",
-    "linux": "apt-get install python3",
-}
-
-
 def _fts_gate(args):
-    """workspace 功能前置：FTS5/trigram 环境检测。必要时切换解释器重跑或输出结构化错误。"""
-    r = workspace.ensure_fts_env(allow_install=args.download_deps)
-    if r["status"] == "ok":
+    """FTS5/trigram 安全网：专用运行时保证 trigram 可用，此检查正常情况下恒通过。"""
+    ok, info = workspace.check_fts_env()
+    if ok:
         return
-    if r["status"] == "switch":
-        print(messages.msg("env_fts_switch", python=" ".join(r["python_cmd"])), file=sys.stderr)
-        script = Path(__file__).resolve()
-        proc = subprocess.run([*r["python_cmd"], str(script), *sys.argv[1:]])
-        sys.exit(proc.returncode)
     err = messages.err_result("env_fts_missing")
     err.update({"capability": "SQLite FTS5 + trigram tokenizer (SQLite >= 3.34)",
-                "current": r.get("current"),
-                "install_attempted": r.get("install_attempted", False),
+                "current": info,
                 "hint": messages.msg("env_fts_hint"),
-                "hint_i18n": messages.msg_pair("env_fts_hint"),
-                "install_hint": ENV_INSTALL_HINTS})
+                "hint_i18n": messages.msg_pair("env_fts_hint")})
     print(json.dumps(err, ensure_ascii=False, indent=2))
     sys.exit(1)
 
@@ -202,31 +222,8 @@ def _run_extraction(args):
     target = args.url or args.file
     content_type = detect_content_type(target)
 
-    # Python 库依赖预检（与 ffmpeg/whisper 组件同一确认机制）：
-    # 只在实际用到该格式时检测，缺失则列出清单，确认后用当前解释器 pip 安装。
-    lib_groups = []
-    if content_type == "youtube":
-        lib_groups.append("yt-dlp")
-    elif content_type in ("bilibili", "web"):
-        lib_groups.append("requests")
-    elif content_type in ("audio", "video"):
-        # 下载 ffmpeg/whisper 组件的确认下载链路本身依赖 requests，
-        # 全新环境下先确保它可用，否则用户确认后安装会崩
-        lib_groups.append("requests")
-    elif content_type == "pdf":
-        lib_groups.append("pdf")
-    elif content_type == "epub":
-        lib_groups.append("epub")
-    elif content_type == "excel":
-        lib_groups.append("excel")
-    elif content_type == "pptx":
-        lib_groups.append("pptx")
-    elif content_type == "word" and Path(args.file).suffix.lower() == ".docx":
-        lib_groups.append("docx")
-    if lib_groups:
-        kinds = _missing_pipelib_kinds(lib_groups)
-        if kinds:
-            raise MissingDependencyError(kinds)
+    # 扩展库随专用运行时预装（v1.4 §8B），无 pip 库预检；
+    # ffmpeg/whisper-cli/ggml 组件缺失由 transcribe 路径抛 MissingDependencyError
 
     if content_type == "youtube":
         video_id = extract_video_id(args.url)
@@ -295,6 +292,9 @@ def _handle_missing_deps(args, err):
     if not all_ok:
         return messages.err_result("deps_partial_fail") | {"missing": items}
     print(messages.msg("deps_ready"), file=sys.stderr)
+    if "runtime" in err.kinds:
+        # 引导层装完运行时不能继续提取（扩展库在专用解释器里），交由闸门 re-exec
+        return {"success": True, "_runtime_installed": True}
     return _run_extraction(args)
 
 def main():
@@ -338,6 +338,9 @@ def main():
     args = parser.parse_args()
     messages.init(args.lang)
     _transcribe_mod.NO_GPU = args.no_gpu
+
+    # 专用运行时闸门（v1.4 §8B）：缺失则引导安装，就绪则透明 re-exec（v1.4 决策 3：不回退用户环境）
+    _runtime_gate(args)
 
     if args.chunk and not args.entry:
         parser.error(messages.msg("chunk_needs_entry"))

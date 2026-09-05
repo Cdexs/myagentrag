@@ -1,24 +1,7 @@
 # -*- coding: utf-8 -*-
-"""test_deps — 组件定位 / 缺失检测 / 清单双语"""
+"""test_deps — 组件定位 / 缺失检测 / 清单双语（v1.4：pip 组检测已随专用运行时移除）"""
 import deps
 import messages
-
-
-def test_import_ok():
-    assert deps._import_ok("json") is True
-    assert deps._import_ok("no_such_module_xyz") is False
-
-
-def test_missing_pipelib_kinds_present(monkeypatch):
-    # requests 已装（测试环境必有）→ 无缺失
-    assert deps._missing_pipelib_kinds(["requests"]) == []
-
-
-def test_missing_pipelib_kinds_missing(monkeypatch):
-    monkeypatch.setattr(deps, "_import_ok", lambda name: False)
-    monkeypatch.setattr(deps.shutil, "which", lambda name: None)
-    kinds = deps._missing_pipelib_kinds(["excel", "yt-dlp"])
-    assert kinds == ["pip:excel", "pip:yt-dlp"]
 
 
 def test_human_size():
@@ -65,18 +48,37 @@ def test_missing_dep_kinds_all_found(tmp_path, monkeypatch):
     assert deps._missing_dep_kinds("large-v3-turbo") == []
 
 
-def test_dep_detail_bilingual(tmp_path):
+def test_dep_detail_ffmpeg_and_model(tmp_path):
     messages.set_lang("zh")
-    d = deps._dep_detail("pip:excel")
-    assert d["purpose"] == "Excel (.xlsx/.xlsm) 表格文本提取"
+    d = deps._dep_detail("ffmpeg")
+    assert d["purpose"] == "音视频解码与音频提取"
     messages.set_lang("en")
-    d = deps._dep_detail("pip:excel")
-    assert d["purpose"] == "Excel (.xlsx/.xlsm) spreadsheet text extraction"
+    d = deps._dep_detail("ffmpeg")
+    assert d["purpose"] == "Audio/video decoding and audio extraction"
     messages.set_lang("zh")
     d = deps._dep_detail("model:large-v3-turbo")
     assert d["purpose"] == "whisper 转录模型 (large-v3-turbo)"
     assert d["source"].startswith("https://huggingface.co/")
     assert d["est_size"]  # 已知大小或实际大小
+
+
+def test_dep_detail_runtime(tmp_path):
+    """专用运行时作为组件出现在确认 UI（v1.4 §8B）"""
+    messages.set_lang("zh")
+    d = deps._dep_detail("runtime")
+    assert d["purpose"].startswith("技能专用 Python 运行时")
+    assert "runtime/" in d["source"]
+    messages.set_lang("en")
+    d = deps._dep_detail("runtime")
+    assert d["purpose"].startswith("Skill-dedicated Python runtime")
+
+
+def test_install_dep_unknown_kind():
+    import pytest
+    with pytest.raises(RuntimeError):
+        deps._install_dep("nope:kind")
+    with pytest.raises(RuntimeError):
+        deps._install_dep("pip:excel")  # v1.4：pip 组机制已随专用运行时移除
 
 
 def test_cublas_assets_restored():
@@ -85,28 +87,3 @@ def test_cublas_assets_restored():
         "whisper-cublas-11.8.0-bin-x64.zip",
         "whisper-cublas-12.4.0-bin-x64.zip",
     ]
-
-
-def test_install_dep_unknown_kind():
-    import pytest
-    with pytest.raises(RuntimeError):
-        deps._install_dep("nope:kind")
-
-
-def test_epub_group_uses_ebooklib_import_name(monkeypatch):
-    """回归（端侧验证发现，v0.5.x 起存量）：epub 组名≠导入名（ebooklib），
-    未声明 import 时 _missing_pipelib_kinds 会 import 不存在的 "epub" 模块，
-    导致已安装 ebooklib 仍永远误报缺失。"""
-    real = deps._import_ok
-    # 模拟：ebooklib 已安装、名为 epub 的模块不存在
-    monkeypatch.setattr(deps, "_import_ok",
-                        lambda name: True if name == "ebooklib" else real(name))
-    assert deps._missing_pipelib_kinds(["epub"]) == []
-
-
-def test_pip_groups_import_names_declared():
-    """声明完整性：组名与实际导入名不一致的组必须显式声明 import 字段。"""
-    assert deps.PIP_LIB_GROUPS["epub"]["import"] == "ebooklib"
-    assert deps.PIP_LIB_GROUPS["docx"]["import"] == "docx"
-    assert deps.PIP_LIB_GROUPS["excel"]["import"] == "openpyxl"
-    assert deps.PIP_LIB_GROUPS["pptx"]["import"] == "pptx"

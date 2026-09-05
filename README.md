@@ -15,6 +15,7 @@
 ## 特性
 
 - **纯提取**：不调用任何 LLM，输出 JSON/文本/SRT，由当前 agent 阅读总结
+- **专用运行时隔离**：独立 CPython 3.12 + 锁定版本扩展库装在 `~/.smart-summarize/runtime/`，与用户系统 Python 彻底解耦——不装库到用户环境、不设系统环境变量、不被用户环境变化影响
 - **零硬编码路径**：所有组件按 环境变量 → PATH → 用户目录（`~/.smart-summarize`）的顺序发现
 - **运行时按需安装**：首次使用音视频转录时检测缺失组件，列出名称/用途/来源/预计大小，经用户确认后下载安装，随后自动继续；不会静默下载
 - **知识库 workspace**：SQLite FTS5+trigram 全文检索（标准库零依赖）、来源副本、偏移精读、13 项管理操作、音视频时间戳定位回放
@@ -47,9 +48,8 @@ python node_modules/@cdexs/smart-summarize/scripts/extract.py --file demo.pdf
 把本目录放到 agent 的技能目录（如 `~/.pi/agent/skills/smart-summarize`），或直接在本目录运行：
 
 ```bash
-# 依赖（可选，纯 Python）：首次用到某格式时会运行时检测并提示确认安装，
-# 开箱即用；如需预装可执行：
-python -m pip install requests pdfplumber pymupdf python-docx ebooklib yt-dlp
+# 依赖无需预装：首次使用时自动安装技能专用运行时（独立 CPython 3.12 + 锁定扩展库），
+# 与系统 Python 完全隔离；引导层仅需 Python ≥3.8（仅标准库）
 
 python scripts/extract.py --url "https://www.bilibili.com/video/BVxxxx"   # B站字幕
 python scripts/extract.py --file document.pdf                              # PDF
@@ -65,17 +65,13 @@ python scripts/extract.py --file lecture.mp3 --output srt                  # SRT
 
 | 功能 | 依赖 | 说明 |
 | --- | --- | --- |
-| 所有功能 | **Python 3.9+** | 始终需要；默认用 PATH 中的 `python`，或由 `SMART_SUMMARIZE_PYTHON` 指定 |
-| 网页正文 / B站字幕 | `requests`（pip） | 首次使用时检测并确认安装；组件下载链路也依赖它 |
-| PDF | `pdfplumber` 或 `PyMuPDF`（任一即可） | 同上，首次检测、确认后 pip 安装 |
-| Word `.docx` | `python-docx` | 同上 |
-| EPUB | `ebooklib` | 同上 |
-| YouTube 字幕 | `yt-dlp` | 同上；另见下行 Node.js |
+| 引导启动 | **Python ≥3.8**（仅标准库） | 启动技能并管理专用运行时；不要求安装任何第三方库 |
+| 全部提取功能 | **专用运行时**（自动安装） | 首次使用列出名称/来源/大小（约 150 MB 下载），经确认后自动安装独立 CPython 3.12 + 锁定扩展库（requests/pdfplumber/PyMuPDF/python-docx/ebooklib/openpyxl/python-pptx/yt-dlp）到 `~/.smart-summarize/runtime/`，与系统 Python 彻底隔离 |
 | YouTube 受限内容 | **Node.js**（`node` 在 PATH） | yt-dlp 需 JS runtime；未安装时见故障排除 |
 | Word `.doc`（老格式） | **pandoc**（PATH） | 仅需此格式时装；不自动下载 |
 | 音视频转录 | **ffmpeg + whisper-cli + ggml 模型** | 首次使用时列出名称/用途/来源/预计大小（合计约 1.6–2.4 GB），经确认后自动下载到 `~/.smart-summarize`，也可用环境变量指向已有安装 |
 
-提示：所有 Python 库与组件都**无需预先安装**——首次用到某类内容时脚本会自动检测，并经确认后代为安装。
+提示：所有 Python 库与组件都**无需预先安装**——首次用到时脚本会自动检测，并经确认后代为安装；扩展库全部随专用运行时预装，与用户系统 Python 零接触。
 
 ## 环境变量一览
 
@@ -92,6 +88,8 @@ python scripts/extract.py --file lecture.mp3 --output srt                  # SRT
 | `SMART_SUMMARIZE_WHISPERCPP_CMAKE_FLAGS` | 源码构建 whisper.cpp 时追加的 CMake 参数                                          |
 | `SMART_SUMMARIZE_WORKSPACES_DIR`         | 知识库 workspace 根目录（默认 `~/.smart-summarize/workspaces/`）                  |
 | `SMART_SUMMARIZE_LANG`                   | 反馈语言 zh/en（`--lang` 参数优先，默认按系统语言自动探测）                       |
+| `SMART_SUMMARIZE_PIP_INDEX_URL`          | 专用运行时装库的 pip 镜像（国内建议清华源）                                       |
+| `SMART_SUMMARIZE_PYTHON_MIRROR`          | 专用运行时 Python 本体下载源镜像（默认 GitHub Release）                            |
 
 ## 超大文档总结优化（slice protocol）
 

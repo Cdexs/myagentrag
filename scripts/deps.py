@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
 """运行时依赖体系 — smart-summarize v0.6.0 模块化拆分
 
-组件依赖检测与确认安装（ffmpeg/whisper-cli/ggml 模型/pip 库）与各组件定位：
+组件定位、缺失检测与确认安装（专用 Python 运行时 / ffmpeg / whisper-cli / ggml 模型）：
 缺失时列出清单（名称/用途/来源/预计大小），经用户确认后下载安装并继续原任务。
 
-依赖方向：slicing ← deps ← transcribe ← extract（extractors 独立）。
+v1.4（方案 §8B）：扩展库随专用运行时预装（scripts/requirements-libs.txt），
+不再检测用户环境、不再向用户解释器 pip 安装任何库；pip 组检测逻辑已移除。
+
+依赖方向：slicing ← deps ← transcribe ← extract；runtime ← deps（惰性互引）；
+extractors 独立。
 """
-import importlib
 import os
 import platform
 import shutil
@@ -112,72 +115,10 @@ def _whispercpp_available(model_name):
 # ==================== 运行时依赖检测与确认下载 ====================
 
 class MissingDependencyError(Exception):
-    """所需组件缺失；kinds: 'ffmpeg' / 'whisper-cli' / 'model:<name>' / 'pip:<group>'"""
+    """所需组件缺失；kinds: 'runtime' / 'ffmpeg' / 'whisper-cli' / 'model:<name>'"""
     def __init__(self, kinds):
         self.kinds = kinds
         super().__init__("缺少组件: " + ", ".join(kinds))
-
-# ==================== Python 库依赖（首次使用时运行时检测、确认后安装） ====================
-# 设计原则与 ffmpeg/whisper 组件一致：初始安装不预装、不自动下载；
-# 实际用到该格式时才检测，列出清单经用户确认后用当前解释器 pip 安装。
-PIP_LIB_GROUPS = {
-    "pdf": {
-        "packages": ["pdfplumber", "pymupdf"],
-        "purpose": "PDF 文本提取（pdfplumber 或 PyMuPDF 任一即可）",
-    },
-    "docx": {
-        "packages": ["python-docx"],
-        "import": "docx",
-        "purpose": "Word (.docx) 文本提取",
-    },
-    "excel": {
-        "packages": ["openpyxl"],
-        "import": "openpyxl",
-        "purpose": "Excel (.xlsx/.xlsm) 表格文本提取",
-    },
-    "pptx": {
-        "packages": ["python-pptx"],
-        "import": "pptx",
-        "purpose": "PowerPoint (.pptx) 幻灯片文本提取",
-    },
-    "epub": {
-        "packages": ["ebooklib"],
-        "import": "ebooklib",
-        "purpose": "EPUB 电子书文本提取",
-    },
-    "yt-dlp": {
-        "packages": ["yt-dlp"],
-        "purpose": "YouTube 字幕与元数据提取",
-    },
-    "requests": {
-        "packages": ["requests"],
-        "purpose": "网页正文与 B 站字幕提取",
-    },
-}
-
-def _import_ok(name):
-    try:
-        importlib.import_module(name)
-        return True
-    except Exception:
-        return False
-
-def _missing_pipelib_kinds(groups):
-    """按用途组检测缺失的 Python 库，返回 'pip:<group>' kind 列表。"""
-    kinds = []
-    for g in groups:
-        if g == "pdf":
-            if not (_import_ok("pdfplumber") or _import_ok("pymupdf") or _import_ok("fitz")):
-                kinds.append(f"pip:{g}")
-        elif g == "yt-dlp":
-            if not _import_ok("yt_dlp") and not shutil.which("yt-dlp"):
-                kinds.append(f"pip:{g}")
-        else:
-            spec = PIP_LIB_GROUPS.get(g)
-            import_name = spec.get("import", g) if spec else ("docx" if g == "docx" else g)
-            if spec and not _import_ok(import_name):
-                kinds.append(f"pip:{g}")
-    return kinds
 
 MODEL_URL_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/"
 WHISPERCPP_REPO_URL = "https://github.com/ggml-org/whisper.cpp"
@@ -492,19 +433,11 @@ def _missing_dep_kinds(model_name):
 
 def _dep_detail(kind):
     import messages
-    if kind.startswith("pip:"):
-        group = kind.split(":", 1)[1]
-        spec = PIP_LIB_GROUPS.get(group)
-        pkgs = " ".join(spec["packages"]) if spec else group
-        purpose_key = f"dep_purpose_{group}"
-        if purpose_key in messages.MESSAGES:
-            purpose = messages.msg(purpose_key)
-        else:
-            purpose = spec["purpose"] if spec else messages.msg("dep_unknown_group")
-        return {"kind": kind, "name": pkgs,
-                "purpose": purpose,
-                "source": messages.msg("dep_source_pip", python=sys.executable, pkgs=pkgs),
-                "est_size": messages.msg("dep_size_pip")}
+    if kind == "runtime":
+        return {"kind": kind, "name": "Python 专用运行时 (smart-summarize runtime)",
+                "purpose": messages.msg("dep_purpose_runtime"),
+                "source": messages.msg("dep_source_runtime"),
+                "est_size": messages.msg("dep_size_runtime")}
     if kind == "ffmpeg":
         url = _ffmpeg_source_url()
         size = _content_length(url) if url else 0
@@ -526,16 +459,10 @@ def _dep_detail(kind):
             "est_size": _human_size(size)}
 
 def _install_dep(kind):
-    if kind.startswith("pip:"):
-        group = kind.split(":", 1)[1]
-        spec = PIP_LIB_GROUPS[group]
-        cmd = [sys.executable, "-m", "pip", "install", "--upgrade"] + spec["packages"]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        if r.returncode != 0:
-            manual = " ".join(cmd)
-            tail = ((r.stderr or "") + (r.stdout or "")).strip()[-300:]
-            raise RuntimeError(f"pip 安装失败: {tail}；可手动执行以下命令 {manual}")
-        return f"{Path(sys.executable)} -m pip（{' '.join(spec['packages'])}）"
+    if kind == "runtime":
+        # 惰性导入避免 deps↔runtime 循环（runtime 顶部 import deps）
+        import runtime
+        return runtime.install_runtime()
     if kind == "whisper-cli":
         return install_whispercli()
     if kind.startswith("model:"):

@@ -7,7 +7,8 @@ workspace = 目录（~/.smart-summarize/workspaces/<名>/）：
   entries/<id>/   meta.json + full.md（全量提取文本）+ transcript.json（音视频时间戳）
 
 检索引擎零外部依赖（Python 标准库 sqlite3），trigram 需 SQLite ≥3.34；
-环境不满足时探测本机其他解释器并自动切换重跑（§1 不做降级检索）。
+v1.4 起技能固定运行在专用 Python 运行时内（~/.smart-summarize/runtime/），
+trigram 由其保证，与用户系统 Python 环境彻底解耦（方案 §8B）。
 
 与 v1.3 §2.2 的实现差异（已在设计文档补记）：chunks 表冗余存储
 title/author/publisher/publish_date 四列副本——FTS5 外部内容表按 rowid 从
@@ -35,17 +36,17 @@ AUDIO_EXTS = {'.mp3', '.wav', '.aac', '.m4a', '.flac', '.ogg', '.wma'}
 VIDEO_EXTS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm'}
 AV_EXTS = AUDIO_EXTS | VIDEO_EXTS
 
-# ==================== 环境检测（§1：FTS5/trigram 冒烟 + 解释器探测切换） ====================
+# ==================== 环境检测（FTS5/trigram；v1.4 起由专用运行时保证） ====================
 
 FTS_PROBE_CODE = ("import sqlite3;c=sqlite3.connect(':memory:');"
                   "c.execute(\"CREATE VIRTUAL TABLE p USING fts5(x, tokenize='trigram')\");"
                   "print(sqlite3.sqlite_version)")
-_PYTHON_CACHE = MANAGED_HOME / "workspace-python.json"
 
 
 def check_fts_env(python_cmd=None):
     """探测解释器的 FTS5+trigram 能力。python_cmd=None 探测当前解释器。
-    返回 (ok, info)；info 含 python / sqlite_version / error。"""
+    返回 (ok, info)；info 含 python / sqlite_version / error。
+    v1.4 起技能固定运行在专用运行时内（恒可用），本函数保留作安全网与测试用。"""
     if python_cmd is None:
         info = {"python": sys.executable, "sqlite_version": sqlite3.sqlite_version}
         try:
@@ -72,100 +73,13 @@ def check_fts_env(python_cmd=None):
     return False, info
 
 
-def _fts_candidate_cmds():
-    """候选解释器命令（跳过当前解释器由调用方处理；SMART_SUMMARIZE_PYTHON 优先）"""
-    cmds = []
-    configured = os.environ.get("SMART_SUMMARIZE_PYTHON")
-    if configured:
-        cmds.append([configured])
-    if os.name == "nt":
-        for n in range(14, 8, -1):
-            cmds.append(["py", f"-3.{n}"])
-        cmds.append(["py", "-3"])
-        cmds += [["python3"], ["python"]]
-    else:
-        for n in range(14, 8, -1):
-            cmds.append([f"python3.{n}"])
-        cmds += [["python3"], ["python"]]
-    return cmds
-
-
-def find_fts_python():
-    """探测本机支持 FTS5/trigram 的解释器，返回命令列表（如 ["py", "-3.12"]）或 None。"""
-    for cmd in _fts_candidate_cmds():
-        ok, _ = check_fts_env(cmd)
-        if ok:
-            return cmd
-    return None
-
-
-def _load_python_cache():
-    try:
-        data = json.loads(_PYTHON_CACHE.read_text(encoding="utf-8"))
-        return data.get("python_cmd")
-    except Exception:
-        return None
-
-
-def _save_python_cache(python_cmd, sqlite_version):
-    try:
-        _PYTHON_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        _PYTHON_CACHE.write_text(json.dumps(
-            {"python_cmd": [str(c) for c in python_cmd],
-             "sqlite_version": sqlite_version}, ensure_ascii=False), encoding="utf-8")
-    except Exception:
-        pass
-
-
-def _install_python_attempt():
-    """--download-deps（用户已确认）时的尽力安装：按 OS 调系统包管理器装 Python 3。"""
-    if os.name == "nt":
-        cmd = ["winget", "install", "--id", "Python.Python.3.12", "-e", "--silent",
-               "--accept-package-agreements", "--accept-source-agreements"]
-    elif sys.platform == "darwin":
-        cmd = ["brew", "install", "python3"]
-    else:
-        sudo = [] if os.geteuid() == 0 else ["sudo", "-n"]
-        cmd = sudo + ["apt-get", "install", "-y", "python3"]
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
-        return r.returncode == 0
-    except Exception:
-        return False
-
-
 def ensure_fts_env(allow_install=False):
-    """确保 FTS5/trigram 可用（§1 自动检测与专用环境机制）。
+    """当前解释器 FTS5/trigram 体检（诊断用）。
 
-    返回 {"status": "ok"|"switch"|"error", ...}：
-    - ok:     当前解释器直接可用；
-    - switch: 探测到可用解释器（缓存/全机扫描），调用方以 python_cmd 重跑本脚本；
-    - error:  全机无可用解释器（allow_install 时已按用户确认尝试安装）。
-    """
+    v1.4 决策 3：技能固定使用专用运行时（trigram 由其保证），用户解释器
+    探测/切换机制已废除——本函数不再触发任何安装，只报告当前状态。"""
     ok, info = check_fts_env()
-    if ok:
-        return {"status": "ok", **info}
-    cached = _load_python_cache()
-    if cached:
-        ok2, info2 = check_fts_env(cached)
-        if ok2:
-            return {"status": "switch", "python_cmd": cached, **info2}
-    alt = find_fts_python()
-    if alt:
-        ok3, info3 = check_fts_env(alt)
-        _save_python_cache(alt, info3.get("sqlite_version", ""))
-        return {"status": "switch", "python_cmd": alt, **info3}
-    installed = False
-    if allow_install:
-        print(messages.msg("env_fts_install_try"), file=sys.stderr)
-        installed = _install_python_attempt()
-        if installed:
-            alt2 = find_fts_python()
-            if alt2:
-                ok4, info4 = check_fts_env(alt2)
-                _save_python_cache(alt2, info4.get("sqlite_version", ""))
-                return {"status": "switch", "python_cmd": alt2, **info4}
-    return {"status": "error", "current": info, "install_attempted": installed}
+    return {"status": "ok" if ok else "error", **info}
 
 
 # ==================== 路径与命名（§2 / §3） ====================

@@ -1,0 +1,11 @@
+# smart-summarize 专用运行时扩展库（方案 v1.4 §8B）
+# 安装到 ~/.smart-summarize/runtime/venv，与用户系统 Python 完全隔离。
+# 最低版本下限在此声明；实际安装版本记录于 runtime/manifest.json。
+requests>=2.31
+yt-dlp>=2024.10.22
+pdfplumber>=0.11
+pymupdf>=1.24
+python-docx>=1.1
+ebooklib>=0.20
+openpyxl>=3.1
+python-pptx>=1.0

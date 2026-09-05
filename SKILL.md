@@ -1,7 +1,7 @@
 ---
 name: smart-summarize
 description: 智能内容提取工具：提取 YouTube/B站视频字幕、网页正文、本地文件（PDF/Word/Excel/PowerPoint/EPUB/文本）与音视频语音转录；可选知识库 workspace（SQLite FTS5 全文检索 + 音视频时间戳定位回放）。只提取，不调用 LLM；提取结果由当前 agent 阅读并总结。
-compatibility: Windows / macOS / Linux / WSL + Python 3.9+；音视频转录另需 ffmpeg、whisper.cpp 及 ggml 模型；知识库需 SQLite ≥3.34（CPython 官方构建默认满足）
+compatibility: Windows / macOS / Linux / WSL；引导层任意 Python ≥3.8（仅标准库），首次使用自动安装专用运行时（含 SQLite ≥3.34）；音视频转录另需 ffmpeg、whisper.cpp 及 ggml 模型
 ---
 
 # 智能内容提取工具 (smart-summarize)
@@ -24,35 +24,17 @@ compatibility: Windows / macOS / Linux / WSL + Python 3.9+；音视频转录另�
 | **音频**         | `.mp3`, `.wav`, `.aac`, `.m4a`, `.flac`, `.ogg`, `.wma` | ffmpeg 转 PCM 后用 whisper.cpp 转录                                         |
 | **视频**         | `.mp4`, `.avi`, `.mkv`, `.mov`, `.wmv`, `.flv`, `.webm` | 先提取内置字幕，无字幕则提取音频转录                                                     |
 
-## 安装依赖
+## 安装依赖（专用运行时，与系统 Python 彻底解耦）
 
-**无需要预先安装任何 Python 库。** 首次提取某类内容时（如第一个 PDF），脚本会运行时检测所需库：缺失时列出名称/用途/安装命令，经用户确认后用当前解释器 `pip` 安装并自动继续；agent 在征得用户同意后可加 `--download-deps` 非交互执行。
+技能使用**专用 Python 运行时**（独立 CPython 3.12 + 锁定版本的扩展库），安装到 `~/.smart-summarize/runtime/`，与用户系统的 Python 环境完全隔离——不向用户环境安装任何库，也不依赖其安装了什么版本。
 
-各功能对应的库（仅供参考，通常无需手动装）：
+- **首次使用自动引导安装**：检测到专用运行时缺失时，列出名称/来源/预计大小（约 150 MB 下载），经用户确认后自动下载安装（agent 征得同意后可加 `--download-deps` 非交互执行），完成后自动继续原任务；
+- **引导层要求极低**：任意 Python ≥3.8（仅标准库）即可启动技能；扩展库（requests / yt-dlp / pdfplumber / PyMuPDF / python-docx / ebooklib / openpyxl / python-pptx）全部随专用运行时预装并锁定版本——技能测试通过的版本矩阵即用户实际运行的矩阵；
+- Python 本体来自 python-build-standalone 独立构建（SHA256SUMS 校验）；下载源可用 `SMART_SUMMARIZE_PYTHON_MIRROR` 覆盖，pip 镜像可用 `SMART_SUMMARIZE_PIP_INDEX_URL`（国内网络建议配置）；
+- 重置/升级：删除 `~/.smart-summarize/runtime/` 目录后重跑即可（用户知识库数据在 `workspaces/`，组件在 `bin/`、`models/`，均不受影响）；
+- 音视频功能还需要 `ffmpeg`（首次使用按同一确认机制自动安装）；`.doc` 老格式需要 `pandoc`（不自动下载）。
 
-```bash
-PYTHON="${SMART_SUMMARIZE_PYTHON:-python}"
-"$PYTHON" -m pip install --upgrade requests pdfplumber pymupdf python-docx ebooklib yt-dlp
-```
-
-入口优先使用 `SMART_SUMMARIZE_PYTHON`，未设置时使用 PATH 中的 `python`。技能不会假设某台机器上的 Python、venv 或磁盘路径。
-
-推荐使用独立环境（Unix/macOS/Linux）：
-
-```bash
-python -m venv .venv
-.venv/bin/python -m pip install --upgrade requests pdfplumber pymupdf python-docx ebooklib yt-dlp
-export SMART_SUMMARIZE_PYTHON="$PWD/.venv/bin/python"
-```
-
-Windows PowerShell：
-
-```powershell
-$Python = if ($env:SMART_SUMMARIZE_PYTHON) { $env:SMART_SUMMARIZE_PYTHON } else { "python" }
-& $Python -m pip install --upgrade requests pdfplumber pymupdf python-docx ebooklib yt-dlp
-```
-
-音视频功能还需要单独安装 `ffmpeg`；`.doc` 文件还需要 `pandoc`。两者应安装到 PATH，或分别通过 `SMART_SUMMARIZE_FFMPEG`、系统包管理器配置。
+入口优先使用 `SMART_SUMMARIZE_PYTHON` 作为引导解释器，未设置时使用 PATH 中的 `python`——它只负责启动技能并切换到专用运行时，不需要安装任何第三方库。
 
 ## 运行机制
 
@@ -63,7 +45,8 @@ scripts/extract.py      CLI 入口与调度
 scripts/slicing.py      大文档分片协议（slice protocol）
 scripts/extractors.py   内容提取器（YouTube/B站/网页/文档格式）
 scripts/transcribe.py   whisper.cpp 转录（GPU 后端识别上报）
-scripts/deps.py         组件定位、缺失检测与确认安装（ffmpeg/whisper/模型/pip 库）
+scripts/deps.py         组件定位、缺失检测与确认安装（专用运行时/ffmpeg/whisper/模型）
+scripts/runtime.py      专用 Python 运行时（独立 CPython + 锁定扩展库，与系统 Python 解耦）
 scripts/messages.py     zh/en 双语反馈（--lang 覆盖 / locale 自动探测）
 scripts/workspace.py    知识库 workspace（FTS5 检索 / 时间戳索引 / 定位回放）
 tests/                  自动化测试（test_<模块>.py）
@@ -289,9 +272,9 @@ agent 收到清单后的标准流程（写入 SKILL.md 供所有 agent 遵循）
 - VLC/mpv/PotPlayer 支持从命中时间点起播（可加 `--duration` 限定时长）；系统默认方式只能从头播（结果标注 `degraded: true`）；
 - **检测不到播放器时输出结构化 JSON**（`candidates`/`hint`/`play_cmd: null`）交由 agent 处理（向用户说明、经确认后代装 VLC 等），技能不弹界面。
 
-### 环境要求（不降级）
+### 环境要求（由专用运行时保证）
 
-workspace 需要 SQLite ≥3.34（FTS5 trigram）。CPython 官方构建（python.org/Homebrew/Xcode CLT/发行版）3.9+ 默认满足；当前解释器不满足时技能自动探测本机其他解释器并切换重跑（优先 `SMART_SUMMARIZE_PYTHON`），全部失败时输出结构化错误与按 OS 的安装指引交由 agent 转述——**宁可明确报错，不做低精度降级检索**。
+workspace 依赖 SQLite ≥3.34（FTS5 trigram）。v1.4 起技能固定运行在专用运行时内（独立 CPython 3.12，内置 SQLite 3.5x），trigram 恒可用、与用户系统 Python 无关；运行时缺失时由引导安装流程补齐——**宁可明确报错，不做低精度降级检索**。
 
 ### 目录结构（workspace 自包含，拷走目录即完成迁移）
 
@@ -344,9 +327,10 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 
 ## 更新日志
 
-### v0.6.0（模块化拆分 + 知识库 workspace + 双语反馈）
+### v0.6.0（模块化拆分 + 专用运行时 + 知识库 workspace + 双语反馈）
 
-- **模块化**：单文件 extract.py（1375 行）拆分为 slicing / extractors / transcribe / deps / messages / workspace 六个模块，CLI 只保留入口与调度（纯重构，按 7.6 规则并入本版本不发单独版）；
+- **专用 Python 运行时（v1.4 方案）**：独立 CPython 3.12（python-build-standalone，SHA256SUMS 校验）+ 锁定版本扩展库安装到 `~/.smart-summarize/runtime/`，与用户系统 Python 彻底解耦——不向用户环境装库、不设系统环境变量、首次使用经确认自动安装；引导层仅需任意 Python ≥3.8（标准库）；根治用户环境依赖版本不可控类缺陷；
+- **模块化**：单文件 extract.py（1375 行）拆分为 slicing / extractors / transcribe / deps / messages / workspace / runtime 七个模块，CLI 只保留入口、调度与运行时闸门（纯重构，按 7.6 规则并入本版本不发单独版）；
 - **新增知识库 workspace**：SQLite FTS5+trigram 全文检索（标准库零依赖、BM25 排序、snippet 摘要、布尔/前缀/NEAR/列限定查询、<3 字自动 LIKE 回退）、来源文件副本、full.md 偏移精读、13 项管理操作、完整性校验（含 FTS 索引逐行比对）、索引重建/VACUUM、跨库检索；
 - **音视频时间戳索引与定位回放**：入库音视频统一 whisper SRT 转录 → 分片带 start_ms/end_ms → 播放器探测链按 OS 参数化定位播放；缺播放器输出结构化 JSON 交由 agent 处理；
 - **双语反馈**：messages.py 集中管理 zh/en 文案，`--lang` 显式覆盖 / locale 自动探测；自有错误文案带 `error_i18n` 双份；

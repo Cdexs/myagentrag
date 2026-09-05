@@ -123,13 +123,22 @@ def _bilibili_cookie_header():
 
 
 def _find_ytdlp():
-    """优先使用当前 Python 环境安装的 yt-dlp，再查 PATH。"""
+    """优先专用运行时 venv（库随运行时预装），其次当前 Python 环境与 PATH。"""
     names = ("yt-dlp.exe", "yt-dlp") if os.name == "nt" else ("yt-dlp", "yt-dlp.exe")
-    python_bin_dir = Path(sys.executable).resolve().parent
-    for name in names:
-        candidate = python_bin_dir / name
-        if candidate.exists() and candidate.is_file():
-            return str(candidate)
+    bases = []
+    try:
+        import runtime
+        venv_bin = runtime.venv_bin_dir()
+        if venv_bin:
+            bases.append(venv_bin)
+    except Exception:
+        pass
+    bases.append(Path(sys.executable).resolve().parent)
+    for base in bases:
+        for name in names:
+            candidate = base / name
+            if candidate.exists() and candidate.is_file():
+                return str(candidate)
     return shutil.which("yt-dlp")
 
 

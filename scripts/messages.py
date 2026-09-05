@@ -321,6 +321,23 @@ MESSAGES = {
         "zh": "  ⬇ 未找到可用解释器，尝试为技能安装 Python（--download-deps 已确认）...",
         "en": "  ⬇ No capable interpreter found; installing Python for the skill (--download-deps confirmed)...",
     },
+    # ---- runtime.py：专用 Python 运行时（方案 v1.4 §8B） ----
+    "runtime_switch": {
+        "zh": "  ↻ 切换到技能专用 Python 运行时: {python}",
+        "en": "  ↻ Switching to the skill-dedicated Python runtime: {python}",
+    },
+    "dep_purpose_runtime": {
+        "zh": "技能专用 Python 运行时（与系统 Python 彻底隔离，内置全部提取扩展库与 FTS5 检索引擎）",
+        "en": "Skill-dedicated Python runtime (fully isolated from system Python; bundles all extraction libraries and the FTS5 search engine)",
+    },
+    "dep_source_runtime": {
+        "zh": "python-build-standalone（CPython 3.12 独立构建，SHA256 校验）+ PyPI 锁定扩展库 → ~/.smart-summarize/runtime/",
+        "en": "python-build-standalone (standalone CPython 3.12, SHA256 verified) + pinned libraries from PyPI → ~/.smart-summarize/runtime/",
+    },
+    "dep_size_runtime": {
+        "zh": "约 150 MB 下载 / 约 350 MB 磁盘（以实际为准）",
+        "en": "~150 MB download / ~350 MB disk (actual size prevails)",
+    },
 }
 
 _lang = None

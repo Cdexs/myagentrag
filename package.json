@@ -37,7 +37,9 @@
     "scripts/transcribe.py",
     "scripts/deps.py",
     "scripts/messages.py",
-    "scripts/workspace.py"
+    "scripts/workspace.py",
+    "scripts/runtime.py",
+    "scripts/requirements-libs.txt"
   ],
   "engines": {
     "node": ">=16"

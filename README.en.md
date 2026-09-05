@@ -15,6 +15,7 @@ Cross-platform: Windows / macOS / Linux / WSL.
 ## Features
 
 - **Extraction only**: no LLM calls; outputs JSON/text/SRT for the current agent to read and summarize
+- **Dedicated runtime isolation**: a standalone CPython 3.12 + version-pinned libraries installed under `~/.smart-summarize/runtime/`, fully decoupled from the user's system Python — no libraries installed into user environments, no system env vars, immune to user environment changes
 - **Zero hardcoded paths**: components are discovered in the order env vars → PATH → user directory (`~/.smart-summarize`)
 - **Runtime on-demand install**: on first audio/video transcription, missing components are detected and listed (name / purpose / source / estimated size); they are downloaded only after user confirmation, then the original task continues — never silently
 - **Knowledge-base workspace**: SQLite FTS5+trigram full-text search (standard library only, zero extra dependencies), source-file snapshots, offset-based deep reading, 13 management operations, timestamp-based media playback
@@ -47,10 +48,9 @@ python node_modules/@cdexs/smart-summarize/scripts/extract.py --file demo.pdf
 Place this directory into your agent's skill directory (e.g. `~/.pi/agent/skills/smart-summarize`), or run it in place:
 
 ```bash
-# Dependencies (optional, pure Python): on first use of each format the script
-# detects missing libraries, lists them and installs on confirmation (out-of-box).
-# To pre-install everything:
-python -m pip install requests pdfplumber pymupdf python-docx ebooklib yt-dlp
+# No dependencies to pre-install: on first use the skill auto-installs its dedicated
+# runtime (standalone CPython 3.12 + pinned libraries), fully isolated from the system
+# Python; the bootstrap layer only needs Python >= 3.8 (standard library only)
 
 python scripts/extract.py --url "https://www.bilibili.com/video/BVxxxx"   # Bilibili subtitles
 python scripts/extract.py --file document.pdf                              # PDF
@@ -66,17 +66,13 @@ The installed package works right away, but each feature has its own software re
 
 | Feature | Dependency | Notes |
 | --- | --- | --- |
-| All features | **Python 3.9+** | Always required; uses `python` from PATH by default, or set `SMART_SUMMARIZE_PYTHON` |
-| Web pages / Bilibili subtitles | `requests` | Detected on first use; installed via `pip` after confirmation; also required by the component download chain |
-| PDF | `pdfplumber` or `PyMuPDF` (either one) | Same on-demand detection + confirmed pip install |
-| Word `.docx` | `python-docx` | Same as above |
-| EPUB | `ebooklib` | Same as above |
-| YouTube subtitles | `yt-dlp` | Same as above |
+| Bootstrap | **Python ≥3.8** (standard library only) | Launches the skill and manages the dedicated runtime; no third-party libraries required |
+| All extraction features | **Dedicated runtime** (auto-installed) | On first use, lists name/source/size (~150 MB download) and installs a standalone CPython 3.12 + pinned libraries (requests/pdfplumber/PyMuPDF/python-docx/ebooklib/openpyxl/python-pptx/yt-dlp) into `~/.smart-summarize/runtime/` after confirmation — fully isolated from the system Python |
 | Restricted YouTube content | **Node.js** (`node` on PATH) | Required as JS runtime by yt-dlp; see troubleshooting if missing |
 | Word `.doc` (legacy) | **pandoc** (on PATH) | Only for this format; not auto-downloaded |
 | Audio/video transcription | **ffmpeg + whisper-cli + ggml model** | On first use, each is listed with name/purpose/source/estimated size (~1.6–2.4 GB total); after confirmation they are downloaded into `~/.smart-summarize`, or point env vars at existing installs |
 
-Note: Python libraries require **no pre-installation**; everything is detected on first use and installed on confirmation.
+Note: Python libraries and components require **no pre-installation** — everything is detected on first use and installed after confirmation; all extension libraries ship with the dedicated runtime and never touch the user's system Python.
 
 ## Environment Variables
 
@@ -93,6 +89,8 @@ Note: Python libraries require **no pre-installation**; everything is detected o
 | `SMART_SUMMARIZE_WHISPERCPP_CMAKE_FLAGS` | Extra CMake flags when building whisper.cpp from source                     |
 | `SMART_SUMMARIZE_WORKSPACES_DIR`         | Knowledge-base workspace root (default `~/.smart-summarize/workspaces/`)    |
 | `SMART_SUMMARIZE_LANG`                   | Feedback language zh/en (`--lang` flag wins; auto-detected by default)      |
+| `SMART_SUMMARIZE_PIP_INDEX_URL`          | pip mirror for the dedicated runtime library install (e.g. Tsinghua mirror) |
+| `SMART_SUMMARIZE_PYTHON_MIRROR`          | Mirror for the runtime CPython download (default: GitHub Releases)          |
 
 ## Large-document summarization optimization (slice protocol)
 

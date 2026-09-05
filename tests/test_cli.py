@@ -17,6 +17,8 @@ def cli_env(tmp_path, monkeypatch):
     env = dict(os.environ)
     env["SMART_SUMMARIZE_WORKSPACES_DIR"] = str(tmp_path / "workspaces")
     env["SMART_SUMMARIZE_LANG"] = "zh"
+    # 测试直接测当前解释器，跳过专用运行时闸门（运行时安装/切换由 R5 冒烟与手动验证覆盖）
+    env["SMART_SUMMARIZE_NO_RUNTIME"] = "1"
     return env
 
 
