@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """test_deps — 组件定位 / 缺失检测 / 清单双语（v1.4：pip 组检测已随专用运行时移除）"""
+from pathlib import Path
+
 import deps
 import messages
 
@@ -87,3 +89,36 @@ def test_cublas_assets_restored():
         "whisper-cublas-11.8.0-bin-x64.zip",
         "whisper-cublas-12.4.0-bin-x64.zip",
     ]
+
+
+def test_install_model_reuses_any_known_copy(tmp_path, monkeypatch):
+    """回归（端侧审计发现）：模型在任一已知位置（环境变量目录/受管目录）已存在时，
+    install_model 必须直接复用，不得对同一模型重复下载 1.5GB。"""
+    existing = tmp_path / "known" / "ggml-large-v3-turbo.bin"
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(b"x")
+    monkeypatch.setattr(deps, "WHISPERCPP_MODELS_DIR", existing.parent)
+    monkeypatch.setattr(deps, "MANAGED_MODELS", tmp_path / "managed")
+    monkeypatch.delenv("SMART_SUMMARIZE_WHISPERCPP_MODELS_DIR", raising=False)
+
+    def no_download(*a, **kw):
+        raise AssertionError("模型已存在时不应触发下载")
+    monkeypatch.setattr(deps, "_http_download", no_download)
+    assert deps.install_model("large-v3-turbo") == existing
+
+
+def test_install_model_downloads_into_env_dir_when_nowhere(tmp_path, monkeypatch):
+    """所有已知位置都没有模型时，下载到环境变量指定的目录"""
+    env_dir = tmp_path / "envmodels"
+    monkeypatch.setenv("SMART_SUMMARIZE_WHISPERCPP_MODELS_DIR", str(env_dir))
+    monkeypatch.setattr(deps, "WHISPERCPP_MODELS_DIR", env_dir)
+    monkeypatch.setattr(deps, "MANAGED_MODELS", tmp_path / "managed")
+
+    def fake_download(url, dest, desc=""):
+        dest = Path(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"model")
+        return dest
+    monkeypatch.setattr(deps, "_http_download", fake_download)
+    out = deps.install_model("large-v3-turbo")
+    assert out == env_dir / "ggml-large-v3-turbo.bin" and out.exists()

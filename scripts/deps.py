@@ -416,9 +416,13 @@ def _model_download_dir():
 def install_model(model_name):
     """用户确认后从 HuggingFace 下载 ggml 模型，返回模型文件路径"""
     fname = WHISPERCPP_GGML_MAP.get(model_name, f"ggml-{model_name}.bin")
+    # 与 _find_model_file 同口径：模型在任一已知位置（环境变量目录/受管目录）已存在
+    # 即直接返回，避免对同一模型重复下载 1.5GB（端侧审计发现：环境变量指向的目录
+    # 无模型而受管目录有时，旧逻辑会无视已有副本整包重下）
+    found = _find_model_file(model_name)
+    if found:
+        return found
     dest = _model_download_dir() / fname
-    if dest.exists():
-        return dest
     return _http_download(MODEL_URL_BASE + fname, dest, fname)
 
 def _missing_dep_kinds(model_name):
