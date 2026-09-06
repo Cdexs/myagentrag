@@ -331,7 +331,7 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 
 ## 更新日志
 
-### v0.7.1（专用运行时 + 知识库 workspace + 混合检索 + 模块化拆分 + 双语反馈；sqlite-vec 向量后端实施中）
+### v0.7.1（专用运行时 + 知识库 workspace + 混合检索 + sqlite-vec 向量后端 + 模块化拆分 + 双语反馈）
 
 - **专用 Python 运行时（v1.4 方案）**：独立 CPython 3.12（python-build-standalone，SHA256SUMS 校验）+ 锁定版本扩展库安装到 `~/.smart-summarize/runtime/`，与用户系统 Python 彻底解耦——不向用户环境装库、不设系统环境变量、首次使用经确认自动安装；引导层仅需任意 Python ≥3.8（标准库）；根治用户环境依赖版本不可控类缺陷；
 - **混合检索（中英文）**：本地 **Qwen3-Embedding-0.6B**（官方 GGUF Q8_0，llama.cpp 引擎 GPU 优先/Vulkan，CPU 回退）+ FTS5 双路 RRF 融合；`--search --mode fused|fts|vector`、`--no-embed`；**中文查询可召回英文文档**（跨语言语义），窗口级 full.md 偏移精读；首次使用知识库时一次性引导安装全链依赖（y/N 确认，镜像可配）；
@@ -339,6 +339,7 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 - **新增知识库 workspace**：SQLite FTS5+trigram 全文检索（标准库零依赖、BM25 排序、snippet 摘要、布尔/前缀/NEAR/列限定查询、<3 字自动 LIKE 回退）、来源文件副本、full.md 偏移精读、13 项管理操作、完整性校验（含 FTS 索引逐行比对）、索引重建/VACUUM、跨库检索；
 - **音视频时间戳索引与定位回放**：入库音视频统一 whisper SRT 转录 → 分片带 start_ms/end_ms → 播放器探测链按 OS 参数化定位播放；缺播放器输出结构化 JSON 交由 agent 处理；
 - **双语反馈**：messages.py 集中管理 zh/en 文案，`--lang` 显式覆盖 / locale 自动探测；自有错误文案带 `error_i18n` 双份；
+- **sqlite-vec 向量后端**：向量 KNN 下沉到 SQLite C 扩展（库内 SIMD 扫描），自动探测 OS/arch 安装（PyPI 优先/GitHub 兜底，约 0.3MB），确实加载失败才回退 numpy；检索输出标注 `vector_backend`；
 - **依赖升级策略**：技能升级默认只更新文档与脚本，依赖包（运行时/嵌入引擎/模型/whisper/ffmpeg）不动；仅当新版本显式声明依赖升级/替换时经 y/N 确认处理（依赖锁 manifest）；
 - 修复拆分过程与历史遗留缺陷：extract_local_file 丢失、deps 缺 import、WHISPERCPP_CUBLAS_ASSETS 未定义（NVIDIA cublas 安装链路）、YouTube 元数据静默丢失（缺 import json）、YouTube 临时目录绕过受管链路、连续切片重叠窗口失效；
 - 修复存量缺陷（端侧验证发现）：EPUB 依赖检测永远误报缺失（deps.py epub 组缺 `import: "ebooklib"` 声明，组名被当作导入名）；EPUB 提取在 ebooklib 0.20 下整体失败（`ITEM_DOCUMENT` 常量须取自顶层 ebooklib 模块，`ebooklib.epub` 命名空间自 0.20 起不再暴露）。

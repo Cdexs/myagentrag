@@ -358,6 +358,14 @@ MESSAGES = {
         "zh": "HuggingFace（可配 SMART_SUMMARIZE_HF_MIRROR 镜像）→ ~/.smart-summarize/models/embedding/{model}/",
         "en": "HuggingFace (SMART_SUMMARIZE_HF_MIRROR supported) → ~/.smart-summarize/models/embedding/{model}/",
     },
+    "dep_purpose_sqlite_vec": {
+        "zh": "向量检索加速后端（SQLite C 扩展，库内 SIMD 扫描，降低内存占用）",
+        "en": "Vector-search acceleration backend (SQLite C extension, in-DB SIMD scan, lower memory)",
+    },
+    "dep_source_sqlite_vec": {
+        "zh": "PyPI（可配 SMART_SUMMARIZE_PIP_INDEX_URL 镜像）/ GitHub Releases → 专用运行时 venv",
+        "en": "PyPI (SMART_SUMMARIZE_PIP_INDEX_URL supported) / GitHub Releases → dedicated runtime venv",
+    },
 }
 
 _lang = None
