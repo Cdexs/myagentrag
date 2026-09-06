@@ -6,7 +6,7 @@
 ![GitHub tag](https://img.shields.io/github/v/tag/Cdexs/smart-summarize?label=version&color=green)
 ![License](https://img.shields.io/npm/l/@cdexs/smart-summarize?color=orange)
 
-可自动进行网页、网络视频、本地文件（PDF/Word/Excel/PowerPoint/EPUB/文本）、音视频进行读取、总结，支持通过本地 ASR 模型将本地音频、视频内容高准确率地转写到文本和字幕文件，并可将提取内容存入本地知识库（SQLite FTS5 全文检索 + 音视频时间戳定位回放）。
+可自动进行网页、网络视频、本地文件（PDF/Word/Excel/PowerPoint/EPUB/文本）、音视频进行读取、总结，支持通过本地 ASR 模型将本地音频、视频内容高准确率地转写到文本和字幕文件，并可将提取内容存入本地知识库（SQLite FTS5 + 本地向量模型**混合检索**，支持中英文跨语言语义检索 + 音视频时间戳定位回放）。
 
 智能内容提取技能包（agent skill）——提取 YouTube/B站视频字幕、网页正文、本地文件（PDF/Word/EPUB/文本）与音视频语音转录。**只提取，不调用 LLM**；提取结果交给宿主 agent 总结。
 
@@ -18,7 +18,7 @@
 - **专用运行时隔离**：独立 CPython 3.12 + 锁定版本扩展库装在 `~/.smart-summarize/runtime/`，与用户系统 Python 彻底解耦——不装库到用户环境、不设系统环境变量、不被用户环境变化影响
 - **零硬编码路径**：所有组件按 环境变量 → PATH → 用户目录（`~/.smart-summarize`）的顺序发现
 - **运行时按需安装**：首次使用音视频转录时检测缺失组件，列出名称/用途/来源/预计大小，经用户确认后下载安装，随后自动继续；不会静默下载
-- **知识库 workspace**：SQLite FTS5+trigram 全文检索（标准库零依赖）、来源副本、偏移精读、13 项管理操作、音视频时间戳定位回放
+- **知识库 workspace**：混合检索——SQLite FTS5 关键词路 + 本地 Qwen3 向量语义路（RRF 融合，**中英文跨语言**）、来源副本、偏移精读、13 项管理操作、音视频时间戳定位回放
 - **中英双语反馈**：`--lang` 或 locale 自动探测，JSON 错误带 `error_i18n` 双份
 - **隐私安全**：不携带、不读取技能目录内的任何 cookies；YouTube cookies 默认从 `~/.smart-summarize/cookies/youtube-cookies.txt` 读取（由用户手动导出放置），仅遇登录墙时才提示需要
 - **GPU 中立**：是否启用 GPU 取决于用户安装的 whisper.cpp 构建（Vulkan/Metal/CUDA）；自动构建时会检测工具链并如实告知

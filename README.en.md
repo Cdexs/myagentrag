@@ -6,7 +6,7 @@
 ![GitHub tag](https://img.shields.io/github/v/tag/Cdexs/smart-summarize?label=version&color=green)
 ![License](https://img.shields.io/npm/l/@cdexs/smart-summarize?color=orange)
 
-A skill that can automatically read and summarize web pages, online videos, and local files (PDF/Word/Excel/PowerPoint/EPUB/text), as well as audio and video. Local audio and video content can be transcribed with high accuracy into text and subtitle files using a local ASR model, and extracted content can be stored into a local knowledge base (SQLite FTS5 full-text search + audio/video timestamp-based playback).
+A skill that can automatically read and summarize web pages, online videos, and local files (PDF/Word/Excel/PowerPoint/EPUB/text), as well as audio and video. Local audio and video content can be transcribed with high accuracy into text and subtitle files using a local ASR model, and extracted content can be stored into a local knowledge base (hybrid retrieval: SQLite FTS5 + local embedding model for **cross-lingual Chinese/English semantic search** + timestamp-based media playback).
 
 An agent skill for intelligent content extraction — extract YouTube/Bilibili video subtitles, web page content, local files (PDF/Word/EPUB/text), and speech-to-text transcription of audio/video. **Extraction only — no LLM calls**; extracted results are handed to the host agent for summarization.
 
@@ -18,7 +18,7 @@ Cross-platform: Windows / macOS / Linux / WSL.
 - **Dedicated runtime isolation**: a standalone CPython 3.12 + version-pinned libraries installed under `~/.smart-summarize/runtime/`, fully decoupled from the user's system Python — no libraries installed into user environments, no system env vars, immune to user environment changes
 - **Zero hardcoded paths**: components are discovered in the order env vars → PATH → user directory (`~/.smart-summarize`)
 - **Runtime on-demand install**: on first audio/video transcription, missing components are detected and listed (name / purpose / source / estimated size); they are downloaded only after user confirmation, then the original task continues — never silently
-- **Knowledge-base workspace**: SQLite FTS5+trigram full-text search (standard library only, zero extra dependencies), source-file snapshots, offset-based deep reading, 13 management operations, timestamp-based media playback
+- **Knowledge-base workspace**: hybrid retrieval — SQLite FTS5 keyword route + local Qwen3 semantic route (RRF fusion, **Chinese/English cross-lingual**), source-file snapshots, offset-based deep reading, 13 management operations, timestamp-based media playback
 - **Bilingual feedback (zh/en)**: `--lang` flag or automatic locale detection; JSON errors carry an `error_i18n` pair
 - **Privacy safe**: no cookies are shipped with or read from the skill directory; YouTube cookies are read from `~/.smart-summarize/cookies/youtube-cookies.txt` (exported manually by the user) and only requested when a login wall is hit
 - **GPU neutral**: whether GPU is used depends on the user's whisper.cpp build (Vulkan/Metal/CUDA); during source builds the toolchain is auto-detected and honestly reported
