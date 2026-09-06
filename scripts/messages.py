@@ -273,6 +273,10 @@ MESSAGES = {
         "zh": "提取内容为空，未入库",
         "en": "Extracted content is empty; nothing ingested",
     },
+    "ingest_embed_fail": {
+        "zh": "向量嵌入失败，内容未入库：{err}",
+        "en": "Embedding failed; nothing ingested: {err}",
+    },
     "ingest_ok": {
         "zh": "已入库 workspace[{ws}]：{title}（{chars} 字符 / {chunks} 片）",
         "en": "Ingested into workspace[{ws}]: {title} ({chars} chars / {chunks} chunks)",
@@ -337,6 +341,22 @@ MESSAGES = {
     "dep_size_runtime": {
         "zh": "约 150 MB 下载 / 约 350 MB 磁盘（以实际为准）",
         "en": "~150 MB download / ~350 MB disk (actual size prevails)",
+    },
+    "dep_purpose_llama_embed": {
+        "zh": "向量检索嵌入引擎（CPU 推理，与 whisper-cli 同机制；独立子目录避免与 whisper 的 ggml DLL 冲突）",
+        "en": "Vector-search embedding engine (CPU inference, same mechanism as whisper-cli; isolated subdirectory to avoid ggml DLL conflicts)",
+    },
+    "dep_source_llama_embed": {
+        "zh": "GitHub Releases（llama.cpp {tag}，Windows zip / macOS brew / Linux 源码构建）→ ~/.smart-summarize/bin/llama/",
+        "en": "GitHub Releases (llama.cpp {tag}: Windows zip / macOS brew / Linux source build) → ~/.smart-summarize/bin/llama/",
+    },
+    "dep_purpose_embedding_model": {
+        "zh": "向量检索模型 {model}（中英文语义嵌入，本地推理）",
+        "en": "Vector-search model {model} (zh/en semantic embeddings, local inference)",
+    },
+    "dep_source_embedding_model": {
+        "zh": "HuggingFace（可配 SMART_SUMMARIZE_HF_MIRROR 镜像）→ ~/.smart-summarize/models/embedding/{model}/",
+        "en": "HuggingFace (SMART_SUMMARIZE_HF_MIRROR supported) → ~/.smart-summarize/models/embedding/{model}/",
     },
 }
 

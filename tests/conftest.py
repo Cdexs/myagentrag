@@ -24,3 +24,16 @@ def ws_mod(tmp_path, monkeypatch):
     monkeypatch.setenv("SMART_SUMMARIZE_WORKSPACES_DIR", str(tmp_path / "workspaces"))
     import workspace
     return workspace
+
+
+@pytest.fixture(autouse=True)
+def _fake_embedder(monkeypatch):
+    """全局确定性假嵌入器：让所有入库/检索测试覆盖向量管线（不依赖真实模型/引擎）。
+    需要测试真实失败路径时在用例内再行覆盖。"""
+    import embeddings
+    import deps
+    fake_file = "fake-qwen3.gguf"
+    monkeypatch.setattr(deps, "_find_llama_embed", lambda: fake_file)
+    monkeypatch.setattr(deps, "_find_model_file_embedding", lambda mid: fake_file)
+    monkeypatch.setattr(embeddings, "embed_texts", embeddings.fake_embed)
+    yield

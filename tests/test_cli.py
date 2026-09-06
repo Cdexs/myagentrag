@@ -79,7 +79,7 @@ def test_ingest_and_search_and_read_e2e(cli_env, tmp_path):
     doc = tmp_path / "doc.md"
     doc.write_text("# CLI 端到端\n\n验证提取入库检索读取的完整命令行链路，包括偏移精读。" * 3,
                    encoding="utf-8")
-    r = run(cli_env, "--file", str(doc), "--workspace", "CLI库",
+    r = run(cli_env, "--file", str(doc), "--workspace", "CLI库", "--no-embed",
             "--title", "端到端", "--author", "tester")
     j = jout(r)
     assert j["success"] is True and j["workspace"]["entry_id"]
@@ -109,7 +109,7 @@ def test_ingest_and_search_and_read_e2e(cli_env, tmp_path):
 def test_remove_entry_confirm_flow(cli_env, tmp_path):
     doc = tmp_path / "r.md"
     doc.write_text("待删除条目内容。", encoding="utf-8")
-    r = run(cli_env, "--file", str(doc), "--workspace", "CLI库2")
+    r = run(cli_env, "--file", str(doc), "--workspace", "CLI库2", "--no-embed")
     eid = jout(r)["workspace"]["entry_id"]
     r = run(cli_env, "--workspace", "CLI库2", "--remove", eid)
     assert jout(r).get("confirm_required") is True
@@ -127,3 +127,16 @@ def test_rename_delete_workspace_flow(cli_env):
     assert jout(r)["success"] is True
     r = run(cli_env, "--workspace-list")
     assert jout(r)["total"] == 0
+
+
+def test_search_mode_flag_passthrough(cli_env, tmp_path):
+    doc = tmp_path / "m.md"
+    doc.write_text("模式透传验证内容。", encoding="utf-8")
+    r = run(cli_env, "--file", str(doc), "--workspace", "模式库", "--no-embed")
+    assert jout(r)["success"] is True
+    r = run(cli_env, "--workspace", "模式库", "--search", "模式透传", "--mode", "fts")
+    j = jout(r)
+    assert j["success"] and j["mode"] == "fts" and j["vector_available"] is False
+    r = run(cli_env, "--workspace", "模式库", "--search", "模式透传", "--mode", "fused")
+    j = jout(r)
+    assert j["mode"] == "fused" and j["total"] >= 1

@@ -122,3 +122,53 @@ def test_install_model_downloads_into_env_dir_when_nowhere(tmp_path, monkeypatch
     monkeypatch.setattr(deps, "_http_download", fake_download)
     out = deps.install_model("large-v3-turbo")
     assert out == env_dir / "ggml-large-v3-turbo.bin" and out.exists()
+
+
+def test_llama_embed_zip_install_isolated_dlls(tmp_path, monkeypatch):
+    """v1.5：Windows zip 安装 → 引擎与 DLL 隔离在 bin/llama/ 子目录（不污染 whisper-cli）"""
+    import zipfile
+    fake_zip = tmp_path / "llama.zip"
+    with zipfile.ZipFile(fake_zip, "w") as zf:
+        zf.writestr("llama-b10819/bin/llama-embedding.exe", b"x")
+        zf.writestr("llama-b10819/bin/llama-server.exe", b"x")
+        zf.writestr("llama-b10819/bin/ggml.dll", b"x")
+
+    def fake_download(url, dest, desc=""):
+        import shutil
+        shutil.copy2(fake_zip, dest)
+        return dest
+    monkeypatch.setattr(deps, "_http_download", fake_download)
+    monkeypatch.setattr(deps, "MANAGED_BIN", tmp_path / "bin")
+    monkeypatch.setattr(deps, "_find_llama_embed", lambda: None)
+    monkeypatch.setattr(deps, "_detect_gpu", lambda: ("nvidia", "Fake GPU", ""))
+    monkeypatch.setattr(deps.os, "name", "nt")
+    out = deps.install_llama_embed()
+    assert str(out).replace("\\", "/").endswith("bin/llama/llama-embedding.exe")
+    assert (tmp_path / "bin" / "llama" / "ggml.dll").exists()
+    assert not (tmp_path / "bin" / "ggml.dll").exists()  # DLL 不进 bin/ 根
+
+
+def test_embedding_model_download_then_reuse(tmp_path, monkeypatch):
+    monkeypatch.setattr(deps, "MANAGED_MODELS", tmp_path / "models")
+    calls = []
+
+    def fake_download(url, dest, desc=""):
+        calls.append(url)
+        from pathlib import Path as P
+        dest = P(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"gguf")
+        return dest
+    monkeypatch.setattr(deps, "_http_download", fake_download)
+    mid = "Qwen3-Embedding-0.6B"
+    p1 = deps.install_embedding_model(mid)
+    p2 = deps.install_embedding_model(mid)
+    assert p1 == p2 and p1.exists() and len(calls) == 1  # 已存在不重复下载
+    assert "Qwen/Qwen3-Embedding-0.6B-GGUF" in calls[0]
+
+
+def test_missing_kb_kinds_chain(tmp_path, monkeypatch):
+    monkeypatch.setattr(deps, "_find_llama_embed", lambda: None)
+    monkeypatch.setattr(deps, "_find_model_file_embedding", lambda mid: None)
+    assert deps._missing_kb_kinds("Qwen3-Embedding-0.6B") == [
+        "llama-embed", "embedding:Qwen3-Embedding-0.6B"]

@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import sqlite3
+import struct
 import subprocess
 import sys
 from datetime import datetime
@@ -30,6 +31,7 @@ from pathlib import Path
 from deps import MANAGED_HOME
 from slicing import CHUNK_CHARS, CHUNK_OVERLAP_CHARS
 import messages
+import embeddings
 
 WORKSPACE_DB = "workspace.db"
 AUDIO_EXTS = {'.mp3', '.wav', '.aac', '.m4a', '.flac', '.ogg', '.wma'}
@@ -173,12 +175,22 @@ CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
     content_rowid='rowid',
     tokenize='trigram'
 );
+CREATE TABLE IF NOT EXISTS vectors (
+    rowid INTEGER PRIMARY KEY,
+    entry_id TEXT,
+    chunk_no INTEGER,
+    win_start INTEGER,
+    win_end INTEGER,
+    model_id TEXT,
+    embedding BLOB
+);
 """
 
 
 def _connect(db_path):
     con = sqlite3.connect(str(db_path))
     con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA user_version=2")  # v2：+vectors 表（方案 v1.5 §8C.2）
     return con
 
 
@@ -387,7 +399,7 @@ def _save_source_copy(entry_source_dir, *, source_file=None, raw_subtitle=None,
 def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref=None,
               author=None, publisher=None, publish_date=None, segments=None,
               srt_text=None, source_file=None, keep_source=True,
-              raw_subtitle=None, raw_subtitle_ext=None):
+              raw_subtitle=None, raw_subtitle_ext=None, no_embed=False):
     """入库：幂等（entry_id=sha256(全文)[:16]，同 id 更新）。
 
     文本来源三选一：content（文档/网页/字幕清洗文本）、srt_text（whisper SRT，
@@ -428,6 +440,23 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
             start_ms, end_ms = _time_range_for(char_spans, cs, ce)
         rows.append((entry_id, no, ctext, cs, ce - cs, start_ms, end_ms))
 
+    # 向量嵌入（v1.5 §8C：片内窗口粒度；--no-embed 跳过并在结果标注）
+    vector_rows = []
+    if not no_embed:
+        import embeddings as _emb
+        windows = []
+        for (eid, no, ctext, off, cc, sms, ems) in rows:
+            for (ws_, we_, wtext) in _emb.split_windows(ctext):
+                windows.append((no, off + ws_, off + we_, wtext))
+        if windows:
+            try:
+                vecs = _emb.embed_texts([w[3] for w in windows], model_id=_emb.DEFAULT_MODEL)
+            except RuntimeError as e:
+                return messages.err_result("ingest_embed_fail", err=str(e))
+            vector_rows = [(entry_id, w[0], w[1], w[2], _emb.DEFAULT_MODEL,
+                            struct.pack(f"<{len(vecs[k])}f", *vecs[k]))
+                           for k, w in enumerate(windows)]
+
     title_final = _entry_title_hint(title, text, entry_id)
     now = _now_iso()
     con = _connect(d / WORKSPACE_DB)
@@ -456,6 +485,10 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
                 "INSERT INTO entries_fts(rowid, title, chunk_text, author, publisher, publish_date)"
                 " VALUES (?,?,?,?,?,?)",
                 (cur.lastrowid, title_final, ctext, author, publisher, publish_date))
+        con.execute("DELETE FROM vectors WHERE entry_id=?", (entry_id,))
+        if vector_rows:
+            con.executemany("INSERT INTO vectors(entry_id, chunk_no, win_start, win_end,"
+                            " model_id, embedding) VALUES (?,?,?,?,?,?)", vector_rows)
         con.execute(
             "INSERT INTO entries(id, title, source_type, source_ref, author, publisher,"
             " publish_date, created_at, updated_at, total_chars, chunk_count, full_path)"
@@ -477,6 +510,7 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
         "publish_date": publish_date, "created_at": created_at, "updated_at": now,
         "total_chars": len(text), "chunk_count": len(rows), "full_path": "full.md",
         "source_copy": source_copy, "has_transcript": bool(char_spans),
+        "has_vectors": bool(vector_rows),
     }
     (entry_dir / "meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -488,7 +522,8 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
                              chars=len(text), chunks=len(rows))
     return {"success": True, "workspace": ws_name, "entry_id": entry_id,
             "title": title_final, "total_chars": len(text), "chunk_count": len(rows),
-            "updated": bool(existing), "message": pair[messages.get_lang()],
+            "vectors": len(vector_rows), "updated": bool(existing),
+            "message": pair[messages.get_lang()],
             "message_i18n": pair}
 
 
@@ -622,58 +657,143 @@ def _row_to_hit(con, ws_name, rowid, score, snip, low_precision=False):
     return hit
 
 
-def _search_one(ws_name, match, like_terms, limit):
-    d = ws_dir(ws_name)
-    if d is None:
-        return None, []
-    con = _connect(d / WORKSPACE_DB)
+def _fts_search_one(con, ws_name, match, like_terms, limit):
+    """FTS5 + LIKE 路（既有行为）。返回 hits（可能为空，score_source=fts）。"""
     hits, seen = [], set()
-    try:
-        if match:
-            for (rowid, score, snip) in con.execute(
-                    "SELECT rowid, bm25(entries_fts),"
-                    " snippet(entries_fts, 1, '『', '』', '…', 16)"
-                    " FROM entries_fts WHERE entries_fts MATCH ? ORDER BY bm25(entries_fts) LIMIT ?",
-                    (match, limit)):
-                hit = _row_to_hit(con, ws_name, rowid, score, snip)
-                if hit and (hit["entry_id"], hit["chunk_no"]) not in seen:
-                    seen.add((hit["entry_id"], hit["chunk_no"]))
-                    hits.append(hit)
-        if like_terms:
-            conds = " AND ".join(["chunk_text LIKE ? ESCAPE '\\'"] * len(like_terms))
-            params = ["%" + t.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-                      for t in like_terms]
-            for row in con.execute(
-                    f"SELECT rowid, chunk_text FROM chunks WHERE {conds} LIMIT ?", params + [limit]):
-                hit = _row_to_hit(con, ws_name, row[0], None,
-                                  _like_snippet(row[1], like_terms), low_precision=True)
-                if hit and (hit["entry_id"], hit["chunk_no"]) not in seen:
-                    seen.add((hit["entry_id"], hit["chunk_no"]))
-                    hits.append(hit)
-    finally:
-        con.close()
-    return ws_name, hits
+    if match:
+        for (rowid, score, snip) in con.execute(
+                "SELECT rowid, bm25(entries_fts),"
+                " snippet(entries_fts, 1, '『', '』', '…', 16)"
+                " FROM entries_fts WHERE entries_fts MATCH ? ORDER BY bm25(entries_fts) LIMIT ?",
+                (match, limit)):
+            hit = _row_to_hit(con, ws_name, rowid, score, snip)
+            if hit and (hit["entry_id"], hit["chunk_no"]) not in seen:
+                seen.add((hit["entry_id"], hit["chunk_no"]))
+                hit["score_source"] = "fts"
+                hits.append(hit)
+    if like_terms:
+        conds = " AND ".join(["chunk_text LIKE ? ESCAPE '\\'"] * len(like_terms))
+        params = ["%" + t.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+                  for t in like_terms]
+        for row in con.execute(
+                f"SELECT rowid, chunk_text FROM chunks WHERE {conds} LIMIT ?", params + [limit]):
+            hit = _row_to_hit(con, ws_name, row[0], None,
+                              _like_snippet(row[1], like_terms), low_precision=True)
+            if hit and (hit["entry_id"], hit["chunk_no"]) not in seen:
+                seen.add((hit["entry_id"], hit["chunk_no"]))
+                hit["score_source"] = "fts"
+                hits.append(hit)
+    return hits
 
 
-def ws_search(ws_name, query, limit=20, all_workspaces=False):
-    """FTS5 检索（§6.1/§6.2）；--all-workspaces 逐库执行合并结果。"""
+def _vector_search_one(con, ws_name, query, limit, model_id):
+    """向量路：查询嵌入 → 全库窗口 KNN → 窗口级命中（score_source=vector）。"""
+    import embeddings as _emb
+    rows = con.execute(
+        "SELECT entry_id, chunk_no, win_start, win_end, embedding FROM vectors"
+        " WHERE model_id=? AND win_end > win_start", (model_id,)).fetchall()
+    if not rows:
+        return []
+    qv = _emb.embed_texts([query], model_id=model_id)[0]
+    vecs = [struct.unpack(f"<{len(b) // 4}f", b) for (_, _, _, _, b) in rows]
+    top = _emb.knn_top(qv, vecs, k=limit * 4)
+    hits, seen = [], set()
+    for idx, score in top:
+        entry_id, chunk_no, win_start, win_end = rows[idx][0], rows[idx][1], rows[idx][2], rows[idx][3]
+        if (entry_id, chunk_no) in seen:
+            continue
+        crow = con.execute("SELECT rowid, chunk_text, file_offset, char_count, start_ms, end_ms"
+                           " FROM chunks WHERE entry_id=? AND chunk_no=?",
+                           (entry_id, chunk_no)).fetchone()
+        e = con.execute("SELECT id, title, author, publish_date, source_type, full_path"
+                        " FROM entries WHERE id=?", (entry_id,)).fetchone()
+        if not crow or not e:
+            continue
+        hit = _row_to_hit(con, ws_name, crow[0], None,
+                          _like_snippet(crow[1], [query]))
+        if not hit:
+            continue
+        hit["score"] = round(score, 4)
+        hit["score_source"] = "vector"
+        hit["win_start"], hit["win_end"] = win_start, win_end
+        seen.add((entry_id, chunk_no))
+        hits.append(hit)
+    return hits
+
+
+def _rrf_fuse(fts_hits, vec_hits, limit, k=60):
+    """RRF 融合：score = Σ 1/(k + rank)；同键双路命中标记 fused，并入窗口级偏移。"""
+    scores, hits = {}, {}
+    for rank, h in enumerate(fts_hits):
+        key = (h["workspace"], h["entry_id"], h["chunk_no"])
+        h["score_source"] = "fts"
+        hits.setdefault(key, h)
+        scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
+    for rank, h in enumerate(vec_hits):
+        key = (h["workspace"], h["entry_id"], h["chunk_no"])
+        if key in hits:
+            hits[key]["score_source"] = "fused"
+            hits[key]["win_start"] = h.get("win_start")
+            hits[key]["win_end"] = h.get("win_end")
+        else:
+            h["score_source"] = "vector"
+            hits[key] = h
+        scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
+    ordered = sorted(scores.items(), key=lambda x: -x[1])[:limit]
+    out = []
+    for key, sc in ordered:
+        h = dict(hits[key])
+        h["score"] = round(sc, 4)
+        out.append(h)
+    return out
+
+
+def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
+              no_embed=False):
+    """混合检索（v1.5 §8C）：FTS5 路 + 向量路 RRF 融合；mode=fused|fts|vector。
+
+    向量路不可用（组件缺失/推理失败）时：mode=fused 降级为 FTS-only 并在结果标注
+    vector_available=False；mode=vector 则返回结构化错误（不静默降级）。
+    """
     match, like_terms = build_fts_query(query)
-    if not match and not like_terms:
+    if mode in ("fts", "fused") and not match and not like_terms:
         return messages.err_result("ws_search_empty")
     names = ([p.name for p in ws_root().iterdir() if (p / WORKSPACE_DB).exists()]
              if all_workspaces else [ws_name])
-    total_hits, searched = [], []
+    if mode == "vector" and not ws_dir(ws_name) and not all_workspaces:
+        return messages.err_result("ws_not_found", name=ws_name)
+    fts_all, vec_all, searched = [], [], []
+    vector_available = mode in ("vector", "fused")  # 向量路是否参与本次检索
     for ws in names:
-        _, hits = _search_one(ws, match, like_terms, limit)
-        if hits is not None:
-            searched.append(ws)
-            total_hits.extend(hits)
-    if all_workspaces:
-        total_hits.sort(key=lambda h: (h["score"] is None, h["score"] if h["score"] is not None else 0))
+        d = ws_dir(ws)
+        if d is None:
+            continue
+        searched.append(ws)
+        con = _connect(d / WORKSPACE_DB)
+        try:
+            if mode in ("fts", "fused"):
+                fts_all.extend(_fts_search_one(con, ws, match, like_terms, limit))
+            if mode in ("vector", "fused"):
+                try:
+                    vec_all.extend(_vector_search_one(con, ws, query, limit,
+                                                      embeddings.DEFAULT_MODEL))
+                except RuntimeError:
+                    if mode == "vector":
+                        raise
+                    vector_available = False
+        finally:
+            con.close()
+    if mode == "fts":
+        total_hits = fts_all[:limit]
+    elif mode == "vector":
+        total_hits = sorted(vec_all, key=lambda h: -h["score"])[:limit]
+    else:
+        total_hits = _rrf_fuse(fts_all, vec_all, limit)
     return {"success": True, "workspace": None if all_workspaces else ws_name,
-            "workspaces_searched": searched, "query": query,
+            "workspaces_searched": searched, "query": query, "mode": mode,
             "fts_query": match, "like_fallback_terms": like_terms,
-            "total": len(total_hits), "hits": total_hits[:limit]}
+            "vector_available": vector_available,
+            "total": len(total_hits), "hits": total_hits}
 
 
 # ==================== 条目读取 / 删除（§4） ====================

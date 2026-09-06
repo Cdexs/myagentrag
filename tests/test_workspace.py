@@ -199,7 +199,7 @@ def test_search_fts_like_prefix(ws_mod, tmp_path):
     assert s["total"] >= 1
     s = ws_mod.ws_search("库G", 'author:"王小明"')
     assert s["total"] >= 1
-    s = ws_mod.ws_search("库G", "不存在词xyzq")
+    s = ws_mod.ws_search("库G", "不存在词xyzq", mode="fts")
     assert s["total"] == 0 and s["success"]
 
 
@@ -368,3 +368,67 @@ def test_play_default_degraded(ws_mod, tmp_path, monkeypatch):
     monkeypatch.setattr(ws_mod.subprocess, "Popen", lambda cmd, **kw: None)
     out = ws_mod.ws_play("库W", eid, "10")
     assert out["success"] is True and out["degraded"] is True and out["note"]
+
+
+# ---------- v1.5 混合检索：窗口向量 + RRF 融合 ----------
+
+def test_ingest_with_vectors_and_fused_search(ws_mod):
+    r = ws_mod.ws_ingest("库H1", content="机器学习是人工智能的一个分支。" * 50, title="ML")
+    assert r["success"] and r["vectors"] >= 1
+    d = ws_mod.ws_dir("库H1")
+    con = ws_mod._connect(d / "workspace.db")
+    n = con.execute("SELECT COUNT(*) FROM vectors WHERE entry_id=?", (r["entry_id"],)).fetchone()[0]
+    con.close()
+    assert n == r["vectors"]
+    s = ws_mod.ws_search("库H1", "机器学习", mode="fused")
+    assert s["success"] and s["total"] >= 1
+    assert s["hits"][0]["score_source"] in ("fused", "fts", "vector")
+    assert s["vector_available"] is True
+    assert s["mode"] == "fused"
+
+
+def test_search_vector_mode_window_offsets(ws_mod):
+    ws_mod.ws_ingest("库H2", content="深度学习与神经网络研究。" * 40, title="DL")
+    s = ws_mod.ws_search("库H2", "神经网络", mode="vector")
+    assert s["success"] and s["total"] >= 1
+    assert s["hits"][0]["score_source"] == "vector"
+    assert s["hits"][0]["win_start"] is not None and s["hits"][0]["win_end"] > s["hits"][0]["win_start"]
+
+
+def test_search_fts_mode_skips_vector(ws_mod):
+    ws_mod.ws_ingest("库H3", content="纯关键词检索验证内容。" * 20, title="K")
+    s = ws_mod.ws_search("库H3", "关键词", mode="fts")
+    assert s["success"] and s["total"] >= 1
+    assert s["hits"][0]["score_source"] == "fts"
+
+
+def test_search_no_embed_entry_falls_back_to_fts(ws_mod):
+    r = ws_mod.ws_ingest("库H4", content="不嵌入的条目内容验证。", no_embed=True)
+    assert r["success"] and r["vectors"] == 0
+    s = ws_mod.ws_search("库H4", "不嵌入", mode="fused")
+    assert s["success"] and s["total"] >= 1  # FTS 路仍命中
+    assert s["hits"][0]["score_source"] == "fts"  # 无向量命中 → 纯 FTS 排序
+
+
+def test_ingest_embed_failure_structured(ws_mod, monkeypatch):
+    import embeddings
+    def boom(texts, model_id=None):
+        raise RuntimeError("推理引擎不可用")
+    monkeypatch.setattr(embeddings, "embed_texts", boom)
+    r = ws_mod.ws_ingest("库H5", content="嵌入失败测试内容。")
+    assert not r["success"] and "嵌入失败" in r["error"] and "error_i18n" in r
+
+
+def test_vector_blob_roundtrip(ws_mod):
+    import struct as _s
+    r = ws_mod.ws_ingest("库H6", content="向量存储一致性验证内容。" * 20, title="V")
+    d = ws_mod.ws_dir("库H6")
+    con = ws_mod._connect(d / "workspace.db")
+    rows = con.execute("SELECT embedding FROM vectors WHERE entry_id=?",
+                       (r["entry_id"],)).fetchall()
+    con.close()
+    assert rows
+    for (b,) in rows:
+        vals = _s.unpack(f"<{len(b) // 4}f", b)
+        assert len(vals) == 16  # 假嵌入维度
+        assert all(-2 <= x <= 2 for x in vals)

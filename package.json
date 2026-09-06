@@ -39,6 +39,7 @@
     "scripts/messages.py",
     "scripts/workspace.py",
     "scripts/runtime.py",
+    "scripts/embeddings.py",
     "scripts/requirements-libs.txt"
   ],
   "engines": {

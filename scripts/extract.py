@@ -32,9 +32,11 @@ from extractors import (
 from transcribe import extract_audio_text, extract_audio_srt, extract_video_text
 import transcribe as _transcribe_mod
 from deps import MissingDependencyError, _dep_detail, _install_dep
+import deps
 import messages
 import workspace
 import runtime
+import embeddings
 
 # Windows 管道输出默认 GBK，emoji/特殊字符会 UnicodeEncodeError 崩溃，强制 UTF-8
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
@@ -117,6 +119,22 @@ def _runtime_gate(args):
     sys.exit(1)
 
 
+# ==================== 知识库依赖链闸门（方案 v1.5 §8C.11） ====================
+
+def _kb_gate(args):
+    """知识库功能前置：嵌入引擎 + 向量模型缺失 → 复用组件确认 UI 引导安装（全链一次列清）。
+    --no-embed 入库 / --mode fts 检索不依赖向量组件，跳过本闸门。"""
+    kinds = deps._missing_kb_kinds(embeddings.DEFAULT_MODEL)
+    if not kinds:
+        return
+    result = _handle_missing_deps(args, MissingDependencyError(kinds),
+                                  after_install=lambda: {"success": True,
+                                                         "_kb_installed": True})
+    if not result.get("_kb_installed"):
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        sys.exit(1)
+
+
 # ==================== 知识库 workspace（v1.3 §1/§4/§5） ====================
 
 def _fts_gate(args):
@@ -155,7 +173,8 @@ def _run_workspace_ops(args):
     if args.list:
         return workspace.ws_list_entries(W)
     if args.search:
-        return workspace.ws_search(W, args.search, all_workspaces=args.all_workspaces)
+        return workspace.ws_search(W, args.search, all_workspaces=args.all_workspaces,
+                                   mode=args.mode, no_embed=args.no_embed)
     if args.entry:
         return workspace.ws_read_entry(W, args.entry, chunk_no=args.chunk)
     if args.remove:
@@ -184,6 +203,7 @@ def _maybe_ingest(args, result):
         "publisher": args.publisher,
         "publish_date": args.publish_date,
         "keep_source": not args.no_keep_source,
+        "no_embed": args.no_embed,
     }
     if ct == "youtube":
         raw = result.get("raw_subtitle")
@@ -253,7 +273,7 @@ def _run_extraction(args):
         return extract_local_file(args.file, output_format=args.output, model=args.model)
     return messages.err_result("unsupported_type", t=content_type)
 
-def _handle_missing_deps(args, err):
+def _handle_missing_deps(args, err, after_install=None):
     """列出缺失组件（名称/用途/来源/预计大小），经用户确认后下载安装并继续原任务。"""
     items = [_dep_detail(k) for k in err.kinds]
     print(messages.msg("deps_header"), file=sys.stderr)
@@ -295,6 +315,8 @@ def _handle_missing_deps(args, err):
     if "runtime" in err.kinds:
         # 引导层装完运行时不能继续提取（扩展库在专用解释器里），交由闸门 re-exec
         return {"success": True, "_runtime_installed": True}
+    if after_install is not None:
+        return after_install()
     return _run_extraction(args)
 
 def main():
@@ -319,6 +341,10 @@ def main():
     parser.add_argument('--stats', action='store_true', help='workspace 统计（条目/字符/分片/来源分布）')
     parser.add_argument('--list', action='store_true', help='列举 workspace 条目')
     parser.add_argument('--search', metavar='查询', help='FTS5 检索（支持 AND/OR/NOT/NEAR/前缀*，短语加引号）')
+    parser.add_argument('--mode', choices=['fused', 'fts', 'vector'], default='fused',
+                        help='检索模式（默认 fused：FTS+向量 RRF 融合；fts=仅关键词；vector=仅语义）')
+    parser.add_argument('--no-embed', action='store_true',
+                        help='本次不做向量嵌入（入库仅建 FTS 索引；检索仅走 FTS 路）')
     parser.add_argument('--all-workspaces', action='store_true', help='跨全部 workspace 检索（与 --search 搭配）')
     parser.add_argument('--entry', metavar='ID', help='读取条目 full.md 全文')
     parser.add_argument('--chunk', type=int, metavar='N', help='配合 --entry 读取指定分片')
@@ -341,6 +367,13 @@ def main():
 
     # 专用运行时闸门（v1.4 §8B）：缺失则引导安装，就绪则透明 re-exec（v1.4 决策 3：不回退用户环境）
     _runtime_gate(args)
+
+    # 知识库依赖链闸门（v1.5 §8C.11）：嵌入引擎/向量模型缺失 → 全链确认安装
+    needs_embed = bool(
+        (args.search and args.mode in ("fused", "vector"))
+        or (args.workspace and (args.url or args.file) and not args.no_embed))
+    if needs_embed and not os.environ.get("SMART_SUMMARIZE_NO_RUNTIME"):
+        _kb_gate(args)
 
     if args.chunk and not args.entry:
         parser.error(messages.msg("chunk_needs_entry"))

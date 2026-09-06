@@ -442,6 +442,18 @@ def _dep_detail(kind):
                 "purpose": messages.msg("dep_purpose_runtime"),
                 "source": messages.msg("dep_source_runtime"),
                 "est_size": messages.msg("dep_size_runtime")}
+    if kind == "llama-embed":
+        return {"kind": kind, "name": "llama.cpp 嵌入引擎",
+                "purpose": messages.msg("dep_purpose_llama_embed"),
+                "source": messages.msg("dep_source_llama_embed", tag=LLAMA_CPP_RELEASE),
+                "est_size": "约 18–30MB"}
+    if kind.startswith("embedding:"):
+        model_id = kind.split(":", 1)[1]
+        spec = EMBEDDING_MODELS.get(model_id, {})
+        return {"kind": kind, "name": model_id,
+                "purpose": messages.msg("dep_purpose_embedding_model", model=model_id),
+                "source": messages.msg("dep_source_embedding_model", model=model_id),
+                "est_size": _human_size(spec.get("size_bytes", 0)) or "未知大小"}
     if kind == "ffmpeg":
         url = _ffmpeg_source_url()
         size = _content_length(url) if url else 0
@@ -467,8 +479,189 @@ def _install_dep(kind):
         # 惰性导入避免 deps↔runtime 循环（runtime 顶部 import deps）
         import runtime
         return runtime.install_runtime()
+    if kind == "llama-embed":
+        return install_llama_embed()
+    if kind.startswith("embedding:"):
+        return install_embedding_model(kind.split(":", 1)[1])
     if kind == "whisper-cli":
         return install_whispercli()
     if kind.startswith("model:"):
         return install_model(kind.split(":", 1)[1])
     raise RuntimeError(f"未知组件类型: {kind}")
+
+
+# ==================== llama.cpp 嵌入引擎 + 向量模型（方案 v1.5 §8C） ====================
+
+LLAMA_CPP_RELEASE = os.environ.get("SMART_SUMMARIZE_LLAMA_CPP_RELEASE", "b10819")
+HF_BASE = os.environ.get("SMART_SUMMARIZE_HF_MIRROR", "https://huggingface.co")
+
+# 向量模型注册表（默认 Qwen3，用户决策 2026-09-06；bge-m3/e5-small 为注册表备选档）
+EMBEDDING_MODELS = {
+    "Qwen3-Embedding-0.6B": {
+        "gguf_repo": "Qwen/Qwen3-Embedding-0.6B-GGUF",
+        "gguf_file": "Qwen3-Embedding-0.6B-Q8_0.gguf",
+        "size_bytes": 639_629_312,
+        "dims": 1024, "license": "apache-2.0", "default": True,
+    },
+}
+
+LLAMA_EMBED_SUBDIR = "llama"  # 受管 bin/llama/：与 whisper-cli 隔离（ggml*.dll 混放会致后端扫描崩溃）
+
+
+def _find_llama_embed():
+    """定位 llama.cpp 嵌入引擎：环境变量 → 受管 bin/llama/ → PATH"""
+    configured = os.environ.get("SMART_SUMMARIZE_LLAMA_EMBED")
+    if configured:
+        p = Path(configured).expanduser()
+        if p.exists() and p.is_file():
+            return p
+    exe = "llama-embedding.exe" if os.name == "nt" else "llama-embedding"
+    managed = MANAGED_BIN / LLAMA_EMBED_SUBDIR / exe
+    if managed.exists() and managed.is_file():
+        return managed
+    return shutil.which(exe)
+
+
+def _llama_embed_asset():
+    arch = "arm64" if platform.machine().upper() in ("ARM64", "AARCH64") else "x64"
+    return f"llama-{LLAMA_CPP_RELEASE}-bin-win-cpu-{arch}.zip"
+
+
+def install_llama_embed():
+    """安装 llama.cpp 嵌入引擎。**GPU 优先**（默认下载 GPU 加速包），不可用回退 CPU：
+    - Windows：检测到 GPU（NVIDIA/AMD/Intel）→ Vulkan 版（34MB，三大厂商通吃）→ 失败回退 CPU 版；ARM64 无 Vulkan 资产 → CPU 版
+    - macOS：brew / 源码构建（Metal GPU 默认启用）
+    - Linux/WSL：源码构建——NVIDIA+nvcc → CUDA；Vulkan SDK → Vulkan；否则 CPU（如实告知）
+    装到受管 bin/llama/ 子目录（与 whisper-cli 的 ggml DLL 隔离，避免后端扫描冲突）。"""
+    found = _find_llama_embed()
+    if found:
+        return found
+
+    def _extract_win_zip(asset):
+        url = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_CPP_RELEASE}/{asset}"
+        target = MANAGED_BIN / LLAMA_EMBED_SUBDIR
+        target.mkdir(parents=True, exist_ok=True)
+        import zipfile
+        with tempfile.TemporaryDirectory(prefix="ss_llama_dl_") as td:
+            archive = _http_download(url, Path(td) / asset, "llama.cpp 嵌入引擎")
+            with zipfile.ZipFile(archive) as zf:
+                zf.extractall(td)
+            for name in ("llama-embedding", "llama-server"):
+                exe = name + (".exe" if os.name == "nt" else "")
+                built = next((q for q in Path(td).rglob(exe) if q.is_file()), None)
+                if not built:
+                    return None
+                shutil.copy2(built, target / exe)
+            # 运行所需 DLL 一并拷入 llama/ 子目录（不进 bin/ 根，避免污染 whisper-cli）
+            for extra in Path(td).rglob("*.dll"):
+                shutil.copy2(extra, target / extra.name)
+        return target / ("llama-embedding.exe" if os.name == "nt" else "llama-embedding")
+
+    # 1) Windows：GPU 优先，CPU 兜底
+    if os.name == "nt":
+        machine = platform.machine().upper()
+        if machine in ("ARM64", "AARCH64"):
+            # 官方无 vulkan-arm64 资产 → CPU 版
+            out = _extract_win_zip(f"llama-{LLAMA_CPP_RELEASE}-bin-win-cpu-arm64.zip")
+            if not out:
+                raise RuntimeError("Windows ARM64 嵌入引擎下载失败")
+            return out
+        vendor, gpu_name, _ = _detect_gpu()
+        gpu_capable = vendor in ("nvidia", "amd", "intel")
+        if gpu_capable:
+            try:
+                out = _extract_win_zip(f"llama-{LLAMA_CPP_RELEASE}-bin-win-vulkan-x64.zip")
+                if out:
+                    print(f"  🎮 已安装 Vulkan GPU 加速版（{gpu_name}）", file=sys.stderr)
+                    return out
+            except Exception as e:
+                print(f"  ⚠️ Vulkan 包下载失败（{e}），回退 CPU 版", file=sys.stderr)
+        out = _extract_win_zip(f"llama-{LLAMA_CPP_RELEASE}-bin-win-cpu-x64.zip")
+        if not out:
+            raise RuntimeError("llama.cpp 嵌入引擎下载失败（Vulkan 与 CPU 版均失败）")
+        if gpu_capable:
+            print("  ⚠️ Vulkan 版不可用，已回退 CPU 版（无 GPU 加速）", file=sys.stderr)
+        return out
+    # 2) macOS：brew install llama.cpp（Metal GPU 默认启用）
+    if sys.platform == "darwin" and shutil.which("brew"):
+        print("  ⬇ 尝试 brew install llama.cpp（预编译包，Metal GPU 默认启用）...", file=sys.stderr)
+        r = subprocess.run(["brew", "install", "llama.cpp"],
+                           capture_output=True, text=True, timeout=3600)
+        if r.returncode == 0 and _find_llama_embed():
+            return _find_llama_embed()
+        print("  ⚠️ brew 安装未成功，改用源码构建", file=sys.stderr)
+    # 3) Linux/WSL/兜底：源码构建，按工具链自动选 GPU 后端
+    for tool in ("git", "cmake"):
+        if not shutil.which(tool):
+            raise RuntimeError(f"源码构建需要 {tool}，请先安装后重试")
+    repo_dir = MANAGED_HOME / "llama.cpp"
+    if not (repo_dir / ".git").exists():
+        print("  ⬇ 克隆 llama.cpp（浅克隆）...", file=sys.stderr)
+        r = subprocess.run(["git", "clone", "--depth", "1",
+                            "https://github.com/ggml-org/llama.cpp", str(repo_dir)],
+                           capture_output=True, text=True, timeout=1800)
+        if r.returncode != 0:
+            raise RuntimeError(f"git clone 失败: {(r.stderr or '').strip()[-300:]}")
+    build_dir = repo_dir / "build"
+    gpu_flags = []
+    vendor, gpu_name, _ = _detect_gpu()
+    if shutil.which("nvcc") and vendor == "nvidia":
+        gpu_flags = ["-DGGML_CUDA=ON"]
+        print(f"  🎮 检测到 NVIDIA GPU（{gpu_name}）+ CUDA Toolkit，启用 CUDA 后端", file=sys.stderr)
+    elif os.environ.get("VULKAN_SDK") or shutil.which("glslc"):
+        gpu_flags = ["-DGGML_VULKAN=ON"]
+        print(f"  🎮 检测到 Vulkan SDK，启用 Vulkan 后端", file=sys.stderr)
+    else:
+        print("  ⚠️ 未检测到 GPU 工具链（CUDA Toolkit / Vulkan SDK），本次构建为 CPU 版", file=sys.stderr)
+    r = subprocess.run(["cmake", "-S", str(repo_dir), "-B", str(build_dir),
+                        "-DCMAKE_BUILD_TYPE=Release", "-DGGML_NATIVE=OFF"] + gpu_flags,
+                       capture_output=True, text=True, timeout=600)
+    if r.returncode != 0:
+        raise RuntimeError(f"cmake 配置失败: {(r.stderr or '').strip()[-300:]}")
+    print("  🔧 编译 llama-embedding / llama-server（可能需要数分钟）...", file=sys.stderr)
+    r = subprocess.run(["cmake", "--build", str(build_dir), "--config", "Release",
+                        "--target", "llama-embedding", "llama-server", "--parallel"],
+                       capture_output=True, text=True, timeout=7200)
+    if r.returncode != 0:
+        raise RuntimeError(f"编译失败: {(r.stderr or '').strip()[-300:]}")
+    target = MANAGED_BIN / LLAMA_EMBED_SUBDIR
+    target.mkdir(parents=True, exist_ok=True)
+    for name in ("llama-embedding", "llama-server"):
+        built = next((q for q in build_dir.rglob(name) if q.is_file()), None)
+        if built:
+            shutil.copy2(built, target / name)
+            (target / name).chmod(0o755)
+    out = _find_llama_embed()
+    if not out:
+        raise RuntimeError("编译完成但未找到 llama-embedding")
+    return out
+
+
+def install_embedding_model(model_id):
+    """下载向量模型（GGUF）到受管 models/embedding/<id>/；已存在即返回"""
+    spec = EMBEDDING_MODELS.get(model_id)
+    if not spec:
+        raise RuntimeError(f"未知向量模型: {model_id}")
+    dest = MANAGED_MODELS / "embedding" / model_id / spec["gguf_file"]
+    if dest.exists() and dest.is_file():
+        return dest
+    url = f"{HF_BASE}/{spec['gguf_repo']}/resolve/main/{spec['gguf_file']}"
+    return _http_download(url, dest, model_id)
+
+
+def _missing_kb_kinds(model_id):
+    """知识库依赖链缺失判定（方案 §8C.11；运行时由 extract.py 运行时闸门单独处理）"""
+    kinds = []
+    if not _find_llama_embed():
+        kinds.append("llama-embed")
+    if not _find_model_file_embedding(model_id):
+        kinds.append(f"embedding:{model_id}")
+    return kinds
+
+
+def _find_model_file_embedding(model_id):
+    spec = EMBEDDING_MODELS.get(model_id)
+    if not spec:
+        return None
+    p = MANAGED_MODELS / "embedding" / model_id / spec["gguf_file"]
+    return p if p.exists() and p.is_file() else None
