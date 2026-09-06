@@ -443,7 +443,7 @@ def _dep_detail(kind):
                 "source": messages.msg("dep_source_runtime"),
                 "est_size": messages.msg("dep_size_runtime")}
     if kind == "llama-embed":
-        return {"kind": kind, "name": "llama.cpp 嵌入引擎",
+        return {"kind": kind, "name": "llama.cpp 嵌入引擎 (llama-server)",
                 "purpose": messages.msg("dep_purpose_llama_embed"),
                 "source": messages.msg("dep_source_llama_embed", tag=LLAMA_CPP_RELEASE),
                 "est_size": "约 18–30MB"}
@@ -509,13 +509,14 @@ LLAMA_EMBED_SUBDIR = "llama"  # 受管 bin/llama/：与 whisper-cli 隔离（ggm
 
 
 def _find_llama_embed():
-    """定位 llama.cpp 嵌入引擎：环境变量 → 受管 bin/llama/ → PATH"""
+    """定位 llama.cpp 嵌入引擎（llama-server，/v1/embeddings 端点）：
+    环境变量 → 受管 bin/llama/ → PATH。新版发布包不再含独立 llama-embedding exe。"""
     configured = os.environ.get("SMART_SUMMARIZE_LLAMA_EMBED")
     if configured:
         p = Path(configured).expanduser()
         if p.exists() and p.is_file():
             return p
-    exe = "llama-embedding.exe" if os.name == "nt" else "llama-embedding"
+    exe = "llama-server.exe" if os.name == "nt" else "llama-server"
     managed = MANAGED_BIN / LLAMA_EMBED_SUBDIR / exe
     if managed.exists() and managed.is_file():
         return managed
@@ -546,7 +547,7 @@ def install_llama_embed():
             archive = _http_download(url, Path(td) / asset, "llama.cpp 嵌入引擎")
             with zipfile.ZipFile(archive) as zf:
                 zf.extractall(td)
-            for name in ("llama-embedding", "llama-server"):
+            for name in ("llama-server",):
                 exe = name + (".exe" if os.name == "nt" else "")
                 built = next((q for q in Path(td).rglob(exe) if q.is_file()), None)
                 if not built:
@@ -555,7 +556,7 @@ def install_llama_embed():
             # 运行所需 DLL 一并拷入 llama/ 子目录（不进 bin/ 根，避免污染 whisper-cli）
             for extra in Path(td).rglob("*.dll"):
                 shutil.copy2(extra, target / extra.name)
-        return target / ("llama-embedding.exe" if os.name == "nt" else "llama-embedding")
+        return target / ("llama-server.exe" if os.name == "nt" else "llama-server")
 
     # 1) Windows：GPU 优先，CPU 兜底
     if os.name == "nt":
@@ -626,14 +627,14 @@ def install_llama_embed():
         raise RuntimeError(f"编译失败: {(r.stderr or '').strip()[-300:]}")
     target = MANAGED_BIN / LLAMA_EMBED_SUBDIR
     target.mkdir(parents=True, exist_ok=True)
-    for name in ("llama-embedding", "llama-server"):
+    for name in ("llama-server",):
         built = next((q for q in build_dir.rglob(name) if q.is_file()), None)
         if built:
             shutil.copy2(built, target / name)
             (target / name).chmod(0o755)
     out = _find_llama_embed()
     if not out:
-        raise RuntimeError("编译完成但未找到 llama-embedding")
+        raise RuntimeError("编译完成但未找到 llama-server")
     return out
 
 

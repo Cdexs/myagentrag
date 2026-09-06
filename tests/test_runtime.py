@@ -44,7 +44,7 @@ def test_requirements_file_declares_all_libs():
     lines = [l.strip() for l in runtime.RUNTIME_REQUIREMENTS.read_text(encoding="utf-8").splitlines()
              if l.strip() and not l.strip().startswith("#")]
     names = {l.split(">=")[0].split("==")[0].strip().lower() for l in lines}
-    assert names == {"requests", "yt-dlp", "pdfplumber", "pymupdf",
+    assert names == {"requests", "yt-dlp", "pdfplumber", "pymupdf", "numpy",
                      "python-docx", "ebooklib", "openpyxl", "python-pptx"}
     # ebooklib 必须 >=0.20（常量命名空间变更后的受控下限）
     assert any(l.lower().startswith("ebooklib>=0.20") for l in lines)

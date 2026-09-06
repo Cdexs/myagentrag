@@ -228,7 +228,7 @@ def _maybe_ingest(args, result):
     ing = workspace.ws_ingest(args.workspace, **kwargs)
     if ing.get("success"):
         result["workspace"] = {"name": args.workspace, "entry_id": ing["entry_id"],
-                               "chunk_count": ing["chunk_count"],
+                               "chunk_count": ing["chunk_count"], "vectors": ing["vectors"],
                                "total_chars": ing["total_chars"], "updated": ing["updated"]}
         print(f"  📥 {ing['message']}", file=sys.stderr)
     else:

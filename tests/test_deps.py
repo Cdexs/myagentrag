@@ -143,7 +143,7 @@ def test_llama_embed_zip_install_isolated_dlls(tmp_path, monkeypatch):
     monkeypatch.setattr(deps, "_detect_gpu", lambda: ("nvidia", "Fake GPU", ""))
     monkeypatch.setattr(deps.os, "name", "nt")
     out = deps.install_llama_embed()
-    assert str(out).replace("\\", "/").endswith("bin/llama/llama-embedding.exe")
+    assert str(out).replace("\\", "/").endswith("bin/llama/llama-server.exe")
     assert (tmp_path / "bin" / "llama" / "ggml.dll").exists()
     assert not (tmp_path / "bin" / "ggml.dll").exists()  # DLL 不进 bin/ 根
 
