@@ -168,7 +168,30 @@ def test_embedding_model_download_then_reuse(tmp_path, monkeypatch):
 
 
 def test_missing_kb_kinds_chain(tmp_path, monkeypatch):
+    """组件检测回归：ffmpeg/whisper-cli/ggml 经环境变量指向临时文件 → 全部就绪"""
+    ff = tmp_path / "ffmpeg.exe"
+    ff.write_bytes(b"x")
+    cli = tmp_path / "whisper-cli.exe"
+    cli.write_bytes(b"x")
+    model = tmp_path / "ggml-large-v3-turbo.bin"
+    model.write_bytes(b"x")
+    monkeypatch.setenv("SMART_SUMMARIZE_FFMPEG", str(ff))
+    monkeypatch.setenv("SMART_SUMMARIZE_WHISPERCPP_CLI", str(cli))
+    monkeypatch.setenv("SMART_SUMMARIZE_WHISPERCPP_MODELS_DIR", str(tmp_path))
+    monkeypatch.setattr(deps, "WHISPERCPP_MODELS_DIR", tmp_path)
+    monkeypatch.setattr(deps, "MANAGED_MODELS", tmp_path)
+    assert deps._missing_dep_kinds("large-v3-turbo") == []
+
+
+def test_missing_kb_kinds_sqlite_vec_layer(monkeypatch):
+    """§8C.13：sqlite-vec 软组件纳入缺失链；已就绪时不出现在清单"""
     monkeypatch.setattr(deps, "_find_llama_embed", lambda: None)
     monkeypatch.setattr(deps, "_find_model_file_embedding", lambda mid: None)
+    monkeypatch.setattr(deps, "sqlite_vec_ready",
+                        lambda force=False: (False, {"error": "t"}))
+    assert deps._missing_kb_kinds("Qwen3-Embedding-0.6B") == [
+        "llama-embed", "embedding:Qwen3-Embedding-0.6B", "sqlite-vec"]
+    monkeypatch.setattr(deps, "sqlite_vec_ready",
+                        lambda force=False: (True, {"version": "0.1.9"}))
     assert deps._missing_kb_kinds("Qwen3-Embedding-0.6B") == [
         "llama-embed", "embedding:Qwen3-Embedding-0.6B"]

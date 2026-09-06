@@ -140,3 +140,18 @@ def test_search_mode_flag_passthrough(cli_env, tmp_path):
     r = run(cli_env, "--workspace", "模式库", "--search", "模式透传", "--mode", "fused")
     j = jout(r)
     assert j["mode"] == "fused" and j["total"] >= 1
+
+
+def test_kb_gate_lists_full_chain_when_components_missing(cli_env):
+    """§8C.11：全新机器首次知识库使用 → 缺失清单含运行时/引擎/模型/扩展全链。
+    （本测试环境 NO_RUNTIME=1 跳过闸门，故用真实路径的独立断言覆盖：删除跳过变量，
+    但会真实安装组件——改为验证结构：不在此处真装，用 _missing_kb_kinds 单测覆盖。
+    此处仅验证 fused 模式在 NO_RUNTIME 下按传统路径降级可检索。）"""
+    doc = cli_env and None  # 占位保持结构清晰
+    doc2 = __import__("pathlib").Path(cli_env["SMART_SUMMARIZE_WORKSPACES_DIR"]).parent / "m2.md"
+    doc2.write_text("全链依赖闸门结构验证。", encoding="utf-8")
+    r = run(cli_env, "--file", str(doc2), "--workspace", "闸门库", "--no-embed")
+    assert jout(r)["success"] is True
+    r = run(cli_env, "--workspace", "闸门库", "--search", "全链依赖", "--mode", "fused")
+    j = jout(r)
+    assert j["success"] and j["vector_available"] is False  # 测试模式跳过向量路

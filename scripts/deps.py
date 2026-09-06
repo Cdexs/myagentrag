@@ -13,6 +13,7 @@ extractors 独立。
 import os
 import platform
 import shutil
+import sqlite3  # v0.7.1 §8C.13：sqlite-vec 探测冒烟用
 import subprocess
 import sys
 import tempfile
@@ -443,10 +444,15 @@ def _dep_detail(kind):
                 "source": messages.msg("dep_source_runtime"),
                 "est_size": messages.msg("dep_size_runtime")}
     if kind == "llama-embed":
-        return {"kind": kind, "name": "llama.cpp 嵌入引擎 (llama-server)",
+        return {"kind": kind, "name": "llama.cpp 嵌入引擎",
                 "purpose": messages.msg("dep_purpose_llama_embed"),
                 "source": messages.msg("dep_source_llama_embed", tag=LLAMA_CPP_RELEASE),
-                "est_size": "约 18–30MB"}
+                "est_size": "约 18–34MB"}
+    if kind == "sqlite-vec":
+        return {"kind": kind, "name": "sqlite-vec 向量检索扩展",
+                "purpose": messages.msg("dep_purpose_sqlite_vec"),
+                "source": messages.msg("dep_source_sqlite_vec"),
+                "est_size": "约 0.3MB"}
     if kind.startswith("embedding:"):
         model_id = kind.split(":", 1)[1]
         spec = EMBEDDING_MODELS.get(model_id, {})
@@ -481,6 +487,8 @@ def _install_dep(kind):
         return runtime.install_runtime()
     if kind == "llama-embed":
         return install_llama_embed()
+    if kind == "sqlite-vec":
+        return install_sqlite_vec()
     if kind.startswith("embedding:"):
         return install_embedding_model(kind.split(":", 1)[1])
     if kind == "whisper-cli":
@@ -651,13 +659,144 @@ def install_embedding_model(model_id):
 
 
 def _missing_kb_kinds(model_id):
-    """知识库依赖链缺失判定（方案 §8C.11；运行时由 extract.py 运行时闸门单独处理）"""
+    """知识库依赖链缺失判定（方案 §8C.11；运行时由 extract.py 运行时闸门单独处理）。
+    sqlite-vec 为软组件：缺失列入清单，但安装/加载失败由调用方回退 numpy（§8C.13）。"""
     kinds = []
     if not _find_llama_embed():
         kinds.append("llama-embed")
     if not _find_model_file_embedding(model_id):
         kinds.append(f"embedding:{model_id}")
+    if not sqlite_vec_ready()[0]:
+        kinds.append("sqlite-vec")
     return kinds
+
+
+def _find_model_file_embedding(model_id):
+    spec = EMBEDDING_MODELS.get(model_id)
+    if not spec:
+        return None
+    p = MANAGED_MODELS / "embedding" / model_id / spec["gguf_file"]
+
+
+# ==================== sqlite-vec 向量后端（方案 v1.5 §8C.13，v0.7.1） ====================
+
+SQLITE_VEC_PACKAGE = "sqlite-vec>=0.1.9"
+_SQLITE_VEC_STATE = None  # (ok, info) 进程内缓存
+
+
+def _sqlite_vec_loadable_path():
+    """GitHub tarball 兜底安装后的扩展文件位置（受管 bin/sqlite-vec/）"""
+    name = "vec0.dll" if os.name == "nt" else ("vec0.dylib" if sys.platform == "darwin" else "vec0.so")
+    p = MANAGED_BIN / "sqlite-vec" / name
+    return p if p.exists() else None
+
+
+def _probe_sqlite_vec(con=None, loadable=None, retries=3):
+    """sqlite-vec 可用性探测：import → load → vec0 虚表冒烟。
+    返回 (ok, info)。loadable: 兜底模式下的扩展文件路径。
+    Windows 下 DLL 初始化存在间歇性失败，load 异常重试 3 次（与 _load_vec0 同策略）；
+    sqlite_vec 包未安装属确定性缺失，不重试。"""
+    import time as _time
+    try:
+        import sqlite_vec
+    except ImportError as e:
+        return False, {"error": f"sqlite_vec 未安装: {e}"}
+    info = {"version": getattr(sqlite_vec, "__version__", "0.1.9")}
+    last = None
+    for attempt in range(retries):
+        own = False
+        try:
+            c = con
+            if c is None:
+                c = sqlite3.connect(":memory:")
+                own = True
+            c.enable_load_extension(True)
+            if loadable:
+                c.load_extension(str(loadable))
+            else:
+                sqlite_vec.load(c)
+            c.execute("CREATE VIRTUAL TABLE IF NOT EXISTS vec_probe USING vec0("
+                      "embedding float[1024])")
+            c.execute("DROP TABLE IF EXISTS vec_probe")
+            return True, info
+        except Exception as e:
+            last = e
+            _time.sleep(0.05 * (attempt + 1))
+        finally:
+            if own:
+                c.close()
+    info["error"] = str(last)[:200]
+    return False, info
+
+
+def sqlite_vec_ready(force=False):
+    """进程内缓存的 sqlite-vec 就绪状态（供闸门/检索路径快速判定）。"""
+    global _SQLITE_VEC_STATE
+    if force or _SQLITE_VEC_STATE is None:
+        _SQLITE_VEC_STATE = _probe_sqlite_vec()
+    return _SQLITE_VEC_STATE
+
+
+def install_sqlite_vec():
+    """安装 sqlite-vec 向量后端：PyPI 优先（当前解释器 = 专用运行时内即装入运行时 venv），
+    失败时 GitHub loadable tarball 兜底（受管 bin/sqlite-vec/）。成功返回版本信息 dict；
+    全部失败抛 RuntimeError（调用方据此回退 numpy）。"""
+    cmd = [sys.executable, "-m", "pip", "install", "--upgrade", SQLITE_VEC_PACKAGE]
+    index_url = os.environ.get("SMART_SUMMARIZE_PIP_INDEX_URL")
+    if index_url:
+        cmd += ["--index-url", index_url]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    ok, info = _probe_sqlite_vec()
+    if ok:
+        print(f"  ✅ sqlite-vec 就绪（{info.get('version', '')}）", file=sys.stderr)
+        _record_dependency("sqlite-vec", info)
+        return info
+    print(f"  ⚠️ PyPI 安装后加载失败（{info.get('error', '')[:120]}），尝试 GitHub loadable 兜底...", file=sys.stderr)
+    # GitHub loadable tarball 兜底
+    machine = platform.machine().upper()
+    if os.name == "nt":
+        plat = "windows-x86_64"
+    elif sys.platform == "darwin":
+        plat = "macos-aarch64" if machine in ("ARM64", "AARCH64") else "macos-x86_64"
+    else:
+        plat = "linux-aarch64" if machine in ("ARM64", "AARCH64") else "linux-x86_64"
+    asset = f"sqlite-vec-0.1.9-loadable-{plat}.tar.gz"
+    url = f"https://github.com/asg017/sqlite-vec/releases/download/v0.1.9/{asset}"
+    import tarfile
+    target = MANAGED_BIN / "sqlite-vec"
+    target.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="ss_vec_dl_") as td:
+        archive = _http_download(url, Path(td) / asset, "sqlite-vec 扩展")
+        with tarfile.open(archive, "r:gz") as tf:
+            tf.extractall(td)
+        ext_name = "vec0.dll" if os.name == "nt" else ("vec0.dylib" if sys.platform == "darwin" else "vec0.so")
+        ext = next((q for q in Path(td).rglob(ext_name) if q.is_file()), None)
+        if not ext:
+            raise RuntimeError(f"下载包中未找到 {ext_name}")
+        shutil.copy2(ext, target / ext_name)
+    ok2, info2 = _probe_sqlite_vec(loadable=_sqlite_vec_loadable_path())
+    if not ok2:
+        raise RuntimeError(f"sqlite-vec 兜底安装后仍加载失败: {info2.get('error', '')}")
+    print("  ✅ sqlite-vec 就绪（loadable 兜底）", file=sys.stderr)
+    _record_dependency("sqlite-vec", info2)
+    return info2
+
+
+def _record_dependency(component, info):
+    """依赖锁 manifest（方案 §8C.12）：记录组件版本与时间。"""
+    import json as _json
+    import datetime as _dt
+    mf = MANAGED_HOME / "dependencies.json"
+    try:
+        data = {}
+        if mf.exists():
+            data = _json.loads(mf.read_text(encoding="utf-8"))
+        data[component] = {"version": info.get("version", ""),
+                           "updated_at": _dt.datetime.now().isoformat(timespec="seconds")}
+        mf.parent.mkdir(parents=True, exist_ok=True)
+        mf.write_text(_json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _find_model_file_embedding(model_id):

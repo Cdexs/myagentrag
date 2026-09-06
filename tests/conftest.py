@@ -35,5 +35,16 @@ def _fake_embedder(monkeypatch):
     fake_file = "fake-qwen3.gguf"
     monkeypatch.setattr(deps, "_find_llama_embed", lambda: fake_file)
     monkeypatch.setattr(deps, "_find_model_file_embedding", lambda mid: fake_file)
-    monkeypatch.setattr(embeddings, "embed_texts", embeddings.fake_embed)
+    monkeypatch.setattr(embeddings, "embed_texts",
+                    lambda texts, model_id=None: embeddings.fake_embed(texts, dims=1024, model_id=model_id))
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _legacy_vec_backend(monkeypatch):
+    """默认强制 legacy 向量后端（vectors 表 + numpy KNN，确定性）；
+    vec0 路测试用 _vec0_backend 覆盖（见 test_workspace 的 vec0 用例）。"""
+    import deps
+    monkeypatch.setattr(deps, "sqlite_vec_ready",
+                        lambda force=False: (False, {"error": "test-legacy"}))
     yield

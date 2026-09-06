@@ -32,6 +32,7 @@ from deps import MANAGED_HOME
 from slicing import CHUNK_CHARS, CHUNK_OVERLAP_CHARS
 import messages
 import embeddings
+import deps
 
 WORKSPACE_DB = "workspace.db"
 AUDIO_EXTS = {'.mp3', '.wav', '.aac', '.m4a', '.flac', '.ogg', '.wma'}
@@ -57,7 +58,7 @@ def check_fts_env(python_cmd=None):
                 con.execute("CREATE VIRTUAL TABLE probe USING fts5(x, tokenize='trigram')")
                 return True, info
             finally:
-                con.close()
+                _close(con)
         except Exception as e:
             info["error"] = str(e)
             return False, info
@@ -130,7 +131,7 @@ def _ensure_workspace(name):
         con = _connect(p / WORKSPACE_DB)
         con.executescript(SCHEMA)
         con.commit()
-        con.close()
+        _close(con)
     return p
 
 
@@ -187,11 +188,89 @@ CREATE TABLE IF NOT EXISTS vectors (
 """
 
 
+_CONN_POOL = {}          # db_path(归一化) -> connection（进程级复用；
+_VEC0_LOADED = {}  # id(con) -> True（已加载 vec0；连接由池持强引用，Connection 不可 weakref/挂属性）
+                         # vec0 扩展每连接仅加载一次，重复加载在 Windows 触发
+                         # "error during initialization"，故同库必须复用同一连接）
+
+
 def _connect(db_path):
+    key = os.path.normcase(str(Path(db_path).resolve()))
+    if key in _CONN_POOL:
+        return _CONN_POOL[key]
     con = sqlite3.connect(str(db_path))
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA user_version=2")  # v2：+vectors 表（方案 v1.5 §8C.2）
+    _CONN_POOL[key] = con
+    try:
+        _load_vec0(con)  # vec0 虚表所在库的连接必须加载扩展（v0.7.1 §8C.13）
+    except Exception:
+        pass
     return con
+
+
+def _close(con):
+    """连接入池复用（vec0 每进程仅加载一次），close 中性化；进程退出统一回收。"""
+    return None
+
+
+def _release_db(db_path):
+    """目录改名/删除前：关闭并移除该库的池中连接（Windows 下打开句柄会阻止目录操作）。"""
+    key = os.path.normcase(str(Path(db_path).resolve()))
+    con = _CONN_POOL.pop(key, None)
+    if con is not None:
+        con.close()
+
+
+def _load_vec0(con, retries=3):
+    """在本连接加载 sqlite-vec 扩展并确保 vec_items 虚表存在。
+    返回 True=vec0 可用；False=回退 numpy（v1.5 §8C.13：重试后仍失败才回退——
+    Windows 下 DLL 进程内重复加载存在间歇性 "error during initialization"，重试可恢复）。"""
+    if _VEC0_LOADED.get(id(con)):
+        return True
+    if not deps.sqlite_vec_ready()[0]:
+        return False
+    import time as _time
+    last_err = None
+    for attempt in range(retries):
+        try:
+            import sqlite_vec
+            con.enable_load_extension(True)
+            sqlite_vec.load(con)
+            dims = deps.EMBEDDING_MODELS[embeddings.DEFAULT_MODEL]["dims"]
+            con.execute(f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0("
+                        f"embedding float[{dims}] distance_metric=cosine, entry_id TEXT,"
+                        f" chunk_no INTEGER, win_start INTEGER, win_end INTEGER, model_id TEXT)")
+            _VEC0_LOADED[id(con)] = True
+            return True
+        except Exception as e:
+            last_err = e
+            _time.sleep(0.05 * (attempt + 1))
+    print(f"  ⚠️ sqlite-vec 加载失败（{str(last_err)[:80]}），向量检索回退 numpy 后端",
+          file=sys.stderr)
+    return False
+
+
+def _migrate_legacy_vectors(con):
+    """vec0 可用时，把旧 vectors 表数据迁移进 vec_items（幂等；迁移后清空旧表）。"""
+    if not _load_vec0(con):
+        return
+    try:
+        n = con.execute("SELECT COUNT(*) FROM vectors").fetchone()[0]
+        if not n:
+            return
+        rows = con.execute("SELECT entry_id, chunk_no, win_start, win_end, model_id, embedding"
+                           " FROM vectors").fetchall()
+        con.executemany("INSERT INTO vec_items(entry_id, chunk_no, win_start, win_end,"
+                        " model_id, embedding) VALUES (?,?,?,?,?,?)", rows)
+        con.execute("DELETE FROM vectors")
+        con.commit()
+        print(f"  ♻ 已迁移 {len(rows)} 条向量至 sqlite-vec 后端", file=sys.stderr)
+    except Exception:
+        try:
+            con.rollback()
+        except Exception:
+            pass
 
 
 def _now_iso():
@@ -441,7 +520,8 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
         rows.append((entry_id, no, ctext, cs, ce - cs, start_ms, end_ms))
 
     # 向量嵌入（v1.5 §8C：片内窗口粒度；--no-embed 跳过并在结果标注）
-    vector_rows = []
+    vec_windows = []
+    vec_values = []
     if not no_embed:
         import embeddings as _emb
         windows = []
@@ -450,12 +530,10 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
                 windows.append((no, off + ws_, off + we_, wtext))
         if windows:
             try:
-                vecs = _emb.embed_texts([w[3] for w in windows], model_id=_emb.DEFAULT_MODEL)
+                vec_values = _emb.embed_texts([w[3] for w in windows], model_id=_emb.DEFAULT_MODEL)
             except RuntimeError as e:
                 return messages.err_result("ingest_embed_fail", err=str(e))
-            vector_rows = [(entry_id, w[0], w[1], w[2], _emb.DEFAULT_MODEL,
-                            struct.pack(f"<{len(vecs[k])}f", *vecs[k]))
-                           for k, w in enumerate(windows)]
+            vec_windows = [(w[0], w[1], w[2]) for w in windows]  # (chunk_no, win_start, win_end)
 
     title_final = _entry_title_hint(title, text, entry_id)
     now = _now_iso()
@@ -486,9 +564,22 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
                 " VALUES (?,?,?,?,?,?)",
                 (cur.lastrowid, title_final, ctext, author, publisher, publish_date))
         con.execute("DELETE FROM vectors WHERE entry_id=?", (entry_id,))
-        if vector_rows:
-            con.executemany("INSERT INTO vectors(entry_id, chunk_no, win_start, win_end,"
-                            " model_id, embedding) VALUES (?,?,?,?,?,?)", vector_rows)
+        if vec_windows:
+            packed = [struct.pack(f"<{len(v)}f", *v) for v in vec_values]
+            if _load_vec0(con):
+                con.execute("DELETE FROM vec_items WHERE rowid IN"
+                            " (SELECT rowid FROM vec_items WHERE entry_id=?)", (entry_id,))
+                con.executemany(
+                    "INSERT INTO vec_items(entry_id, chunk_no, win_start, win_end,"
+                    " model_id, embedding) VALUES (?,?,?,?,?,?)",
+                    [(entry_id, w[0], w[1], w[2], embeddings.DEFAULT_MODEL, pk)
+                     for w, pk in zip(vec_windows, packed)])
+            else:
+                con.executemany(
+                    "INSERT INTO vectors(entry_id, chunk_no, win_start, win_end,"
+                    " model_id, embedding) VALUES (?,?,?,?,?,?)",
+                    [(entry_id, w[0], w[1], w[2], embeddings.DEFAULT_MODEL, pk)
+                     for w, pk in zip(vec_windows, packed)])
         con.execute(
             "INSERT INTO entries(id, title, source_type, source_ref, author, publisher,"
             " publish_date, created_at, updated_at, total_chars, chunk_count, full_path)"
@@ -502,7 +593,7 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
              created_at, now, len(text), len(rows), "full.md"))
         con.commit()
     finally:
-        con.close()
+        _close(con)
 
     meta = {
         "id": entry_id, "title": title_final, "source_type": source_type,
@@ -510,7 +601,7 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
         "publish_date": publish_date, "created_at": created_at, "updated_at": now,
         "total_chars": len(text), "chunk_count": len(rows), "full_path": "full.md",
         "source_copy": source_copy, "has_transcript": bool(char_spans),
-        "has_vectors": bool(vector_rows),
+        "has_vectors": bool(vec_windows),
     }
     (entry_dir / "meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -522,7 +613,7 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
                              chars=len(text), chunks=len(rows))
     return {"success": True, "workspace": ws_name, "entry_id": entry_id,
             "title": title_final, "total_chars": len(text), "chunk_count": len(rows),
-            "vectors": len(vector_rows), "updated": bool(existing),
+            "vectors": len(vec_windows), "updated": bool(existing),
             "message": pair[messages.get_lang()],
             "message_i18n": pair}
 
@@ -686,39 +777,74 @@ def _fts_search_one(con, ws_name, match, like_terms, limit):
     return hits
 
 
+def _build_vector_hit(con, ws_name, entry_id, chunk_no, win_start, win_end, score, query):
+    crow = con.execute("SELECT rowid, chunk_text, file_offset, char_count, start_ms, end_ms"
+                       " FROM chunks WHERE entry_id=? AND chunk_no=?",
+                       (entry_id, chunk_no)).fetchone()
+    e = con.execute("SELECT id, title, author, publish_date, source_type, full_path"
+                    " FROM entries WHERE id=?", (entry_id,)).fetchone()
+    if not crow or not e:
+        return None
+    hit = _row_to_hit(con, ws_name, crow[0], None, _like_snippet(crow[1], [query]))
+    if not hit:
+        return None
+    hit["score"] = round(score, 4)
+    hit["score_source"] = "vector"
+    hit["win_start"], hit["win_end"] = win_start, win_end
+    return hit
+
+
 def _vector_search_one(con, ws_name, query, limit, model_id):
-    """向量路：查询嵌入 → 全库窗口 KNN → 窗口级命中（score_source=vector）。"""
+    """向量路：vec0 可用 → 库内 KNN（SQL MATCH）；确实不可用 → numpy 全量扫描回退。
+    返回 (hits, backend)：backend ∈ "sqlite-vec" | "numpy"。"""
     import embeddings as _emb
-    rows = con.execute(
-        "SELECT entry_id, chunk_no, win_start, win_end, embedding FROM vectors"
-        " WHERE model_id=? AND win_end > win_start", (model_id,)).fetchall()
-    if not rows:
-        return []
+    backend = "numpy"
+    _migrate_legacy_vectors(con)
     qv = _emb.embed_texts([query], model_id=model_id)[0]
-    vecs = [struct.unpack(f"<{len(b) // 4}f", b) for (_, _, _, _, b) in rows]
-    top = _emb.knn_top(qv, vecs, k=limit * 4)
+    qblob = struct.pack(f"<{len(qv)}f", *qv)
     hits, seen = [], set()
+    # 1) vec0 库内 KNN
+    if _load_vec0(con):
+        try:
+            rows = con.execute(
+                "SELECT entry_id, chunk_no, win_start, win_end, distance"
+                " FROM vec_items WHERE embedding MATCH ? AND k = ? AND model_id = ?"
+                " ORDER BY distance", (qblob, limit, model_id)).fetchall()
+            for (entry_id, chunk_no, win_start, win_end, dist) in rows:
+                if (entry_id, chunk_no) in seen:
+                    continue
+                hit = _build_vector_hit(con, ws_name, entry_id, chunk_no,
+                                        win_start, win_end, max(0.0, 1.0 - dist), query)
+                if hit:
+                    seen.add((entry_id, chunk_no))
+                    hits.append(hit)
+            return hits, "sqlite-vec"
+        except sqlite3.OperationalError:
+            pass  # vec0 异常 → numpy 回退（backend 保持 numpy）
+    # 2) numpy 回退：vec_items 普通扫描优先，其次旧 vectors 表
+    rows = []
+    try:
+        rows = con.execute("SELECT entry_id, chunk_no, win_start, win_end, model_id, embedding"
+                           " FROM vec_items WHERE model_id=?", (model_id,)).fetchall()
+    except sqlite3.OperationalError:
+        pass
+    if not rows:
+        try:
+            rows = con.execute("SELECT entry_id, chunk_no, win_start, win_end, model_id, embedding"
+                               " FROM vectors WHERE model_id=?", (model_id,)).fetchall()
+        except sqlite3.OperationalError:
+            return []
+    vecs = [struct.unpack(f"<{len(b) // 4}f", b) for (_, _, _, _, _, b) in rows]
+    top = _emb.knn_top(qv, vecs, k=limit * 4)
     for idx, score in top:
         entry_id, chunk_no, win_start, win_end = rows[idx][0], rows[idx][1], rows[idx][2], rows[idx][3]
         if (entry_id, chunk_no) in seen:
             continue
-        crow = con.execute("SELECT rowid, chunk_text, file_offset, char_count, start_ms, end_ms"
-                           " FROM chunks WHERE entry_id=? AND chunk_no=?",
-                           (entry_id, chunk_no)).fetchone()
-        e = con.execute("SELECT id, title, author, publish_date, source_type, full_path"
-                        " FROM entries WHERE id=?", (entry_id,)).fetchone()
-        if not crow or not e:
-            continue
-        hit = _row_to_hit(con, ws_name, crow[0], None,
-                          _like_snippet(crow[1], [query]))
-        if not hit:
-            continue
-        hit["score"] = round(score, 4)
-        hit["score_source"] = "vector"
-        hit["win_start"], hit["win_end"] = win_start, win_end
-        seen.add((entry_id, chunk_no))
-        hits.append(hit)
-    return hits
+        hit = _build_vector_hit(con, ws_name, entry_id, chunk_no, win_start, win_end, score, query)
+        if hit:
+            seen.add((entry_id, chunk_no))
+            hits.append(hit)
+    return hits, backend
 
 
 def _rrf_fuse(fts_hits, vec_hits, limit, k=60):
@@ -764,6 +890,8 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
         return messages.err_result("ws_not_found", name=ws_name)
     fts_all, vec_all, searched = [], [], []
     vector_available = mode in ("vector", "fused")  # 向量路是否参与本次检索
+    vector_backend = None
+    skip_vector = bool(os.environ.get("SMART_SUMMARIZE_NO_RUNTIME"))  # 测试模式：全传统路径
     for ws in names:
         d = ws_dir(ws)
         if d is None:
@@ -773,16 +901,18 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
         try:
             if mode in ("fts", "fused"):
                 fts_all.extend(_fts_search_one(con, ws, match, like_terms, limit))
-            if mode in ("vector", "fused"):
+            if mode in ("vector", "fused") and not skip_vector:
                 try:
-                    vec_all.extend(_vector_search_one(con, ws, query, limit,
-                                                      embeddings.DEFAULT_MODEL))
+                    vh, backend = _vector_search_one(con, ws, query, limit,
+                                                     embeddings.DEFAULT_MODEL)
+                    vec_all.extend(vh)
+                    vector_backend = backend
                 except RuntimeError:
                     if mode == "vector":
                         raise
                     vector_available = False
         finally:
-            con.close()
+            _close(con)
     if mode == "fts":
         total_hits = fts_all[:limit]
     elif mode == "vector":
@@ -792,7 +922,8 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
     return {"success": True, "workspace": None if all_workspaces else ws_name,
             "workspaces_searched": searched, "query": query, "mode": mode,
             "fts_query": match, "like_fallback_terms": like_terms,
-            "vector_available": vector_available,
+            "vector_available": vector_available and vector_backend is not None,
+            "vector_backend": vector_backend,
             "total": len(total_hits), "hits": total_hits}
 
 
@@ -830,7 +961,7 @@ def ws_read_entry(ws_name, entry_id, chunk_no=None):
         text = full_file.read_text(encoding="utf-8") if full_file.exists() else ""
         return {"success": True, "workspace": ws_name, "entry": meta, "chunk": None, "content": text}
     finally:
-        con.close()
+        _close(con)
 
 
 def ws_remove_entry(ws_name, entry_id, yes=False):
@@ -843,7 +974,7 @@ def ws_remove_entry(ws_name, entry_id, yes=False):
         if not e:
             return messages.err_result("ws_entry_not_found", eid=entry_id, ws=ws_name)
     finally:
-        con.close()
+        _close(con)
     if not yes:
         return {"success": False, "confirm_required": True,
                 "error": messages.msg("ws_confirm_required"),
@@ -856,7 +987,7 @@ def ws_remove_entry(ws_name, entry_id, yes=False):
         con.execute("INSERT INTO entries_fts(entries_fts) VALUES('rebuild')")
         con.commit()
     finally:
-        con.close()
+        _close(con)
     shutil.rmtree(d / "entries" / entry_id, ignore_errors=True)
     shutil.rmtree(d / "source" / entry_id, ignore_errors=True)
     pair = messages.msg_pair("ws_entry_removed", eid=entry_id)
@@ -889,7 +1020,7 @@ def list_workspaces():
                 row = con.execute("SELECT COUNT(*), COALESCE(SUM(total_chars),0),"
                                   " MAX(updated_at) FROM entries").fetchone()
             finally:
-                con.close()
+                _close(con)
             out.append({"name": p.name, "entries": row[0], "total_chars": row[1],
                         "last_updated": row[2], "path": str(p)})
     return {"success": True, "workspaces": out, "total": len(out)}
@@ -904,6 +1035,7 @@ def delete_workspace(name, yes=False):
                 "error": messages.msg("ws_confirm_required"),
                 "error_i18n": messages.msg_pair("ws_confirm_required"),
                 "will_delete": str(d)}
+    _release_db(d / WORKSPACE_DB)
     shutil.rmtree(d, ignore_errors=True)
     return {"success": True, "workspace": name, "deleted": True}
 
@@ -917,6 +1049,7 @@ def rename_workspace(old, new):
     dst = ws_root() / new
     if dst.exists():
         return messages.err_result("ws_exists", name=new)
+    _release_db(src / WORKSPACE_DB)
     src.rename(dst)
     pair = messages.msg_pair("ws_renamed", old=old, new=new)
     return {"success": True, "workspace": new,
@@ -934,7 +1067,7 @@ def ws_stats(name):
         dist = dict(con.execute("SELECT COALESCE(source_type,'?'), COUNT(*) FROM entries"
                                 " GROUP BY source_type").fetchall())
     finally:
-        con.close()
+        _close(con)
     db_size = (d / WORKSPACE_DB).stat().st_size
     return {"success": True, "workspace": name, "path": str(d),
             "entries": row[0], "total_chars": row[1], "chunks": row[2],
@@ -951,7 +1084,7 @@ def ws_list_entries(name):
             "SELECT id, title, source_type, author, publish_date, total_chars,"
             " chunk_count, updated_at FROM entries ORDER BY updated_at DESC").fetchall()
     finally:
-        con.close()
+        _close(con)
     entries = [{"id": r[0], "title": r[1], "source_type": r[2], "author": r[3],
                 "publish_date": r[4], "total_chars": r[5], "chunk_count": r[6],
                 "updated_at": r[7]} for r in rows]
@@ -980,7 +1113,7 @@ def ws_verify(name):
             issues.append({"entry_id": None, "issue": "fts_index",
                            "detail": str(e)[:120]})
     finally:
-        con.close()
+        _close(con)
     for (eid, meta_count, _total) in entries:
         full_file = d / "entries" / eid / "full.md"
         if not full_file.exists():
@@ -992,7 +1125,7 @@ def ws_verify(name):
             chunks = con.execute("SELECT chunk_no, chunk_text, file_offset, char_count"
                                  " FROM chunks WHERE entry_id=? ORDER BY file_offset", (eid,)).fetchall()
         finally:
-            con.close()
+            _close(con)
         covered_end = None
         for (no, ctext, off, cc) in chunks:
             if off < 0 or off + cc > len(full):
@@ -1028,7 +1161,7 @@ def ws_reindex(name):
         fcount = con.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0]
         ccount = con.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
     finally:
-        con.close()
+        _close(con)
     pair = messages.msg_pair("ws_reindexed")
     return {"success": True, "workspace": name, "fts_rows": fcount, "chunks_rows": ccount,
             "consistent": fcount == ccount,
@@ -1043,7 +1176,7 @@ def ws_vacuum(name):
     try:
         con.execute("VACUUM")
     finally:
-        con.close()
+        _close(con)
     pair = messages.msg_pair("ws_vacuumed")
     return {"success": True, "workspace": name, "db_bytes": (d / WORKSPACE_DB).stat().st_size,
             "message": pair[messages.get_lang()], "message_i18n": pair}

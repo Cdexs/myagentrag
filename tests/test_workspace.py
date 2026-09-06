@@ -57,7 +57,7 @@ def test_ingest_text_and_files(ws_mod, tmp_path):
     con = ws_mod._connect(d / "workspace.db")
     n_fts = con.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0]
     n_chunks = con.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-    con.close()
+    pass  # 连接池复用，不关闭
     assert n_fts == n_chunks == r["chunk_count"]
 
 
@@ -74,7 +74,7 @@ def test_ingest_idempotent_no_stale_fts(ws_mod, tmp_path):
     con = ws_mod._connect(d / "workspace.db")
     fts, ch = [con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
                for t in ("entries_fts", "chunks")]
-    con.close()
+    pass  # 连接池复用，不关闭
     assert fts == ch
     v = ws_mod.ws_verify("库B")
     assert v["ok"], v["issues"]
@@ -102,7 +102,7 @@ def test_srt_ingest_timestamps(ws_mod):
     con = ws_mod._connect(d / "workspace.db")
     rows = con.execute("SELECT chunk_no, start_ms, end_ms FROM chunks WHERE entry_id=?"
                        " ORDER BY chunk_no", (eid,)).fetchall()
-    con.close()
+    pass  # 连接池复用，不关闭
     assert rows and rows[0][1] == 1000 and rows[-1][2] == 6000
     t = json.loads((d / "entries" / eid / "transcript.json").read_text(encoding="utf-8"))
     assert t["segments"][0]["start_ms"] == 1000 and "char_start" in t["segments"][0]
@@ -253,7 +253,7 @@ def test_verify_detects_missing_fts_rows(ws_mod):
     con = ws_mod._connect(d / "workspace.db")
     con.execute("INSERT INTO entries_fts(entries_fts) VALUES('delete-all')")
     con.commit()
-    con.close()
+    pass  # 连接池复用，不关闭
     v = ws_mod.ws_verify("库K")
     assert any(i["issue"] == "fts_index" for i in v["issues"]), v["issues"]
     r = ws_mod.ws_reindex("库K")
@@ -378,7 +378,7 @@ def test_ingest_with_vectors_and_fused_search(ws_mod):
     d = ws_mod.ws_dir("库H1")
     con = ws_mod._connect(d / "workspace.db")
     n = con.execute("SELECT COUNT(*) FROM vectors WHERE entry_id=?", (r["entry_id"],)).fetchone()[0]
-    con.close()
+    pass  # 连接池复用，不关闭
     assert n == r["vectors"]
     s = ws_mod.ws_search("库H1", "机器学习", mode="fused")
     assert s["success"] and s["total"] >= 1
@@ -426,9 +426,71 @@ def test_vector_blob_roundtrip(ws_mod):
     con = ws_mod._connect(d / "workspace.db")
     rows = con.execute("SELECT embedding FROM vectors WHERE entry_id=?",
                        (r["entry_id"],)).fetchall()
-    con.close()
+    pass  # 连接池复用，不关闭
     assert rows
     for (b,) in rows:
         vals = _s.unpack(f"<{len(b) // 4}f", b)
-        assert len(vals) == 16  # 假嵌入维度
+        assert len(vals) == 1024  # 假嵌入维度（与 vec0 表一致）
         assert all(-2 <= x <= 2 for x in vals)
+
+
+# ---------- v0.7.1：sqlite-vec (vec0) 后端 ----------
+
+def test_vec0_backend_ingest_and_knn(ws_mod, monkeypatch):
+    """§8C.13：vec0 可用 → 向量写虚表、检索走 SQL KNN（metadata 过滤）"""
+    import deps
+    monkeypatch.setattr(deps, "sqlite_vec_ready",
+                        lambda force=False: (True, {"version": "0.1.9"}))
+    pytest.importorskip("sqlite_vec")
+    r = ws_mod.ws_ingest("库V1", content="vec0 后端向量检索验证。" * 30, title="V0")
+    assert r["success"] and r["vectors"] >= 1
+    d = ws_mod.ws_dir("库V1")
+    con = ws_mod._connect(d / "workspace.db")
+    n = con.execute("SELECT COUNT(*) FROM vec_items WHERE entry_id=?",
+                    (r["entry_id"],)).fetchone()[0]
+    legacy = con.execute("SELECT COUNT(*) FROM vectors").fetchone()[0]
+    pass  # 连接池复用，不关闭
+    assert n == r["vectors"] and legacy == 0  # 数据进 vec_items，不写 legacy 表
+    s = ws_mod.ws_search("库V1", "vec0 后端检索", mode="vector")
+    assert s["success"] and s["total"] >= 1
+    assert s["vector_backend"] == "sqlite-vec"
+    assert s["hits"][0]["score_source"] == "vector"
+
+
+def test_vec0_migration_from_legacy(ws_mod, monkeypatch):
+    """§8C.13：老库 vectors 表数据 → vec_items 惰性迁移（检索时触发，幂等）"""
+    import deps
+    monkeypatch.setattr(deps, "sqlite_vec_ready",
+                        lambda force=False: (False, {"error": "t"}))
+    r = ws_mod.ws_ingest("库V2", content="迁移验证内容。" * 20, title="M")
+    assert r["success"]
+    d = ws_mod.ws_dir("库V2")
+    con = ws_mod._connect(d / "workspace.db")
+    assert con.execute("SELECT COUNT(*) FROM vectors").fetchone()[0] >= 1
+    pass  # 连接池复用，不关闭
+    monkeypatch.setattr(deps, "sqlite_vec_ready",
+                        lambda force=False: (True, {"version": "0.1.9"}))
+    pytest.importorskip("sqlite_vec")
+    s = ws_mod.ws_search("库V2", "迁移验证", mode="vector")
+    assert s["vector_backend"] == "sqlite-vec" and s["total"] >= 1
+    con = ws_mod._connect(d / "workspace.db")
+    assert con.execute("SELECT COUNT(*) FROM vectors").fetchone()[0] == 0
+    assert con.execute("SELECT COUNT(*) FROM vec_items").fetchone()[0] >= 1
+    pass  # 连接池复用，不关闭
+
+
+def test_numpy_fallback_when_vec0_load_fails(ws_mod, monkeypatch):
+    """§8C.13：确实加载失败才回退 numpy——探测 True 但扩展加载失败"""
+    import deps
+    import sqlite_vec
+    monkeypatch.setattr(deps, "sqlite_vec_ready",
+                        lambda force=False: (True, {"version": "0.1.9"}))
+
+    def bad_load(con):
+        con.enable_load_extension(True)
+        raise RuntimeError("load fail")
+    monkeypatch.setattr(sqlite_vec, "load", bad_load)
+    r = ws_mod.ws_ingest("库V3", content="加载失败回退验证。" * 20, title="F")
+    assert r["success"] and r["vectors"] >= 1  # 回退 legacy vectors 表
+    s = ws_mod.ws_search("库V3", "加载失败回退", mode="vector")
+    assert s["vector_backend"] == "numpy" and s["total"] >= 1
