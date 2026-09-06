@@ -331,7 +331,7 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 
 ## 更新日志
 
-### v0.7.0（专用运行时 + 知识库 workspace + 混合检索 + 模块化拆分 + 双语反馈）
+### v0.7.1（专用运行时 + 知识库 workspace + 混合检索 + 模块化拆分 + 双语反馈；sqlite-vec 向量后端实施中）
 
 - **专用 Python 运行时（v1.4 方案）**：独立 CPython 3.12（python-build-standalone，SHA256SUMS 校验）+ 锁定版本扩展库安装到 `~/.smart-summarize/runtime/`，与用户系统 Python 彻底解耦——不向用户环境装库、不设系统环境变量、首次使用经确认自动安装；引导层仅需任意 Python ≥3.8（标准库）；根治用户环境依赖版本不可控类缺陷；
 - **混合检索（中英文）**：本地 **Qwen3-Embedding-0.6B**（官方 GGUF Q8_0，llama.cpp 引擎 GPU 优先/Vulkan，CPU 回退）+ FTS5 双路 RRF 融合；`--search --mode fused|fts|vector`、`--no-embed`；**中文查询可召回英文文档**（跨语言语义），窗口级 full.md 偏移精读；首次使用知识库时一次性引导安装全链依赖（y/N 确认，镜像可配）；
