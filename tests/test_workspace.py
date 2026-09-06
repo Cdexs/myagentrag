@@ -494,3 +494,69 @@ def test_numpy_fallback_when_vec0_load_fails(ws_mod, monkeypatch):
     assert r["success"] and r["vectors"] >= 1  # 回退 legacy vectors 表
     s = ws_mod.ws_search("库V3", "加载失败回退", mode="vector")
     assert s["vector_backend"] == "numpy" and s["total"] >= 1
+
+
+# ---------- v0.7.1 连接池管理：活性探测/重建/文件缺失守卫/退避重试 ----------
+
+def test_pool_rebuild_after_unhealthy(ws_mod):
+    r = ws_mod.ws_ingest("库P1", content="重建验证内容。", title="T")
+    assert r["success"]
+    con = ws_mod._connect(ws_mod.ws_dir("库P1") / "workspace.db")
+    assert ws_mod._healthy(con)
+    con.close()  # 模拟坏连接
+    con2 = ws_mod._connect(ws_mod.ws_dir("库P1") / "workspace.db")
+    assert con2 is not con and ws_mod._healthy(con2)
+    assert con2.execute("SELECT COUNT(*) FROM entries").fetchone()[0] == 1
+
+
+def test_missing_db_file_guard(ws_mod):
+    import os
+    r = ws_mod.ws_ingest("库G2", content="文件缺失守卫验证。", title="G")
+    assert r["success"]
+    p = ws_mod.ws_dir("库G2") / "workspace.db"
+    ws_mod._release_db(p)
+    os.remove(p)
+    # create=False：不静默新建空库（防外部删除后的陈旧读/数据消失假象）
+    try:
+        ws_mod._connect(p, create=False)
+        raise AssertionError("应抛出 FileNotFoundError")
+    except FileNotFoundError:
+        pass
+    r = ws_mod.ws_read_entry("库G2", "x")
+    assert not r["success"]  # ws_dir 守卫 → ws_not_found
+
+
+def test_db_call_retry_on_locked(ws_mod, monkeypatch):
+    """§错误恢复：locked 类 OperationalError → 重建连接退避重试 2 次后成功"""
+    import sqlite3 as s3
+    r = ws_mod.ws_ingest("库R1", content="重试机制验证内容。" * 10, title="R")
+    assert r["success"]
+    calls = {"n": 0}
+    real = ws_mod._fts_search_one
+
+    def flaky(con, ws_name, match, like_terms, limit):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise s3.OperationalError("database is locked")
+        return real(con, ws_name, match, like_terms, limit)
+    monkeypatch.setattr(ws_mod, "_fts_search_one", flaky)
+    s = ws_mod.ws_search("库R1", "重试机制", mode="fts")
+    assert s["success"] and s["total"] >= 1 and calls["n"] == 2
+
+
+def test_db_call_non_retryable_error(ws_mod, monkeypatch):
+    """结构类错误（no such table）不重试，立即抛出"""
+    import sqlite3 as s3
+    ws_mod.ws_ingest("库R2", content="非重试错误验证。", title="N")
+    calls = {"n": 0}
+
+    def boom(con, ws_name, match, like_terms, limit):
+        calls["n"] += 1
+        raise s3.OperationalError("no such table: entries_fts")
+    monkeypatch.setattr(ws_mod, "_fts_search_one", boom)
+    try:
+        ws_mod.ws_search("库R2", "验证", mode="fts")
+        raise AssertionError("应抛出")
+    except s3.OperationalError:
+        pass
+    assert calls["n"] == 1  # 未重试

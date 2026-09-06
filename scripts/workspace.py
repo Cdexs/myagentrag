@@ -128,7 +128,7 @@ def _ensure_workspace(name):
     if not (p / WORKSPACE_DB).exists():
         (p / "entries").mkdir(parents=True, exist_ok=True)
         (p / "source").mkdir(parents=True, exist_ok=True)
-        con = _connect(p / WORKSPACE_DB)
+        con = _connect(p / WORKSPACE_DB, create=True)
         con.executescript(SCHEMA)
         con.commit()
         _close(con)
@@ -194,10 +194,37 @@ _VEC0_LOADED = {}  # id(con) -> True（已加载 vec0；连接由池持强引用
                          # "error during initialization"，故同库必须复用同一连接）
 
 
-def _connect(db_path):
+def _healthy(con):
+    """连接活性探测：SELECT 1 可执行即健康（关闭/损坏 → False）。"""
+    try:
+        con.execute("SELECT 1")
+        return True
+    except sqlite3.Error:
+        return False
+
+
+def _connect(db_path, create=True, rebuild=False):
+    """进程级连接池：每库一连接（vec0 每连接仅加载一次，规避 Windows 重复加载 init 失败）。
+    - rebuild=True：丢弃池中旧连接重建（错误恢复）；
+    - create=False：库文件不存在时不新建（防外部删除后静默建空库的陈旧读）；
+    - 池中连接健康检查失败 → 自动重建。"""
     key = os.path.normcase(str(Path(db_path).resolve()))
-    if key in _CONN_POOL:
-        return _CONN_POOL[key]
+    exists = Path(key).exists()
+    if rebuild:
+        con = _CONN_POOL.pop(key, None)
+        _VEC0_LOADED.pop(id(con), None)
+        if con is not None:
+            con.close()
+    elif key in _CONN_POOL:
+        con = _CONN_POOL[key]
+        if not exists and not create:
+            _CONN_POOL.pop(key, None)
+            raise FileNotFoundError(f"workspace 数据库不存在: {key}")
+        if _healthy(con):
+            return con
+        _CONN_POOL.pop(key, None)  # 坏连接 → 重建
+    if not exists and not create:
+        raise FileNotFoundError(f"workspace 数据库不存在: {key}")
     con = sqlite3.connect(str(db_path))
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA user_version=2")  # v2：+vectors 表（方案 v1.5 §8C.2）
@@ -214,12 +241,36 @@ def _close(con):
     return None
 
 
-def _release_db(db_path):
-    """目录改名/删除前：关闭并移除该库的池中连接（Windows 下打开句柄会阻止目录操作）。"""
-    key = os.path.normcase(str(Path(db_path).resolve()))
+def _pop_pool(key):
     con = _CONN_POOL.pop(key, None)
     if con is not None:
+        _VEC0_LOADED.pop(id(con), None)
         con.close()
+
+
+def _release_db(db_path):
+    """目录改名/删除前：关闭并移除该库的池中连接（Windows 下打开句柄会阻止目录操作）。"""
+    _pop_pool(os.path.normcase(str(Path(db_path).resolve())))
+
+
+def _db_call(db_path, fn, retries=2, base_delay=0.2):
+    """执行 fn(con)：捕获退避类 OperationalError（malformed/locked/disk i/o/busy）
+    → 重建连接 + 指数退避重试 retries 次（0.2s/0.4s），仍失败才抛出。
+    结构类错误（no such table 等）立即抛出，不重试。"""
+    import time as _time
+    last = None
+    for attempt in range(retries + 1):
+        con = _connect(db_path, rebuild=(attempt > 0))
+        try:
+            return fn(con)
+        except sqlite3.OperationalError as e:
+            msg = str(e).lower()
+            if not any(t in msg for t in ("malformed", "locked", "disk i/o", "busy")):
+                raise
+            last = e
+            if attempt < retries:
+                _time.sleep(base_delay * (2 ** attempt))
+    raise last
 
 
 def _load_vec0(con, retries=3):
@@ -537,8 +588,7 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
 
     title_final = _entry_title_hint(title, text, entry_id)
     now = _now_iso()
-    con = _connect(d / WORKSPACE_DB)
-    try:
+    def _write(con):
         con.executescript(SCHEMA)
         existing = con.execute("SELECT created_at FROM entries WHERE id=?", (entry_id,)).fetchone()
         created_at = existing[0] if existing else now
@@ -592,8 +642,12 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
             (entry_id, title_final, source_type, source_ref, author, publisher, publish_date,
              created_at, now, len(text), len(rows), "full.md"))
         con.commit()
-    finally:
-        _close(con)
+
+
+        return existing, created_at
+
+    # 错误恢复（退避重试 2 次）：malformed/locked 类 → 重建连接重试，仍失败才报错
+    existing, created_at = _db_call(d / WORKSPACE_DB, _write)
 
     meta = {
         "id": entry_id, "title": title_final, "source_type": source_type,
@@ -889,30 +943,37 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
     if mode == "vector" and not ws_dir(ws_name) and not all_workspaces:
         return messages.err_result("ws_not_found", name=ws_name)
     fts_all, vec_all, searched = [], [], []
+    degraded = {"vector_available": mode in ("vector", "fused")}
     vector_available = mode in ("vector", "fused")  # 向量路是否参与本次检索
     vector_backend = None
     skip_vector = bool(os.environ.get("SMART_SUMMARIZE_NO_RUNTIME"))  # 测试模式：全传统路径
+    if skip_vector:
+        degraded["vector_available"] = False
     for ws in names:
         d = ws_dir(ws)
         if d is None:
             continue
         searched.append(ws)
-        con = _connect(d / WORKSPACE_DB)
-        try:
-            if mode in ("fts", "fused"):
-                fts_all.extend(_fts_search_one(con, ws, match, like_terms, limit))
+
+        def _run(con, _ws=ws):
+            f_hits = (_fts_search_one(con, _ws, match, like_terms, limit)
+                      if mode in ("fts", "fused") else [])
+            v_hits, backend = [], None
             if mode in ("vector", "fused") and not skip_vector:
                 try:
-                    vh, backend = _vector_search_one(con, ws, query, limit,
-                                                     embeddings.DEFAULT_MODEL)
-                    vec_all.extend(vh)
-                    vector_backend = backend
+                    v_hits, backend = _vector_search_one(con, _ws, query, limit,
+                                                         embeddings.DEFAULT_MODEL)
                 except RuntimeError:
                     if mode == "vector":
                         raise
-                    vector_available = False
-        finally:
-            _close(con)
+                    degraded["vector_available"] = False
+            return f_hits, v_hits, backend
+
+        f_hits, v_hits, backend = _db_call(d / WORKSPACE_DB, _run)
+        fts_all.extend(f_hits)
+        vec_all.extend(v_hits)
+        if backend:
+            vector_backend = backend
     if mode == "fts":
         total_hits = fts_all[:limit]
     elif mode == "vector":
@@ -922,7 +983,7 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
     return {"success": True, "workspace": None if all_workspaces else ws_name,
             "workspaces_searched": searched, "query": query, "mode": mode,
             "fts_query": match, "like_fallback_terms": like_terms,
-            "vector_available": vector_available and vector_backend is not None,
+            "vector_available": vector_available and degraded["vector_available"],
             "vector_backend": vector_backend,
             "total": len(total_hits), "hits": total_hits}
 
