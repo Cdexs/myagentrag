@@ -1,6 +1,6 @@
 ---
 name: smart-summarize
-description: 智能内容提取工具：提取 YouTube/B站视频字幕、网页正文、本地文件（PDF/Word/Excel/PowerPoint/EPUB/文本）与音视频语音转录；可选知识库 workspace（SQLite FTS5 全文检索 + 音视频时间戳定位回放）。只提取，不调用 LLM；提取结果由当前 agent 阅读并总结。
+description: 智能内容提取与知识库工具：提取 YouTube/B站视频字幕、网页正文、本地文件（PDF/Word/Excel/PowerPoint/EPUB/文本）与音视频语音转录；可选入库到本地知识库 workspace，支持关键词+语义混合检索（FTS5+Qwen3 向量+标题锚点三路融合）、按源文件结构（页码/章节/时间戳）定位精读与回放。只提取与索引，不调用 LLM；提取结果由当前 agent 阅读并总结。
 compatibility: Windows / macOS / Linux / WSL；引导层任意 Python ≥3.8（仅标准库），首次使用自动安装专用运行时（含 SQLite ≥3.34）；音视频转录另需 ffmpeg、whisper.cpp 及 ggml 模型
 ---
 
@@ -110,6 +110,65 @@ $Python = if ($env:SMART_SUMMARIZE_PYTHON) { $env:SMART_SUMMARIZE_PYTHON } else 
 - 失败时 JSON 可能包含 `missing`（缺失组件清单）或 `cookieHint`（YouTube 需要登录验证的提示），agent 应原样展示给用户。
 
 > YouTube 需要代理时，先设置 `HTTPS_PROXY`。YouTube 受限内容可能需要 cookies；公开字幕通常不需要。
+
+## 典型场景（agent 操作手册）
+
+按用户意图选择路径；同一命令对交互终端弹 y/N 确认、对 agent 输出结构化缺失清单（征得用户同意后加 `--download-deps` 重跑）。
+
+**① 直接总结一份本地文档 / 一个网页 / 一条视频（不入库）**
+
+```bash
+"$PYTHON" "$EXTRACTOR" --file "报告.pdf"          # → JSON{title, content}
+"$PYTHON" "$EXTRACTOR" --url "https://..."        # 网页正文
+```
+agent 直接阅读 content 总结回答，不涉及知识库与任何依赖安装（文档链零依赖）。
+
+**② "把这本书/这份资料存进知识库"（入库 + 即时摘要）**
+
+```bash
+"$PYTHON" "$EXTRACTOR" --file "book.epub" --workspace 我的书架
+```
+入库结果含 entry_id/chunk_count/vectors（向量窗口数）；随后 agent 阅读提取文本给摘要。首次使用知识库会一次性引导安装嵌入链（llama.cpp 引擎 ~34MB + Qwen3 模型 ~610MB + sqlite-vec ~0.3MB）：交互终端直接 y/N；agent 先向用户展示清单征得同意，再以 `--download-deps` 重跑。库不存在隐式创建；同名内容幂等只更新。
+
+**③ "我之前存过的那份资料里关于 X 讲了什么"（检索→精读闭环，推荐主路径）**
+
+```bash
+"$PYTHON" "$EXTRACTOR" --workspace 我的书架 --search "X 关键词"            # 默认 fused 三路融合
+"$PYTHON" "$EXTRACTOR" --workspace 我的书架 --search "X" --mode fts       # 纯关键词（不加载向量链）
+```
+命中 JSON 字段（agent 消费指南）：`title/entry_id/source_type/source_ref`（来源文件或 URL）、`score + score_source`（多路并列如 `fused+heading`）、`snippet`（『』高亮）、`chunk_no/chars`（可 `--chunk N` 读分片）、`heading{text,level}`（所在章节）、`section_ref`（不透明精读引用）+ `section_chars`、`same_section_hits`（同节其他命中数）、`source_loc`（源文件出处：`{kind:"pdf",page}` / `{kind:"epub",chapter,title}` / `{kind:"time",start_ms,end_ms}` / `{kind:"line",n}`）、`vector_backend`。检索零命中时换词或 `--mode vector` 重试（语义路可跨语言召回）。
+
+**④ "第 14 条具体讲了什么"（结构锚点定位精读）**
+
+用 `--search "条款14"`（标题路直接命中章节标题），把返回的 `section_ref` 原样传入：
+
+```bash
+"$PYTHON" "$EXTRACTOR" --workspace 我的书架 --section "<section_ref>"     # 精读整节
+```
+
+结构锚点自动来自 docx 标题样式 / EPUB h1-h6 / PDF 书签 / "第N章、条款N、Chapter N、编号标题"启发式；`--reindex` 可为老条目补建。老条目 `source_loc` 可能为 null（无源位置账本），重新入库即得完整锚点。
+
+**⑤ "上次那个视频里讲 Y 的片段在哪"（检索 + 定位回放）**
+
+```bash
+"$PYTHON" "$EXTRACTOR" --workspace 我的书架 --search "Y 主题"              # 媒体命中带 start_ms/end_ms
+"$PYTHON" "$EXTRACTOR" --workspace 我的书架 --play <entry-id> --at 12:33 [--duration 60]
+```
+
+检测不到播放器时返回结构化 JSON（candidates/hint），agent 向用户说明或代装播放器，不弹界面。
+
+**⑥ 长文档（>256K 字符）总结**
+
+stdout 只返回分片清单（<1KB）。agent 按清单逐片读取，**每片读完立即产出要点摘要**，用户指定的关注维度（感情线/时间线等）必须原样注入逐片摘要（防合并阶段丢线索）；读完核对 total_chunks。小文档直出，无需此流程。
+
+**⑦ 多库与跨库**
+
+```bash
+"$PYTHON" "$EXTRACTOR" --search "关键词" --all-workspaces                  # 跨全部库检索
+"$PYTHON" "$EXTRACTOR" --workspace-list / --workspace <名> --stats / --list  # 管理盘点
+```
+
+**⑧ agent 调用约定（普适）**：解析 JSON 输出；`error` 优先于盲目重试；`missing` 清单须先征得用户同意再加 `--download-deps` 重跑；删除类操作（`--remove`/`--delete-workspace`）返回 `confirm_required` 时必须向用户确认后加 `--yes`；双语 `error_i18n` 按界面语言选用。
 
 ## 临时目录：何时使用、保存什么
 
@@ -333,6 +392,14 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 | B站无字幕                          | 该视频没有 CC 字幕，API 返回 `success:false`，属正常                                                   |
 
 ## 更新日志
+
+### v0.8.0（FTS coverage 重排 + 结构感知入库：标题锚点/源位置账本/出口内部化）
+
+- **FTS 打分修复（端侧反馈）**：SQLite FTS5 bm25 在 chunk 级小语料上对常见词 IDF 钳制（≈1e-6），score 全显 -0.0、排序退化——自然多词查询改为 **OR 召回 + coverage/tf/bm25 三键重排**；`score` 语义变为 0..1 覆盖率，bm25 原值全精度入 `fts_detail.bm25_raw`；显式 `AND/OR/NOT/NEAR` 语义保留；
+- **结构感知入库（§8D）**：提取层 `Extraction{text, srcmap}`——PDF 逐页偏移记账 + outline 书签、docx Heading 样式与 EPUB h1-h6 归一化为 markdown 标题、EPUB spine 章节账本；入库层新增 `headings/headings_fts/source_map`（老库连接时幂等迁移），标题锚点解析（markdown 不限行长 + 启发式正则 + 页眉自适应过滤），`--reindex` 幂等补建老条目锚点；
+- **检索增强**：标题锚点成为第三路参与 RRF；同 (entry, 章节命中自动聚合（best_window 保留最高分窗口 + `same_section_hits`），`score_source` 并列标注（如 `fused+heading`）；
+- **出处锚定源文件、full.md 内部化**：命中 `source_loc` 锚定源文件结构（PDF 页码/EPUB 章节/时间戳/文本行号），full.md 路径与偏移不再出现在 agent 可见输出；新增 `--section <ref>` 按不透明引用精读整节；
+- **修复**：组件确认 y/N 提示改走 stderr（不再污染 agent JSON 管道）；`--verify` 扩锚点校验；删除条目级联清理锚点。
 
 ### v0.7.1（专用运行时 + 知识库 workspace + 混合检索 + sqlite-vec 向量后端 + 模块化拆分 + 双语反馈）
 
