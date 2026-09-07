@@ -418,4 +418,4 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 
 ## 版本
 
-当前版本见 package.json；完整版本历史与各版变更明细见 [CHANGELOG.md](./CHANGELOG.md)。
+当前版本见 package.json；完整版本历史见 [README.md](./README.md) 更新日志章节。
