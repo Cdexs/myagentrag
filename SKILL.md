@@ -121,6 +121,7 @@ $Python = if ($env:SMART_SUMMARIZE_PYTHON) { $env:SMART_SUMMARIZE_PYTHON } else 
 "$PYTHON" "$EXTRACTOR" --file "报告.pdf"          # → JSON{title, content}
 "$PYTHON" "$EXTRACTOR" --url "https://..."        # 网页正文
 ```
+
 agent 直接阅读 content 总结回答，不涉及知识库与任何依赖安装（文档链零依赖）。
 
 **② "把这本书/这份资料存进知识库"（入库 + 即时摘要）**
@@ -128,6 +129,7 @@ agent 直接阅读 content 总结回答，不涉及知识库与任何依赖安�
 ```bash
 "$PYTHON" "$EXTRACTOR" --file "book.epub" --workspace 我的书架
 ```
+
 入库结果含 entry_id/chunk_count/vectors（向量窗口数）；随后 agent 阅读提取文本给摘要。首次使用知识库会一次性引导安装嵌入链（llama.cpp 引擎 ~34MB + Qwen3 模型 ~610MB + sqlite-vec ~0.3MB）：交互终端直接 y/N；agent 先向用户展示清单征得同意，再以 `--download-deps` 重跑。库不存在隐式创建；同名内容幂等只更新。
 
 **③ "我之前存过的那份资料里关于 X 讲了什么"（检索→精读闭环，推荐主路径）**
@@ -136,7 +138,30 @@ agent 直接阅读 content 总结回答，不涉及知识库与任何依赖安�
 "$PYTHON" "$EXTRACTOR" --workspace 我的书架 --search "X 关键词"            # 默认 fused 三路融合
 "$PYTHON" "$EXTRACTOR" --workspace 我的书架 --search "X" --mode fts       # 纯关键词（不加载向量链）
 ```
+
 命中 JSON 字段（agent 消费指南）：`title/entry_id/source_type/source_ref`（来源文件或 URL）、`score + score_source`（多路并列如 `fused+heading`）、`snippet`（『』高亮）、`chunk_no/chars`（可 `--chunk N` 读分片）、`heading{text,level}`（所在章节）、`section_ref`（不透明精读引用）+ `section_chars`、`same_section_hits`（同节其他命中数）、`source_loc`（源文件出处：`{kind:"pdf",page}` / `{kind:"epub",chapter,title}` / `{kind:"time",start_ms,end_ms}` / `{kind:"line",n}`）、`vector_backend`。检索零命中时换词或 `--mode vector` 重试（语义路可跨语言召回）。
+
+**知识库检索话术对照（常见说法 → agent 动作）**
+
+| 用户说法 | 判定 | agent 动作 |
+| --- | --- | --- |
+| "在知识库'我的书架'里**查找** XXX" | 指定库检索 | `--workspace 我的书架 --search "XXX"`（默认 fused）；给出命中清单（标题/章节/snippet/出处），深问再 `--section` 精读 |
+| "在知识库里**查一下** XXX"（未指定库） | 跨库检索 | `--search "XXX" --all-workspaces`——结果带 `workspace` 字段标注来源库；命中分散在多库时按库归组陈述 |
+| "在知识库 XX 中**研究一下**是否 XXX / 有没有讲 XXX / 是否支持 XXX" | 核实型问题 | ① `--search "XXX"`（fused）；② 零命中 → 换近义词/拆词重试，或 `--mode vector`（语义路可跨语言召回，中文问句可召回英文资料）；③ 命中后对最高分 1-3 条 `--section` 精读；④ **回答必须带出处**（条目标题 + `source_loc` 页码/章节/时间戳）；库内确无相关内容时明说"知识库中未见相关内容"，不要用模型记忆替代检索结论 |
+| "**对比**一下 A、B 两份资料对 XXX 的说法" | 多源对比 | 分别 `--search`（或同库检索后按 `entry_id` 分组）→ 各取最优节 `--section` 精读 → 分来源对比陈述，引用各自 `source_loc` |
+| "知识库里**都有什么**/都有哪些资料" | 盘点 | `--workspace <名> --list`（条目清单）或 `--stats`（条目/字符/来源分布/db 体积） |
+| "把这几份文件都**收进**知识库" | 批量入库 | 逐个 `--file ... --workspace <名>`；幂等无重复；大文件自动走分片协议 |
+| "**搜一下**标题里有 XX 的条目" | 元数据过滤 | `--search 'title:XX'`（列限定 `title:/author:/publisher:/publish_date:`，可与正文词组合作 `title:XX AND 关键词`） |
+
+核实型问题的工作示例（"查一下知识库里讲 move 语义的内容"）：
+
+```bash
+"$PYTHON" "$EXTRACTOR" --workspace 我的书架 --search "move 语义"                  # ① 三路融合检索
+"$PYTHON" "$EXTRACTOR" --workspace 我的书架 --search "move 语义" --mode vector    # ② 零命中时语义路重试
+"$PYTHON" "$EXTRACTOR" --workspace 我的书架 --section "<最优命中的 section_ref>"   # ③ 精读整节后作答
+```
+
+`section_chars` 超大时改用 `--entry <id> --chunk N` 按分片读；媒体条目命中带 `start_ms/end_ms`，可直接 `--play --at` 定位佐证。
 
 **④ "第 14 条具体讲了什么"（结构锚点定位精读）**
 
@@ -313,18 +338,18 @@ agent 收到清单后的标准流程（写入 SKILL.md 供所有 agent 遵循）
 
 ### 管理操作全集
 
-| 操作 | 命令 |
-| --- | --- |
-| 显式创建 | `--workspace <名> --create` |
-| 列举库 | `--workspace-list` |
-| 删除库 | `--workspace <名> --delete-workspace`（需 `--yes`） |
-| 重命名 | `--workspace <旧名> --rename <新名>` |
-| 统计 | `--workspace <名> --stats`（条目/字符/分片/来源分布/db 体积） |
-| 条目列举 | `--workspace <名> --list` |
-| 条目删除 | `--workspace <名> --remove <entry-id>`（需 `--yes`） |
+| 操作    | 命令                                               |
+| ----- | ------------------------------------------------ |
+| 显式创建  | `--workspace <名> --create`                       |
+| 列举库   | `--workspace-list`                               |
+| 删除库   | `--workspace <名> --delete-workspace`（需 `--yes`）  |
+| 重命名   | `--workspace <旧名> --rename <新名>`                 |
+| 统计    | `--workspace <名> --stats`（条目/字符/分片/来源分布/db 体积）   |
+| 条目列举  | `--workspace <名> --list`                         |
+| 条目删除  | `--workspace <名> --remove <entry-id>`（需 `--yes`） |
 | 完整性校验 | `--workspace <名> --verify`（片数/逐片一致性/覆盖/FTS 索引比对） |
-| 索引重建 | `--workspace <名> --reindex` |
-| 空间回收 | `--workspace <名> --vacuum` |
+| 索引重建  | `--workspace <名> --reindex`                      |
+| 空间回收  | `--workspace <名> --vacuum`                       |
 
 删除类操作默认只输出 `confirm_required: true` 与将删除的路径——agent 须向用户确认后加 `--yes` 重跑。跨机器迁移 = 直接拷贝 workspace 目录（自包含），无需命令。
 
