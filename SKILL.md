@@ -236,18 +236,21 @@ agent 收到清单后的标准流程（写入 SKILL.md 供所有 agent 遵循）
 "$PYTHON" "$EXTRACTOR" --file doc.md --workspace 我的资料 --no-embed               # 仅 FTS 入库
 ```
 
-**混合检索（默认 fused）**：语义向量路（Qwen3-Embedding，中英文/跨语言）与 FTS5 关键词路并行，RRF 融合排序；命中结果带 `score_source`（fused/fts/vector）与窗口级 `win_start/win_end` 偏移。入库默认自动嵌入（`--no-embed` 可关）；首次使用知识库时一次性引导安装嵌入引擎与向量模型（y/N 确认）。
+**混合检索（默认 fused）**：三路并行——语义向量路（Qwen3-Embedding，中英文/跨语言）、FTS5 关键词路、标题锚点路（结构标题独立索引），RRF 融合排序。命中结果带 `score_source`（fused/fts/vector/heading，多路同节命中并列标注如 `fused+heading`）；FTS 路 `score` 为 0..1 的覆盖率（命中查询词数/总词数），bm25 原值在 `fts_detail.bm25_raw`；同章节多个碎片命中自动聚合为一条（`same_section_hits` 计数），代表命中附所在标题 `heading` 与 `section_ref`。入库默认自动嵌入（`--no-embed` 可关）；首次使用知识库时一次性引导安装嵌入引擎与向量模型（y/N 确认）。
 
-查询语法：≥3 字词进 trigram 索引（输入自动转义）；`AND`/`OR`/`NOT`/`NEAR(a b, 5)`/`前缀*` 原样透传；`title:`/`author:`/`publisher:`/`publish_date:` 可限定列；**<3 字中文词**（trigram 物理限制）自动回退 chunks 表 LIKE 并在结果中标注 `like-low-precision`。
+查询语法：≥3 字词进 trigram 索引（输入自动转义）；**自然多词默认 OR 召回 + 覆盖率重排**（单词命中也返回，双词命中排前）；`AND`/`OR`/`NOT`/`NEAR(a b, 5)`/`前缀*` 原样透传；`title:`/`author:`/`publisher:`/`publish_date:` 可限定列；**<3 字中文词**（trigram 物理限制）自动回退 chunks 表 LIKE 并在结果中标注 `like-low-precision`。
 
-### 读取（agent 精读对象是 full.md）
+**结构感知入库（v0.8.0）**：docx 标题样式 / EPUB h1-h6 / PDF 内嵌书签自动归一化为标题锚点，裸文本启发式识别"第N章/条款N/Chapter N/编号标题"（老条目 `--reindex` 补建）；出处锚定**源文件结构**——PDF 页码、EPUB 章节、音视频时间戳、文本行号（`source_loc` 字段），full.md 内部坐标不对外暴露。
+
+### 读取（agent 精读对象是 full.md，路径内部化）
 
 ```bash
 "$PYTHON" "$EXTRACTOR" --workspace 我的资料 --entry <entry-id>            # full.md 全文
 "$PYTHON" "$EXTRACTOR" --workspace 我的资料 --entry <entry-id> --chunk 3  # 指定分片
+"$PYTHON" "$EXTRACTOR" --workspace 我的资料 --section <section_ref>       # 精读命中所在整节（推荐）
 ```
 
-检索命中输出 `full_path + offset + chars`——agent 按偏移精读 full.md 上下文（与分片协议同一原则：读全量提取文本，不读原始二进制）。
+检索命中附 `section_ref`（不透明引用）与 `section_chars`——agent 将 ref 原样传给 `--section` 即可精读整节；媒体命中带 `start_ms/end_ms` 时间戳（配 `--play --at` 定位回放）。
 
 ### 管理操作全集
 

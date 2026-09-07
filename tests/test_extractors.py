@@ -213,7 +213,44 @@ def test_extract_epub_text(tmp_path):
     epub_mod.write_epub(str(p), book)
 
     out = ex.extract_epub_text(str(p))
-    assert out and "第一章正文内容标记" in out
+    assert isinstance(out, ex.Extraction)  # v0.8.0 §8D：Extraction{text, srcmap}
+    assert "第一章正文内容标记" in out.text
+
+
+def test_extract_epub_headings_and_chapters(tmp_path):
+    """§8D：h 标签归一化为 markdown # 标记；spine 章节账本带偏移与标题"""
+    pytest.importorskip("ebooklib")
+    from ebooklib import epub as epub_mod
+
+    book = epub_mod.EpubBook()
+    book.set_identifier("ss-test-h2")
+    book.set_title("测试电子书2")
+    book.set_language("zh")
+    ch1 = epub_mod.EpubHtml(title="第一章", file_name="chap_01.xhtml", lang="zh")
+    ch1.content = ('<html><body><h1>第一章 标题甲</h1><p>第一章正文内容。</p>'
+                   '<h2>第一节 小标题</h2><p>小节内容文字。</p></body></html>')
+    ch2 = epub_mod.EpubHtml(title="第二章", file_name="chap_02.xhtml", lang="zh")
+    ch2.content = '<html><body><p>第二章正文内容。</p></body></html>'
+    book.add_item(ch1)
+    book.add_item(ch2)
+    book.add_item(epub_mod.EpubNcx())
+    book.add_item(epub_mod.EpubNav())
+    book.spine = ["nav", ch1, ch2]
+    book.toc = (epub_mod.Section("目录"),
+                epub_mod.Link("chap_01.xhtml", "第一章 标题甲", "c1"),
+                epub_mod.Link("chap_02.xhtml", "第二章 标题乙", "c2"))
+    p = tmp_path / "t2.epub"
+    epub_mod.write_epub(str(p), book)
+
+    out = ex.extract_epub_text(str(p))
+    assert isinstance(out, ex.Extraction)
+    assert "# 第一章 标题甲" in out.text
+    assert "## 第一节 小标题" in out.text
+    assert out.srcmap and out.srcmap["kind"] == "epub"
+    chs = out.srcmap["chapters"]
+    assert len(chs) == 2
+    assert chs[0][0] == 0 and chs[1][0] > 0        # 章节起始偏移递增
+    assert chs[0][2] == "第一章 标题甲"              # toc 标题映射
 
 
 # ---------- 网页 ----------
@@ -240,3 +277,41 @@ def test_extract_web_failure(monkeypatch):
                         types.SimpleNamespace(get=lambda url, **kw: R()))
     r = ex.extract_web("https://example.com/a")
     assert r["success"] is False
+
+
+# ---------- §8D 结构化提取：Extraction/srcmap ----------
+
+def test_extract_pdf_page_ledger(tmp_path):
+    """§8D：PDF 逐页偏移记账——outline 锚点落库的硬前提"""
+    fitz = pytest.importorskip("pymupdf")
+    doc = fitz.open()
+    texts = ["page one alpha beta", "page two gamma delta"]  # 默认字体不支持 CJK
+    for t in texts:
+        page = doc.new_page()
+        page.insert_text((72, 72), t)
+    p = tmp_path / "t.pdf"
+    doc.save(str(p))
+    doc.close()
+    out = ex.extract_pdf_text(str(p))
+    assert isinstance(out, ex.Extraction)
+    pages = out.srcmap["pages"]
+    assert pages[0] == [0, 1] and pages[1][1] == 2
+    assert pages[1][0] == len(out.text.split("\n")[0]) + 1  # 账本与 full.md 坐标一致
+    assert "page two gamma delta" in out.text
+
+
+def test_extract_docx_heading_markers(tmp_path):
+    """§8D：docx Heading 样式 → markdown # 标记归一化"""
+    pytest.importorskip("docx")
+    from docx import Document
+    d = Document()
+    d.add_heading("第一章 总览", level=1)
+    d.add_paragraph("正文段落内容标记。")
+    d.add_heading("第二节 细节", level=2)
+    d.add_paragraph("第二段正文内容标记。")
+    p = tmp_path / "t.docx"
+    d.save(str(p))
+    out = ex.extract_word_text(str(p))
+    assert isinstance(out, ex.Extraction)
+    assert "# 第一章 总览" in out.text and "## 第二节 细节" in out.text
+    assert "正文段落内容标记。" in out.text

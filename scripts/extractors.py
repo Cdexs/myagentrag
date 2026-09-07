@@ -284,17 +284,48 @@ def extract_text_file(file_path):
     return None
 
 
+class Extraction:
+    """提取结果：text（将一字不改写入 full.md）+ srcmap（源位置账本，可 None）。
+
+    offset 不变式：srcmap 的偏移以 text 为唯一坐标系——text 到 full.md 之间
+    不允许任何改写（ws_ingest content 路径已保证）；未来引入归一化必须同步变换 srcmap。
+    """
+    __slots__ = ("text", "srcmap")
+
+    def __init__(self, text, srcmap=None):
+        self.text = text
+        self.srcmap = srcmap
+
+
+def _docx_heading_level(para):
+    """python-docx 标题级别：style_id "Heading1".."Heading6"（style_id 不随界面语言本地化）"""
+    try:
+        sid = para.style.style_id or ""
+    except Exception:
+        return None
+    if sid.startswith("Heading"):
+        try:
+            return max(1, min(6, int(sid[7:])))
+        except ValueError:
+            return None
+    return None
+
+
 def extract_pdf_text(file_path):
-    """提取 PDF 文件"""
+    """提取 PDF 文本 + 源位置账本 pages=[[起始偏移, 页码], ...]（§8D 页偏移记账）"""
     try:
         import pdfplumber
-        text_parts = []
+        text_parts, pages = [], []
+        off = 0
         with pdfplumber.open(file_path) as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text_parts.append(page_text)
-        return '\n'.join(text_parts) if text_parts else None
+            for i, page in enumerate(pdf.pages, 1):
+                page_text = page.extract_text() or ""
+                pages.append([off, i])
+                text_parts.append(page_text)
+                off += len(page_text) + 1          # +1 = 页间 '\n' 分隔符
+        if not text_parts:
+            return None
+        return Extraction("\n".join(text_parts), {"kind": "pdf", "pages": pages})
     except ImportError:
         pass
     except Exception as e:
@@ -305,11 +336,24 @@ def extract_pdf_text(file_path):
             import pymupdf as fitz_mod
         except ImportError:
             import fitz as fitz_mod  # 旧版回退
-        text_parts = []
+        text_parts, pages = [], []
+        off = 0
         with fitz_mod.open(file_path) as doc:
-            for page in doc:
-                text_parts.append(page.get_text())
-        return '\n'.join(text_parts) if text_parts else None
+            try:
+                outline = doc.get_toc()  # [[level, title, 页码(1-based)], ...]
+            except Exception:
+                outline = []
+            for i, page in enumerate(doc, 1):
+                t = page.get_text()
+                pages.append([off, i])
+                text_parts.append(t)
+                off += len(t) + 1                  # +1 = 页间 '\n' 分隔符
+        if not text_parts:
+            return None
+        srcmap = {"kind": "pdf", "pages": pages}
+        if outline:
+            srcmap["outline"] = outline
+        return Extraction("\n".join(text_parts), srcmap)
     except ImportError:
         messages.warn("warn_no_pdf_lib")
     except Exception as e:
@@ -318,14 +362,19 @@ def extract_pdf_text(file_path):
 
 
 def extract_word_text(file_path):
-    """提取 Word 文档"""
+    """提取 Word 文档；docx 标题样式归一化为 markdown # 标记（§8D 结构上岸）"""
     ext = Path(file_path).suffix.lower()
     if ext == '.docx':
         try:
             from docx import Document
             doc = Document(file_path)
-            paragraphs = [para.text for para in doc.paragraphs if para.text.strip()]
-            return '\n'.join(paragraphs) if paragraphs else None
+            parts = []
+            for para in doc.paragraphs:
+                if not para.text.strip():
+                    continue
+                lv = _docx_heading_level(para)
+                parts.append(("#" * lv + " " + para.text.strip()) if lv else para.text)
+            return Extraction("\n".join(parts)) if parts else None
         except ImportError:
             messages.warn("warn_no_lib", lib="python-docx")
         except Exception as e:
@@ -340,23 +389,66 @@ def extract_word_text(file_path):
     return None
 
 
+_H_TAG_RE = re.compile(r"<h([1-6])\b[^>]*>(.*?)</h\1\s*>", re.I | re.S)
+
+
+def _html_to_structured_text(html):
+    """HTML → 文本；h1-h6 归一化为 markdown # 标记（§8D），保留换行结构"""
+    html = _H_TAG_RE.sub(
+        lambda m: "\n\n" + "#" * int(m.group(1)) + " "
+        + re.sub(r"<[^>]+>", "", m.group(2)).strip() + "\n\n", html)
+    text = re.sub(r"<[^>]+>", " ", html)
+    text = re.sub(r"[^\S\n]+", " ", text)   # 折叠空白但保留换行
+    lines = [ln.strip() for ln in text.split("\n")]
+    return "\n".join(ln for ln in lines if ln)
+
+
 def extract_epub_text(file_path):
-    """提取 EPUB 电子书"""
+    """提取 EPUB 电子书（spine 阅读序优先）+ 章节账本 chapters=[[偏移, 序号, 标题], ...]"""
     try:
         import ebooklib
         from ebooklib import epub
         book = epub.read_epub(file_path)
-        text_parts = []
-        for item in book.get_items():
+        # spine = 阅读顺序；nav/ncx 为结构性导航页，不入正文；不可用时回退 manifest 序
+        try:
+            items = [it for it in (book.get_item_with_id(sid) for sid, *_r in (book.spine or []))
+                     if it is not None and it.get_type() == ebooklib.ITEM_DOCUMENT
+                     and it.id not in ("nav", "ncx")]
+        except Exception:
+            items = []
+        if not items:
             # ITEM_DOCUMENT 等常量在顶层 ebooklib 模块（ebooklib 0.20 起不再暴露
             # 到 ebooklib.epub 命名空间，官方文档亦用 ebooklib.ITEM_DOCUMENT）
-            if item.get_type() == ebooklib.ITEM_DOCUMENT:
-                html = item.get_content().decode('utf-8', errors='ignore')
-                text = re.sub(r'<[^>]+>', ' ', html)
-                text = re.sub(r'\s+', ' ', text).strip()
-                if text:
-                    text_parts.append(text)
-        return '\n'.join(text_parts) if text_parts else None
+            items = [it for it in book.get_items()
+                     if it.get_type() == ebooklib.ITEM_DOCUMENT
+                     and it.id not in ("nav", "ncx")]
+        toc_titles = {}
+
+        def _walk_toc(toc):
+            for it in toc:
+                if isinstance(it, tuple):
+                    _walk_toc(it[1])
+                elif getattr(it, "href", None) and getattr(it, "title", None):
+                    toc_titles.setdefault(it.href.split("#")[0], it.title)
+
+        try:
+            _walk_toc(book.toc)
+        except Exception:
+            toc_titles = {}
+        parts, chapters, off, n = [], [], 0, 0
+        for item in items:
+            html = item.get_content().decode('utf-8', errors='ignore')
+            text = _html_to_structured_text(html)
+            if not text:
+                continue
+            n += 1
+            chapters.append([off, n, toc_titles.get(item.get_name())])
+            parts.append(text)
+            off += len(text) + 1
+        if not parts:
+            return None
+        srcmap = {"kind": "epub", "chapters": chapters} if chapters else None
+        return Extraction("\n".join(parts), srcmap)
     except ImportError:
         messages.warn("warn_no_lib", lib="ebooklib")
     except Exception as e:

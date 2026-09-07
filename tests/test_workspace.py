@@ -160,27 +160,32 @@ def test_ts_to_ms():
 
 
 def test_build_fts_query():
-    m, like = ws.build_fts_query("知识库 全文检索")
-    assert m == '"知识库" "全文检索"'
-    m, like = ws.build_fts_query("中文")
-    assert m is None and like == ["中文"]
-    m, _ = ws.build_fts_query("abc OR def")
-    assert m == '"abc" OR "def"'
-    m, _ = ws.build_fts_query('引号"内')
+    m, like, ph = ws.build_fts_query("知识库 全文检索")
+    assert m == '"知识库" OR "全文检索"'  # 自然词间自动 OR（召回优先）
+    assert ph == ["知识库", "全文检索"]
+    m, like, ph = ws.build_fts_query("中文")
+    assert m is None and like == ["中文"] and ph == []
+    m, _, ph = ws.build_fts_query("abc OR def")
+    assert m == '"abc" OR "def"'  # 显式运算符旁不重复插 OR
+    m, _, ph = ws.build_fts_query("abc AND def")
+    assert m == '"abc" AND "def"'  # 显式 AND 语义保留
+    m, _, ph = ws.build_fts_query('引号"内')
     assert m == '"引号""内"'
-    m, _ = ws.build_fts_query("SQLite*")
-    assert m == '"SQLite"*'
-    m, _ = ws.build_fts_query("NEAR(a b, 5)")
-    assert m == 'NEAR(a b, 5)'
+    m, _, ph = ws.build_fts_query("SQLite*")
+    assert m == '"SQLite"*' and ph == ["SQLite"]
+    m, _, ph = ws.build_fts_query("NEAR(a b, 5)")
+    assert m == 'NEAR(a b, 5)' and ph == []
 
 
 def test_build_fts_query_column_prefix():
-    m, like = ws.build_fts_query("publisher:清华大学")
-    assert m == 'publisher:"清华大学"'
-    m, like = ws.build_fts_query("author:王小明")
-    assert m == 'author:"王小明"'
-    m, like = ws.build_fts_query("title:ab")
+    m, like, ph = ws.build_fts_query("publisher:清华大学")
+    assert m == 'publisher:"清华大学"' and ph == []  # 元数据过滤词不进 coverage
+    m, like, ph = ws.build_fts_query("author:王小明")
+    assert m == 'author:"王小明"' and ph == []
+    m, like, ph = ws.build_fts_query("title:ab")
     assert m is None and like == ["ab"]  # 列限定 + <3 字回退正文 LIKE
+    m, like, ph = ws.build_fts_query('chunk_text:知识库')
+    assert m == 'chunk_text:"知识库"' and ph == ["知识库"]  # 正文列限定计入
 
 
 # ---------- 检索 ----------
@@ -190,7 +195,9 @@ def test_search_fts_like_prefix(ws_mod, tmp_path):
                      title="检索研究", author="王小明", publisher="清华出版社")
     s = ws_mod.ws_search("库G", "全文检索")
     assert s["success"] and s["total"] >= 1 and s["hits"][0]["snippet"]
-    assert s["hits"][0]["offset"] is not None and s["hits"][0]["chars"] > 0
+    assert "offset" not in s["hits"][0]  # §8D：full.md 内部坐标不出口
+    assert s["hits"][0]["chunk_no"] is not None and s["hits"][0]["chars"] > 0
+    assert "source_ref" in s["hits"][0]  # 出处锚定源文件
     s = ws_mod.ws_search("库G", "中文")  # 2 字 → LIKE 回退
     assert s["total"] >= 1 and s["hits"][0].get("match_mode") == "like-low-precision"
     s = ws_mod.ws_search("库G", "FTS*")
@@ -206,6 +213,150 @@ def test_search_fts_like_prefix(ws_mod, tmp_path):
 def test_search_empty_query(ws_mod):
     r = ws_mod.ws_search("库H", "  ")
     assert not r["success"] and "error_i18n" in r
+
+
+def test_search_fts_or_recall_coverage(ws_mod):
+    """F1：自然多词 OR 召回 + coverage 重排，告别 -0.0"""
+    ws_mod.ws_ingest("库F1a", content="本节只讨论 reserve 机制的应用。" * 5, title="A")
+    ws_mod.ws_ingest("库F1a", content="reserve 与重新分配的差异在此讨论，先讲 reserve。" * 5, title="B")
+    s = ws_mod.ws_search("库F1a", "reserve 重新分配", mode="fts")
+    assert s["success"] and s["fts_query"] == '"reserve" OR "重新分配"'
+    hits = s["hits"]
+    assert len(hits) == 2
+    by_title = {h["title"]: h for h in hits}
+    assert by_title["B"]["score"] == 1.0 and by_title["A"]["score"] == 0.5
+    assert hits[0]["title"] == "B"  # 双词命中排前（coverage 主键）
+    for h in hits:
+        assert 0 < h["score"] <= 1  # score 正值 0..1，永不为 -0.0
+        d = h["fts_detail"]
+        assert isinstance(d["bm25_raw"], float) and d["bm25_raw"] < 0
+        assert d["coverage_terms"] in ("1/2", "2/2")
+
+
+def test_search_fts_explicit_and(ws_mod):
+    """F1：显式 AND 仍要求双词并存，不做 OR 展开"""
+    ws_mod.ws_ingest("库F1b", content="单一词内容，只有 alpha 出现。" * 5, title="A")
+    ws_mod.ws_ingest("库F1b", content="alpha 与 beta 在这里同时出现。" * 5, title="B")
+    s = ws_mod.ws_search("库F1b", "alpha AND beta", mode="fts")
+    assert s["fts_query"] == '"alpha" AND "beta"'
+    titles = {h["title"] for h in s["hits"]}
+    assert titles == {"B"}
+
+
+def test_search_fts_no_negative_zero(ws_mod):
+    """F1：小语料常见词（IDF 钳制场景）score 不再是 -0.0"""
+    ws_mod.ws_ingest("库F1c", content="知识库全文检索支持相关性排序与中文子串匹配。" * 30, title="常")
+    s = ws_mod.ws_search("库F1c", "知识库 全文检索", mode="fts")
+    assert s["total"] >= 1
+    for h in s["hits"]:
+        assert h["score"] is None or h["score"] > 0
+
+
+# ---------- §8D 结构感知入库：标题锚点 / 源位置 / 章节聚合 ----------
+
+def test_extract_headings_patterns():
+    text = ("# " + "很长的合法标题" * 20 + "\n"        # markdown 标记不受行长限制
+            + "第一章 总述\n" + "a" * 200 + "\n"
+            + "第二节 细则\n" + "b" * 200 + "\n"
+            + "条款3：具体条款内容说明\n" + "c" * 200 + "\n"
+            + "3.2.1 编号小节标题\n" + "d" * 200 + "\n"
+            + "普通句子以句号结尾不算标题。\n" + "e" * 300)
+    hs = ws.extract_headings(text)
+    by_text = {t: (lv, off) for off, lv, t in hs}
+    assert any(t.startswith("很长的合法标题") for t in by_text)
+    assert by_text["第一章 总述"][0] == 1 and by_text["第二节 细则"][0] == 2
+    assert by_text["条款3：具体条款内容说明"][0] == 2
+    assert by_text["3.2.1 编号小节标题"][0] == 3
+    assert "普通句子以句号结尾不算标题。" not in by_text
+    offs = [off for off, _, _ in hs]
+    assert offs == sorted(offs) and offs[0] == 0
+
+
+def test_extract_headings_running_header():
+    """页眉/重复装饰自适应过滤：同文本 ≥3 次出现全部丢弃"""
+    text = ("某书籍页眉\n" + "x" * 200 + "\n") * 5 + "第一章 真正标题\n" + "y" * 200
+    hs = ws.extract_headings(text)
+    assert all(t != "某书籍页眉" for _, _, t in hs)
+    assert any(t == "第一章 真正标题" for _, _, t in hs)
+
+
+def test_ingest_srcmap_pages_outline(ws_mod):
+    """§8D：PDF 账本入库 → outline 成标题锚点 + source_loc 页码出口"""
+    seg1 = "第1页文本内容，讨论主题甲。" * 20
+    text = seg1 + "第2页文本内容，讨论主题乙。" * 20
+    pages = [[0, 1], [len(seg1) + 1, 2]]
+    outline = [[1, "第一章 主题甲", 1], [2, "第二章 主题乙", 2]]
+    r = ws_mod.ws_ingest("库F2b", content=text, title="PDF书", source_type="pdf",
+                         srcmap={"kind": "pdf", "pages": pages, "outline": outline})
+    assert r["success"]
+    s = ws_mod.ws_search("库F2b", "主题乙", mode="fts")
+    assert s["total"] >= 1
+    hit = s["hits"][0]
+    assert hit["source_loc"] == {"kind": "pdf", "page": 1}   # chunk 起点所在页
+    assert hit["heading"]["text"] == "第一章 主题甲"          # 命中落在第一章区间
+    # 标题路直接命中书签标题，且书签节锚到第二页
+    s2 = ws_mod.ws_search("库F2b", "第二章", mode="fts")
+    hd_hit = next(h for h in s2["hits"] if "heading" in (h.get("score_source") or ""))
+    assert hd_hit["heading"]["text"] == "第二章 主题乙"
+    assert hd_hit["source_loc"]["page"] == 2
+    # section_ref 精读闭环
+    r2 = ws_mod.ws_read_entry("库F2b", None, section=hd_hit["section_ref"])
+    assert r2["success"] and "讨论主题乙" in r2["content"]
+    assert r2["section"]["source_loc"]["page"] == 2
+
+
+def test_ingest_md_headings_search_and_section_read(ws_mod):
+    """§8D：markdown 标题解析 → 第三路命中 + heading/section 出口 + 精读边界"""
+    text = ("# 条款14 使用reserve避免重新分配\n" + "正文甲内容讨论 reserve 机制细节。" * 30
+            + "\n## 条款15 resize语义\n" + "正文乙内容讨论 resize 差异。" * 30)
+    ws_mod.ws_ingest("库F2a", content=text, title="书")
+    s = ws_mod.ws_search("库F2a", "条款14", mode="fts")
+    assert s["total"] >= 1
+    hit = s["hits"][0]
+    assert hit["heading"]["text"].startswith("条款14")
+    assert hit["section_ref"] and hit["section_chars"] > 0
+    assert hit["source_loc"]["kind"] == "line" and hit["source_loc"]["n"] == 1
+    r = ws_mod.ws_read_entry("库F2a", None, section=hit["section_ref"])
+    assert r["success"] and r["content"].startswith("# 条款14")
+    assert "条款15" not in r["content"]           # 整节边界：不含下一节标题
+
+
+def test_section_aggregation_union_source(ws_mod):
+    """§8D：同条目同章节 fts+heading 双路命中合并，score_source 并列标注"""
+    text = "# 条款7 讨论章\n" + "alpha 内容块叙述。" * 4600
+    ws_mod.ws_ingest("库F2e", content=text, title="聚合", no_embed=True)
+    s = ws_mod.ws_search("库F2e", "条款7 alpha", mode="fts")
+    assert s["total"] >= 1
+    merged = [h for h in s["hits"] if h.get("same_section_hits")]
+    assert merged
+    assert set(merged[0]["score_source"].split("+")) == {"fts", "heading"}
+
+
+def test_reindex_rebuilds_headings(ws_mod):
+    """§8D：--reindex 幂等补建标题锚点（老条目）"""
+    ws_mod.ws_ingest("库F2c", content="# 条款9 概述\n" + "正文内容。" * 50, title="R")
+    d = ws_mod.ws_dir("库F2c")
+    con = ws_mod._connect(d / ws_mod.WORKSPACE_DB)
+    con.execute("DELETE FROM headings")
+    con.commit()
+    r = ws_mod.ws_reindex("库F2c")
+    assert r["success"] and r["headings_rows"] >= 1
+    s = ws_mod.ws_search("库F2c", "条款9", mode="fts")
+    assert any((h.get("heading") or {}).get("text", "").startswith("条款9")
+               for h in s["hits"])
+
+
+def test_verify_heading_checks(ws_mod):
+    """§8D：--verify 锚点校验（offset 越界上报）"""
+    ws_mod.ws_ingest("库F2d", content="# 条款1 概述\n" + "正文内容。" * 50, title="V")
+    assert ws_mod.ws_verify("库F2d")["ok"]
+    d = ws_mod.ws_dir("库F2d")
+    con = ws_mod._connect(d / ws_mod.WORKSPACE_DB)
+    con.execute("UPDATE headings SET offset=999999")
+    con.commit()
+    r = ws_mod.ws_verify("库F2d")
+    assert not r["ok"]
+    assert any(i["issue"] == "heading_offset_out_of_range" for i in r["issues"])
 
 
 def test_search_all_workspaces(ws_mod):
@@ -392,7 +543,8 @@ def test_search_vector_mode_window_offsets(ws_mod):
     s = ws_mod.ws_search("库H2", "神经网络", mode="vector")
     assert s["success"] and s["total"] >= 1
     assert s["hits"][0]["score_source"] == "vector"
-    assert s["hits"][0]["win_start"] is not None and s["hits"][0]["win_end"] > s["hits"][0]["win_start"]
+    # §8D：win_start/win_end 为 full.md 内部坐标，出口抹去（snippet+chunk_no 承载定位）
+    assert "win_start" not in s["hits"][0] and s["hits"][0]["snippet"]
 
 
 def test_search_fts_mode_skips_vector(ws_mod):
@@ -534,11 +686,11 @@ def test_db_call_retry_on_locked(ws_mod, monkeypatch):
     calls = {"n": 0}
     real = ws_mod._fts_search_one
 
-    def flaky(con, ws_name, match, like_terms, limit):
+    def flaky(con, ws_name, match, like_terms, limit, phrases=None):
         calls["n"] += 1
         if calls["n"] == 1:
             raise s3.OperationalError("database is locked")
-        return real(con, ws_name, match, like_terms, limit)
+        return real(con, ws_name, match, like_terms, limit, phrases=phrases)
     monkeypatch.setattr(ws_mod, "_fts_search_one", flaky)
     s = ws_mod.ws_search("库R1", "重试机制", mode="fts")
     assert s["success"] and s["total"] >= 1 and calls["n"] == 2
@@ -550,7 +702,7 @@ def test_db_call_non_retryable_error(ws_mod, monkeypatch):
     ws_mod.ws_ingest("库R2", content="非重试错误验证。", title="N")
     calls = {"n": 0}
 
-    def boom(con, ws_name, match, like_terms, limit):
+    def boom(con, ws_name, match, like_terms, limit, phrases=None):
         calls["n"] += 1
         raise s3.OperationalError("no such table: entries_fts")
     monkeypatch.setattr(ws_mod, "_fts_search_one", boom)

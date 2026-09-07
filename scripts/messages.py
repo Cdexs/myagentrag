@@ -241,6 +241,10 @@ MESSAGES = {
         "zh": "条目不存在: {eid}（workspace: {ws}）",
         "en": "Entry not found: {eid} (workspace: {ws})",
     },
+    "ws_section_not_found": {
+        "zh": "章节引用无效或条目无锚点: {ref}",
+        "en": "Invalid section ref or entry has no anchors: {ref}",
+    },
     "ws_entry_removed": {
         "zh": "条目已删除: {eid}",
         "en": "Entry removed: {eid}",

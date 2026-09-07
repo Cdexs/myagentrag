@@ -24,6 +24,7 @@ import subprocess
 from pathlib import Path
 
 from slicing import write_slices, SLICE_THRESHOLD_CHARS
+import extractors as _extractors_mod
 from extractors import (
     detect_content_type, extract_video_id, extract_youtube, extract_bvid,
     extract_bilibili, extract_web, extract_text_file, extract_pdf_text,
@@ -78,6 +79,10 @@ def extract_local_file(file_path, output_format='json', model='large-v3-turbo'):
     elif ext in ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm']:
         content = extract_video_text(file_path)
 
+    # 结构化提取器返回 Extraction{text, srcmap}；普通提取器返回 str（无账本）
+    if isinstance(content, _extractors_mod.Extraction):
+        result["srcmap"] = content.srcmap
+        content = content.text
     if content:
         result["content"] = content
         result["success"] = True
@@ -175,6 +180,8 @@ def _run_workspace_ops(args):
     if args.search:
         return workspace.ws_search(W, args.search, all_workspaces=args.all_workspaces,
                                    mode=args.mode, no_embed=args.no_embed)
+    if args.section:
+        return workspace.ws_read_entry(W, None, section=args.section)
     if args.entry:
         return workspace.ws_read_entry(W, args.entry, chunk_no=args.chunk)
     if args.remove:
@@ -223,7 +230,8 @@ def _maybe_ingest(args, result):
     elif ct in ("audio", "video"):
         kwargs.update(source_type=ct, srt_text=result.get("_srt"), source_file=args.file)
     else:
-        kwargs.update(source_type=ct, content=result.get("content"), source_file=args.file)
+        kwargs.update(source_type=ct, content=result.get("content"), source_file=args.file,
+                      srcmap=result.get("srcmap"))
 
     ing = workspace.ws_ingest(args.workspace, **kwargs)
     if ing.get("success"):
@@ -293,7 +301,9 @@ def _handle_missing_deps(args, err, after_install=None):
             print(messages.msg("deps_noninteractive"), file=sys.stderr)
         else:
             try:
-                ans = input(messages.msg("deps_prompt"))
+                # 提示语走 stderr：stdout 保持纯 JSON，不污染 agent 管道输出
+                print(messages.msg("deps_prompt"), file=sys.stderr, end="")
+                ans = input()
                 allowed = ans.strip().lower() in ("y", "yes")
             except (EOFError, KeyboardInterrupt, OSError):
                 allowed = False
@@ -348,6 +358,7 @@ def main():
     parser.add_argument('--all-workspaces', action='store_true', help='跨全部 workspace 检索（与 --search 搭配）')
     parser.add_argument('--entry', metavar='ID', help='读取条目 full.md 全文')
     parser.add_argument('--chunk', type=int, metavar='N', help='配合 --entry 读取指定分片')
+    parser.add_argument('--section', metavar='REF', help='精读检索返回的章节引用（如 e12ab34d#s5）')
     parser.add_argument('--remove', metavar='ID', help='删除条目（需 --yes 二次确认）')
     parser.add_argument('--verify', action='store_true', help='完整性校验（片数/逐片一致性/覆盖/FTS 行数）')
     parser.add_argument('--reindex', action='store_true', help='重建 FTS 索引')
