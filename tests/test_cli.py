@@ -155,3 +155,21 @@ def test_kb_gate_lists_full_chain_when_components_missing(cli_env):
     r = run(cli_env, "--workspace", "闸门库", "--search", "全链依赖", "--mode", "fused")
     j = jout(r)
     assert j["success"] and j["vector_available"] is False  # 测试模式跳过向量路
+
+
+def test_section_read_cli(cli_env, tmp_path):
+    """§8D 端到端：--section 不透引用精读整节（且不受 --url/--file 入口守卫拦截）"""
+    doc = tmp_path / "sec.md"
+    doc.write_text("# 条款A 标题甲\n\n" + "正文甲内容叙述。\n" * 30
+                   + "# 条款B 标题乙\n\n" + "正文乙内容叙述。\n" * 30, encoding="utf-8")
+    r = run(cli_env, "--file", str(doc), "--workspace", "CLI节库", "--no-embed",
+            "--title", "节读")
+    assert jout(r)["success"] is True
+    r = run(cli_env, "--workspace", "CLI节库", "--search", "条款A")
+    hits = jout(r)["hits"]
+    ref = next(h["section_ref"] for h in hits
+               if (h.get("heading") or {}).get("text", "").startswith("条款A"))
+    r = run(cli_env, "--workspace", "CLI节库", "--section", ref)  # 无 --url/--file 也须放行
+    j = jout(r)
+    assert j["success"] and j["content"].startswith("# 条款A 标题")
+    assert "条款B" not in j["content"]

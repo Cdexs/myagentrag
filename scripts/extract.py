@@ -390,7 +390,7 @@ def main():
         parser.error(messages.msg("chunk_needs_entry"))
 
     ws_mgmt = any([args.workspace_list, args.create, args.delete_workspace, args.rename,
-                   args.stats, args.list, args.search, args.entry, args.remove,
+                   args.stats, args.list, args.search, args.entry, args.section, args.remove,
                    args.verify, args.reindex, args.vacuum, args.play])
     if ws_mgmt or args.workspace:
         _fts_gate(args)
