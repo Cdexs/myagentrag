@@ -1,14 +1,14 @@
 ---
 name: myagentrag
-description: 智能内容提取与知识库工具：提取 YouTube/B站视频字幕、网页正文、本地文件（PDF/Word/Excel/PowerPoint/EPUB/文本）与音视频语音转录；可选入库到本地知识库 workspace，支持关键词+语义混合检索（FTS5+Qwen3 向量+标题锚点三路融合）、按源文件结构（页码/章节/时间戳）定位精读与回放。只提取与索引，不调用 LLM；提取结果由当前 agent 阅读并总结。
+description: 本地知识库构建与检索工具：把 YouTube/B站视频字幕、网页正文、本地文件（PDF/Word/Excel/PowerPoint/EPUB/文本）与音视频语音转录提取并入库到本地知识库 workspace，支持关键词+语义+标题锚点三路混合检索（FTS5+Qwen3 向量）、按源文件结构（页码/章节/时间戳）定位精读与回放。提取与索引纯本地完成，不调用 LLM；检索结果的阅读与作答由当前 agent 完成。
 compatibility: Windows / macOS / Linux / WSL；引导层任意 Python ≥3.8（仅标准库），首次使用自动安装专用运行时（含 SQLite ≥3.34）；音视频转录另需 ffmpeg、whisper.cpp 及 ggml 模型
 ---
 
-# 智能内容提取工具 (myagentrag)
+# MyAgentRAG — 本地知识库构建与检索工具
 
-**设计原则**：只负责内容提取，不调用 LLM。提取结果由当前 agent 阅读、总结或进一步处理。
+**设计原则**：脚本只负责提取与索引，不调用 LLM。入库内容的检索、精读与作答由当前 agent 完成。
 
-## 支持的内容源
+## 支持的内容源（提取入库的来源）
 
 | 类型             | 支持格式                                                    | 说明                                                                     |
 | -------------- | ------------------------------------------------------- | ---------------------------------------------------------------------- |
@@ -38,7 +38,7 @@ compatibility: Windows / macOS / Linux / WSL；引导层任意 Python ≥3.8（�
 
 ## 运行机制
 
-模块结构（v0.6 起模块化，`extract.py` 只保留 CLI 入口与调度）：
+模块结构（`extract.py` 只保留 CLI 入口与调度）：
 
 ```
 scripts/extract.py      CLI 入口与调度
@@ -72,9 +72,9 @@ extract.py 被调用（--url 或 --file）
 
 关键规则：
 
-- 提取与总结分离：脚本永不调用 LLM；
+- 脚本永不调用 LLM：提取与索引全部纯本地完成；
 - 组件只在缺失时、经确认后才下载，且只装进 `~/.myagentrag`，不动系统目录；
-- 每次运行的中间文件用 `ss_*` 临时目录，正常退出即清理；
+- 每次运行的中间文件用 `myag_*` 临时目录，正常退出即清理；
 - 无网络/组件缺失时返回结构化 JSON 错误，agent 可据此决定重试或向用户说明。
 
 ## 使用方法
@@ -84,17 +84,17 @@ extract.py 被调用（--url 或 --file）
 ```bash
 PYTHON="${MYAGENTRAG_PYTHON:-python}"
 EXTRACTOR="<技能目录>/scripts/extract.py"
-"$PYTHON" "$EXTRACTOR" --url "https://www.bilibili.com/video/BVxxxx"
-"$PYTHON" "$EXTRACTOR" --file "document.pdf"
-"$PYTHON" "$EXTRACTOR" --file "lecture.mp3" --output srt
-"$PYTHON" "$EXTRACTOR" --file "lecture.mp3" --model large-v3-turbo-q5_0
+"$PYTHON" "$EXTRACTOR" --file "document.pdf" --workspace 我的资料        # 提取并入库
+"$PYTHON" "$EXTRACTOR" --workspace 我的资料 --search "检索词"             # 三路混合检索
+"$PYTHON" "$EXTRACTOR" --workspace 我的资料 --entry <entry-id>            # 定位精读
+"$PYTHON" "$EXTRACTOR" --workspace 我的资料 --play <entry-id> --at 12:33  # 音视频定位回放
 ```
 
 Windows PowerShell 调用：
 
 ```powershell
 $Python = if ($env:MYAGENTRAG_PYTHON) { $env:MYAGENTRAG_PYTHON } else { "python" }
-& $Python "<技能目录>/scripts/extract.py" --file "lecture.mp3"
+& $Python "<技能目录>/scripts/extract.py" --file "document.pdf" --workspace 我的资料
 ```
 
 输出格式：
@@ -115,24 +115,15 @@ $Python = if ($env:MYAGENTRAG_PYTHON) { $env:MYAGENTRAG_PYTHON } else { "python"
 
 按用户意图选择路径；同一命令对交互终端弹 y/N 确认、对 agent 输出结构化缺失清单（征得用户同意后加 `--download-deps` 重跑）。
 
-**① 直接总结一份本地文档 / 一个网页 / 一条视频（不入库）**
-
-```bash
-"$PYTHON" "$EXTRACTOR" --file "报告.pdf"          # → JSON{title, content}
-"$PYTHON" "$EXTRACTOR" --url "https://..."        # 网页正文
-```
-
-agent 直接阅读 content 总结回答，不涉及知识库与任何依赖安装（文档链零依赖）。
-
-**② "把这本书/这份资料存进知识库"（入库 + 即时摘要）**
+**① "把这本书/这份资料存进知识库"（提取并入库）**
 
 ```bash
 "$PYTHON" "$EXTRACTOR" --file "book.epub" --workspace 我的书架
 ```
 
-入库结果含 entry_id/chunk_count/vectors（向量窗口数）；随后 agent 阅读提取文本给摘要。首次使用知识库会一次性引导安装嵌入链（llama.cpp 引擎 ~34MB + Qwen3 模型 ~610MB + sqlite-vec ~0.3MB）：交互终端直接 y/N；agent 先向用户展示清单征得同意，再以 `--download-deps` 重跑。库不存在隐式创建；同名内容幂等只更新。**同源重入库**（source_ref 相同）内容变更时会产生新条目，响应 `workspace.supersedes` 列出旧条目 id 并在 stderr 警告——确认后 `--remove <旧id>` 清理，或入库时加 `--replace` 自动替换。
+入库结果含 entry_id/chunk_count/vectors（向量窗口数）。首次使用知识库会一次性引导安装嵌入链（llama.cpp 引擎 ~34MB + Qwen3 模型 ~610MB + sqlite-vec ~0.3MB）：交互终端直接 y/N；agent 先向用户展示清单征得同意，再以 `--download-deps` 重跑。库不存在隐式创建；同名内容幂等只更新。**同源重入库**（source_ref 相同）内容变更时会产生新条目，响应 `workspace.supersedes` 列出旧条目 id 并在 stderr 警告——确认后 `--remove <旧id>` 清理，或入库时加 `--replace` 自动替换。
 
-**③ "我之前存过的那份资料里关于 X 讲了什么"（检索→精读闭环，推荐主路径）**
+**② "我之前存过的那份资料里关于 X 讲了什么"（检索→精读闭环，推荐主路径）**
 
 ```bash
 "$PYTHON" "$EXTRACTOR" --workspace "@我的书架" --search "X 关键词"       # 用户以 @库名 指定：@ 原样传入即可
@@ -152,7 +143,7 @@ agent 直接阅读 content 总结回答，不涉及知识库与任何依赖安�
 | "在知识库 XX 中**研究一下**是否 XXX / 有没有讲 XXX / 是否支持 XXX" | 核实型问题 | ① `--search "XXX"`（fused）；② 零命中 → 换近义词/拆词重试，或 `--mode vector`（语义路可跨语言召回，中文问句可召回英文资料）；③ 命中后对最高分 1-3 条 `--section` 精读；④ **回答必须带出处**（条目标题 + `source_loc` 页码/章节/时间戳）；库内确无相关内容时明说"知识库中未见相关内容"，不要用模型记忆替代检索结论 |
 | "**对比**一下 A、B 两份资料对 XXX 的说法"                    | 多源对比  | 分别 `--search`（或同库检索后按 `entry_id` 分组）→ 各取最优节 `--section` 精读 → 分来源对比陈述，引用各自 `source_loc`                                                                                                                 |
 | "知识库里**都有什么**/都有哪些资料"                           | 盘点    | `--workspace <名> --list`（条目清单）或 `--stats`（条目/字符/来源分布/db 体积）                                                                                                                                            |
-| "把这几份文件都**收进**知识库"                              | 批量入库  | 逐个 `--file ... --workspace <名>`；幂等无重复；大文件自动走分片协议                                                                                                                                                       |
+| "把这几份文件都**收进**知识库"                              | 批量入库  | 逐个 `--file ... --workspace <名>`；幂等无重复                                                                                                                                                              |
 | "**搜一下**标题里有 XX 的条目" | 元数据过滤 | `--search 'title:XX'`（列限定 `title:/author:/publisher:/publish_date:`，可与正文词组合作 `title:XX AND 关键词`；**列值需 ≥3 字**（trigram 物理限制）；列限定查询自动走 fts 路，结果标注 `column_filter: true`） |
 
 核实型问题的工作示例（"查一下知识库里讲 move 语义的内容"）：
@@ -165,7 +156,7 @@ agent 直接阅读 content 总结回答，不涉及知识库与任何依赖安�
 
 `section_chars` 超大时改用 `--entry <id> --chunk N` 按分片读；媒体条目命中带 `start_ms/end_ms`，可直接 `--play --at` 定位佐证。
 
-**④ "第 14 条具体讲了什么"（结构锚点定位精读）**
+**③ "第 14 条具体讲了什么"（结构锚点定位精读）**
 
 用 `--search "条款14"`（标题路直接命中章节标题），把返回的 `section_ref` 原样传入：
 
@@ -175,7 +166,7 @@ agent 直接阅读 content 总结回答，不涉及知识库与任何依赖安�
 
 结构锚点自动来自 docx 标题样式 / EPUB h1-h6 / PDF 书签 / "第N章、条款N、Chapter N、编号标题"启发式；`--reindex` 可为老条目补建。老条目 `source_loc` 可能为 null（无源位置账本），重新入库即得完整锚点。
 
-**⑤ "上次那个视频里讲 Y 的片段在哪"（检索 + 定位回放）**
+**④ "上次那个视频里讲 Y 的片段在哪"（检索 + 定位回放）**
 
 ```bash
 "$PYTHON" "$EXTRACTOR" --workspace 我的书架 --search "Y 主题"              # 媒体命中带 start_ms/end_ms
@@ -184,41 +175,20 @@ agent 直接阅读 content 总结回答，不涉及知识库与任何依赖安�
 
 检测不到播放器时返回结构化 JSON（candidates/hint），agent 向用户说明或代装播放器，不弹界面。
 
-**⑥ 长文档（>256K 字符）总结**
-
-stdout 只返回分片清单（<1KB）。agent 按清单逐片读取，**每片读完立即产出要点摘要**，用户指定的关注维度（感情线/时间线等）必须原样注入逐片摘要（防合并阶段丢线索）；读完核对 total_chunks。小文档直出，无需此流程。
-
-**⑦ 多库与跨库**
+**⑤ 多库与跨库**
 
 ```bash
 "$PYTHON" "$EXTRACTOR" --search "关键词" --all-workspaces                  # 跨全部库检索
 "$PYTHON" "$EXTRACTOR" --workspace-list / --workspace <名> --stats / --list  # 管理盘点
 ```
 
-**⑧ agent 调用约定（普适）**：解析 JSON 输出；参数误用（argparse 层）同样返回 JSON（rc=2）；合并 `2>&1` 时 stderr 进度行会破坏 JSON——stdout 是唯一 JSON 通道，或加 `--quiet` 抑制进度；`error` 优先于盲目重试；`missing` 清单须先征得用户同意再加 `--download-deps` 重跑；删除类操作（`--remove`/`--delete-workspace`）返回 `confirm_required` 时必须向用户确认后加 `--yes`；双语 `error_i18n` 按界面语言选用。
+**⑥ agent 调用约定（普适）**：解析 JSON 输出；参数误用（argparse 层）同样返回 JSON（rc=2）；合并 `2>&1` 时 stderr 进度行会破坏 JSON——stdout 是唯一 JSON 通道，或加 `--quiet` 抑制进度；`error` 优先于盲目重试；`missing` 清单须先征得用户同意再加 `--download-deps` 重跑；删除类操作（`--remove`/`--delete-workspace`）返回 `confirm_required` 时必须向用户确认后加 `--yes`；双语 `error_i18n` 按界面语言选用。
 
-## 临时目录：何时使用、保存什么
+## 临时目录
 
-脚本只在需要中间文件的流程调用临时目录：
+提取 YouTube/音视频时脚本的中间文件（yt-dlp 字幕、ffmpeg 转出的 16 kHz 单声道 WAV、whisper SRT）存放于临时目录；每次运行使用 `myag_*` 子目录，正常结束即删除，异常遗留目录超过 72 小时会在后续运行时清理。
 
-- YouTube：保存 yt-dlp 下载的字幕文件；
-- 音频转录：保存 ffmpeg 生成的 16 kHz 单声道 WAV 及 whisper.cpp 生成的 SRT；
-- 视频处理：保存内置字幕或抽取出来的音频 WAV。
-
-B站字幕、网页正文、文本/PDF/Word/EPUB 通常不使用本工具的临时目录。每次运行使用 `ss_*` 子目录，正常结束会删除；异常遗留目录超过 72 小时会在后续运行时清理。
-
-临时根目录解析顺序：
-
-1. `MYAGENTRAG_TMPDIR`（显式指定，支持 `~`）；
-2. 其余一律使用 Python `tempfile.gettempdir()`：Windows 通常为 `%LOCALAPPDATA%\Temp`，macOS 为 `/var/folders/.../T`，Linux/WSL 为 `/tmp`。
-
-例如：
-
-```bash
-export MYAGENTRAG_TMPDIR="$HOME/.cache/myagentrag-tmp"
-```
-
-不要把 cookies、模型或重要原始文件放入临时目录。
+临时根目录解析顺序：`MYAGENTRAG_TMPDIR`（显式指定，支持 `~`）→ Python `tempfile.gettempdir()`（Windows 通常为 `%LOCALAPPDATA%\Temp`，macOS 为 `/var/folders/.../T`，Linux/WSL 为 `/tmp`），例如 `export MYAGENTRAG_TMPDIR="$HOME/.cache/myagentrag-tmp"`。不要把 cookies、模型或重要原始文件放入临时目录。
 
 ## ffmpeg 与 whisper.cpp
 
@@ -274,27 +244,9 @@ export MYAGENTRAG_TMPDIR="$HOME/.cache/myagentrag-tmp"
 
 GPU 是否启用取决于 whisper.cpp 二进制编译时包含的后端；CPU 构建或 GPU 后端/驱动不可用时回退为 CPU。可从转录 stderr 日志确认实际加载的 backend。`large-v3-turbo-q5_0` 仅是量化模型，不等于 GPU 加速。
 
-## 大文档处理协议（slice protocol）
-
-单个文档提取内容超过 256K 字符时，脚本**不会**把全文塞进 stdout（防截断与上下文溢出），而是：
-
-1. 在受管临时目录落盘分片：`ss_slice_<hash>/chunk-001.md ...`（Markdown 结构化文本），每片 ≤40K 字符、段落边界对齐、相邻片重叠 300 字符；
-2. stdout 只输出**清单 JSON**（<1KB）：title / total_chars / total_chunks / chunk_dir / 每片文件名与校验和。
-
-agent 收到清单后的标准流程（写入 SKILL.md 供所有 agent 遵循）：
-
-1. 读清单，确认 `total_chunks`；
-2. 按序读取分片文件，**每片读完立即产出一段要点摘要**（不要攒到最后）；
-3. **用户的总结指令必须原样注入逐片摘要**：若用户指定了关注维度（如"按时间线梳理""男主对女主的感情线变化"），逐片摘要必须以这些维度做定向提取（例："本段感情线相关情节：…"），不得只做泛化摘要——关系型/全局型线索在 map 阶段丢失，合并阶段无法找回；
-4. 全部片读完后合并摘要做最终总结；
-5. 校验已读片数 == total_chunks，缺片时用 `--slice N` 或直接补读缺失文件；
-6. 上下文紧张时可隔片抽取要点，但结尾片必须读（结论通常在末尾）。
-
-`--slice N` 可让提取器直接输出第 N 片内容（JSON），适合不支持读文件工具的环境。小文档（≤256K 字符）行为不变，stdout 直出。
-
 ## 知识库 workspace（SQLite FTS5 全文检索 + 时间戳定位回放）
 
-提取的内容可入库到本地知识库（workspace）供后续检索与精读。**只提取与索引，不调用 LLM**；检索引擎为 Python 标准库 sqlite3 内置的 FTS5（trigram 分词器），零外部依赖，支持 BM25 相关性排序、snippet 摘要、短语/布尔/前缀/NEAR 查询。
+提取的内容可入库到本地知识库（workspace）供后续检索与精读。**只提取与索引，不调用 LLM**；检索引擎为 Python 标准库 sqlite3 内置的 FTS5（trigram 分词器），零外部依赖，支持 BM25 相关性排序、snippet 片段预览、短语/布尔/前缀/NEAR 查询。
 
 ### 摄入（提取时入库）
 
@@ -326,7 +278,7 @@ agent 收到清单后的标准流程（写入 SKILL.md 供所有 agent 遵循）
 
 查询语法：≥3 字词进 trigram 索引（输入自动转义）；**自然多词默认 OR 召回 + 覆盖率重排**（单词命中也返回，双词命中排前）；`AND`/`OR`/`NOT`/`NEAR(a b, 5)`/`前缀*` 原样透传；`title:`/`author:`/`publisher:`/`publish_date:` 可限定列；**<3 字中文词**（trigram 物理限制）自动回退 chunks 表 LIKE 并在结果中标注 `like-low-precision`（该路 `score=None` 为低精度匹配，高精度需求请用 ≥3 字词或 `--mode vector`）。
 
-**结构感知入库（v0.8.0）**：docx 标题样式 / EPUB h1-h6 / PDF 内嵌书签自动归一化为标题锚点，裸文本启发式识别"第N章/条款N/Chapter N/编号标题"（老条目 `--reindex` 补建）；出处锚定**源文件结构**——PDF 页码、EPUB 章节、音视频时间戳、文本行号（`source_loc` 字段），full.md 内部坐标不对外暴露。
+**结构感知入库**：docx 标题样式 / EPUB h1-h6 / PDF 内嵌书签自动归一化为标题锚点，裸文本启发式识别"第N章/条款N/Chapter N/编号标题"（老条目 `--reindex` 补建）；出处锚定**源文件结构**——PDF 页码、EPUB 章节、音视频时间戳、文本行号（`source_loc` 字段），full.md 内部坐标不对外暴露。
 
 ### 读取（agent 精读对象是 full.md，路径内部化）
 
@@ -401,12 +353,12 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 ## 与 agent 配合
 
 ```
-用户请求 → extract.py 提取内容 → 当前 agent 阅读并总结 → 回复用户
+用户请求 → extract.py 提取入库 → agent 检索/精读 → 回复用户
 ```
 
-- 提取失败时先看 `error` 字段，不要盲目重试；
-- 长内容总结时注意上下文预算，必要时分段处理；
-- 网页和 YouTube 在具备原生网页工具的 agent 中可优先使用其网页读取能力；本脚本尤其适合 B站字幕、本地文档和本地音视频转录。
+- 提取或检索失败时先看 `error` 字段，不要盲目重试；
+- 长内容精读注意上下文预算，用 `--section` / `--chunk` / `--max-chars` 分段读取；
+- 网页和 YouTube 在具备原生网页工具的 agent 中可优先使用其网页读取能力；本脚本尤其适合 B站字幕、本地文档和本地音视频的提取入库。
 
 ## 故障排除
 
@@ -419,7 +371,3 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 | PDF 提取为空                       | 扫描件没有文字层，属正常；本工具不做 OCR                                                                   |
 | B站无字幕                          | 该视频没有 CC 字幕，API 返回 `success:false`，属正常                                                   |
 | `--mode vector` 恒 0 命中 | 先查该库入库时是否用了 `--no-embed`（`--list` 的 `vectors` 字段为 0 即是）；补建：`--embed` 或重入库不加减嵌入 |
-
-## 版本
-
-当前版本见 package.json；完整版本历史见 [README.md](./README.md) 更新日志章节。
