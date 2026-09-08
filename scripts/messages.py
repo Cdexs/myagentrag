@@ -257,6 +257,14 @@ MESSAGES = {
         "zh": "向量补建失败: {err}",
         "en": "Vector rebuild failed: {err}",
     },
+    "cli_args_error": {
+        "zh": "参数错误: {err}（用法与正确示例见 SKILL.md）",
+        "en": "Invalid arguments: {err} (see SKILL.md for usage)",
+    },
+    "ingest_fullmd_mismatch": {
+        "zh": "full.md 写入自检失败（内容校验和不符），已中止入库",
+        "en": "full.md write self-check failed (checksum mismatch), ingest aborted",
+    },
     "ws_vector_zero_hint": {
         "zh": "向量链路就绪但该库暂无向量索引（入库时可能使用了 --no-embed）；补建：--embed 或重入库不加减嵌入",
         "en": "Vector chain ready but no vectors indexed (ingested with --no-embed?); rebuild via --embed or re-ingest without it",

@@ -751,7 +751,7 @@ def test_front_section_fallback(ws_mod):
     ws_mod.ws_ingest("库S2", content=text, title="前言", no_embed=True)
     s = ws_mod.ws_search("库S2", "前言内容", mode="fts")
     hit = s["hits"][0]
-    assert hit["section_ref"].endswith("#front") and hit["section_chars"] > 0
+    assert "#front" in hit["section_ref"] and hit["section_chars"] > 0
     eid = hit["entry_id"]
     r = ws_mod.ws_read_entry("库S2", None, section=eid + "#front")
     assert r["success"] and "首个标题之前" in r["content"]
@@ -876,3 +876,52 @@ def test_n4_subsection_anchors(ws_mod):
     s2 = ws_mod.ws_search("库N4", "条款A", mode="fts")
     assert not any((h.get("heading") or {}).get("text", "").endswith("·续1")
                    for h in s2["hits"])
+
+
+def test_n4_no_heading_subsections(ws_mod):
+    """P3：无标题文档也生成卷首 20K 步长合成子节（N4 盲区修复）"""
+    ws_mod.ws_ingest("库P3", content="无标题长文档正文内容。" * 15000, title="P3", no_embed=True)
+    d = ws_mod.ws_dir("库P3")
+    con = ws_mod._connect(d / ws_mod.WORKSPACE_DB)
+    n = con.execute("SELECT COUNT(*) FROM subsections").fetchone()[0]
+    assert n == 7   # 165K 正文 → 卷首 20K 步长锚点 20K..140K
+    s = ws_mod.ws_search("库P3", "无标题长文档", mode="fts")
+    hit = s["hits"][0]
+    assert "·续" in hit["heading"]["text"] and hit["section_chars"] <= 20000 + 1
+    r = ws_mod.ws_read_entry("库P3", None, section=hit["section_ref"], max_chars=30000)
+    assert r["success"] and not r.get("truncated")
+
+
+def test_p4_windowed_truncation_fields(ws_mod):
+    """P4：--section 开窗 + max_chars 小于节长 → truncated/remaining_chars 标注"""
+    text = "# 节甲\n" + "内容叙述。" * 8000 + "\n关键 reserve 命中词位置。\n" + "尾巴叙述。" * 8000
+    ws_mod.ws_ingest("库P4", content=text, title="P4", no_embed=True)
+    s = ws_mod.ws_search("库P4", "reserve", mode="fts")
+    ref = s["hits"][0]["section_ref"]
+    assert "@" in ref
+    r = ws_mod.ws_read_entry("库P4", None, section=ref, max_chars=1000)
+    assert r["success"] and r["truncated"] is True
+    assert r["total_chars"] > 1000 and r["remaining_chars"] > 0
+
+
+def test_p5_front_windowed(ws_mod):
+    """P5：长前言区命中 #front@offset 可开窗精读且受上限约束"""
+    text = "前言内容叙述。" * 20000 + "\n# 条款1 正文\n" + "正文内容叙述。" * 50
+    ws_mod.ws_ingest("库P5", content=text, title="P5", no_embed=True)
+    s = ws_mod.ws_search("库P5", "前言内容", mode="fts")
+    hit = s["hits"][0]
+    # 长前言区已被 P3 的卷首合成子节覆盖 → 命中归位子节（比 #front 更细）
+    assert "·续" in (hit.get("heading") or {}).get("text", "") and "@" in hit["section_ref"]
+    r = ws_mod.ws_read_entry("库P5", None, section=hit["section_ref"], max_chars=3000)
+    assert r["success"] and "前言内容" in r["content"]
+    assert r["truncated"] is True and r["remaining_chars"] > 0
+
+
+def test_p1_fullmd_selfcheck(ws_mod):
+    """P1：入库后 full.md sha 与 entry_id 一致（原子写序不变式）"""
+    import hashlib
+    r = ws_mod.ws_ingest("库P1", content="full.md 原子写序自检验证。" * 50, title="P1", no_embed=True)
+    d = ws_mod.ws_dir("库P1")
+    f = d / "entries" / r["entry_id"] / "full.md"
+    h = hashlib.sha256(f.read_text(encoding="utf-8").encode("utf-8")).hexdigest()[:16]
+    assert h == r["entry_id"]

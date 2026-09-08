@@ -250,11 +250,12 @@ def _maybe_ingest(args, result):
                                "replaced": ing.get("replaced", False),
                                "message": ing.get("message"),
                                "message_i18n": ing.get("message_i18n")}
-        if ing.get("supersedes"):   # N5：同源旧条目警告对 agent 可见（非交互路径）
-            print(messages.msg("ingest_supersedes",
-                               ids=", ".join(ing["supersedes"])), file=sys.stderr)
-        else:
-            print(f"  📥 {ing['message']}", file=sys.stderr)
+        if not args.quiet:          # P6：--quiet 抑制进度（supersedes 已在 JSON 内，stderr 提示冗余）
+            if ing.get("supersedes"):
+                print(messages.msg("ingest_supersedes",
+                                   ids=", ".join(ing["supersedes"])), file=sys.stderr)
+            else:
+                print(f"  📥 {ing['message']}", file=sys.stderr)
     else:
         result["workspace_error"] = ing
     return result
@@ -345,8 +346,16 @@ def _handle_missing_deps(args, err, after_install=None):
         return after_install()
     return _run_extraction(args)
 
+class _JsonArgParser(argparse.ArgumentParser):
+    """L1/N6：argparse 参数误用同样走 JSON 契约（stdout 可 json.loads，rc=2）"""
+    def error(self, message):
+        print(json.dumps(messages.err_result("cli_args_error", err=message),
+                         ensure_ascii=False))
+        sys.exit(2)
+
+
 def main():
-    parser = argparse.ArgumentParser(description='智能内容提取工具')
+    parser = _JsonArgParser(description='智能内容提取工具')
     parser.add_argument('--url', help='要提取的 URL')
     parser.add_argument('--file', help='要提取的本地文件')
     parser.add_argument('--output', choices=['json', 'text', 'srt'], default='json', help='输出格式 (srt 仅支持音频/视频转字幕)')
@@ -373,6 +382,8 @@ def main():
                         help='本次不做向量嵌入（入库仅建 FTS 索引；检索仅走 FTS 路）')
     parser.add_argument('--all-workspaces', action='store_true', help='跨全部 workspace 检索（与 --search 搭配）')
     parser.add_argument('--limit', type=int, default=20, metavar='N', help='检索返回条数上限（1..100，默认 20）')
+    parser.add_argument('--quiet', action='store_true',
+                        help='抑制 stderr 进度行（合并 2>&1 管道解析 JSON 时使用）')
     parser.add_argument('--max-chars', type=int, default=30000, metavar='N',
                         help='读取内容上限（字符；0=不限；默认 30000，超出截断并标注 truncated/remaining_chars）')
     parser.add_argument('--entry', metavar='ID', help='读取条目 full.md 全文')

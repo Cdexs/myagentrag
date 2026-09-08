@@ -195,7 +195,7 @@ stdout 只返回分片清单（<1KB）。agent 按清单逐片读取，**每片�
 "$PYTHON" "$EXTRACTOR" --workspace-list / --workspace <名> --stats / --list  # 管理盘点
 ```
 
-**⑧ agent 调用约定（普适）**：解析 JSON 输出；`error` 优先于盲目重试；`missing` 清单须先征得用户同意再加 `--download-deps` 重跑；删除类操作（`--remove`/`--delete-workspace`）返回 `confirm_required` 时必须向用户确认后加 `--yes`；双语 `error_i18n` 按界面语言选用。
+**⑧ agent 调用约定（普适）**：解析 JSON 输出；参数误用（argparse 层）同样返回 JSON（rc=2）；合并 `2>&1` 时 stderr 进度行会破坏 JSON——stdout 是唯一 JSON 通道，或加 `--quiet` 抑制进度；`error` 优先于盲目重试；`missing` 清单须先征得用户同意再加 `--download-deps` 重跑；删除类操作（`--remove`/`--delete-workspace`）返回 `confirm_required` 时必须向用户确认后加 `--yes`；双语 `error_i18n` 按界面语言选用。
 
 ## 临时目录：何时使用、保存什么
 
@@ -324,7 +324,7 @@ agent 收到清单后的标准流程（写入 SKILL.md 供所有 agent 遵循）
 
 **混合检索（默认 fused）**：三路并行——语义向量路（Qwen3-Embedding，中英文/跨语言）、FTS5 关键词路、标题锚点路（结构标题独立索引），RRF 融合排序。命中结果带 `score_source`（fused/fts/vector/heading，多路同节命中并列标注如 `fused+heading`）；`score` 的语义看 `score_kind` 判别字段：`coverage`=0..1 覆盖率（命中查询词数/总词数，`--mode fts` 与 heading 路）、`similarity`=向量余弦、`rrf`=fused 融合排序分（1/(60+rank)，**跨查询不可比、不表达语义相关度，仅组内排序**；置信度判断应结合 `score_kind` 与 `fts_detail.coverage_terms`）；bm25 原值在 `fts_detail.bm25_raw`；同章节多个碎片命中自动聚合为一条（`same_section_hits` 计数），代表命中附所在标题 `heading` 与 `section_ref`。入库默认自动嵌入（`--no-embed` 可关）；首次使用知识库时一次性引导安装嵌入引擎与向量模型（y/N 确认）。
 
-查询语法：≥3 字词进 trigram 索引（输入自动转义）；**自然多词默认 OR 召回 + 覆盖率重排**（单词命中也返回，双词命中排前）；`AND`/`OR`/`NOT`/`NEAR(a b, 5)`/`前缀*` 原样透传；`title:`/`author:`/`publisher:`/`publish_date:` 可限定列；**<3 字中文词**（trigram 物理限制）自动回退 chunks 表 LIKE 并在结果中标注 `like-low-precision`。
+查询语法：≥3 字词进 trigram 索引（输入自动转义）；**自然多词默认 OR 召回 + 覆盖率重排**（单词命中也返回，双词命中排前）；`AND`/`OR`/`NOT`/`NEAR(a b, 5)`/`前缀*` 原样透传；`title:`/`author:`/`publisher:`/`publish_date:` 可限定列；**<3 字中文词**（trigram 物理限制）自动回退 chunks 表 LIKE 并在结果中标注 `like-low-precision`（该路 `score=None` 为低精度匹配，高精度需求请用 ≥3 字词或 `--mode vector`）。
 
 **结构感知入库（v0.8.0）**：docx 标题样式 / EPUB h1-h6 / PDF 内嵌书签自动归一化为标题锚点，裸文本启发式识别"第N章/条款N/Chapter N/编号标题"（老条目 `--reindex` 补建）；出处锚定**源文件结构**——PDF 页码、EPUB 章节、音视频时间戳、文本行号（`source_loc` 字段），full.md 内部坐标不对外暴露。
 
@@ -336,7 +336,7 @@ agent 收到清单后的标准流程（写入 SKILL.md 供所有 agent 遵循）
 "$PYTHON" "$EXTRACTOR" --workspace 我的资料 --section <section_ref>       # 精读命中所在整节（推荐）
 ```
 
-命中落在首个标题之前（前言/目录区）时 `section_ref` 为 `entry_id#front` 哨兵引用，同样可 `--section` 精读。检索命中附 `section_ref`（不透明引用）与 `section_chars`——agent 将 ref 原样传给 `--section` 即可精读整节。标题稀疏的长文档（如扫描书）会自动在超长章节内生成 20K 步长的**合成子节锚点**（标题为 `父标题·续N`，不参与标题检索），命中归位与 `--section` 精读粒度回到 20K。**读取默认上限 30,000 字符**（`--max-chars` 对 entry/chunk/section 三读路径统一生效；0=不限），超出截断并标注 `truncated/total_chars/remaining_chars`；超大节按命中位置开窗返回（`section_ref` 内嵌命中偏移），保证内容围绕命中词。媒体命中带 `start_ms/end_ms` 时间戳（精确到命中词所在段落，`timestamp_precision: segment/window/chunk` 标注精度来源；配 `--play --at` 定位回放）。
+命中落在首个标题之前（前言/目录区）时 `section_ref` 为 `entry_id#front` 哨兵引用，同样可 `--section` 精读。检索命中附 `section_ref`（不透明引用）与 `section_chars`——agent 将 ref 原样传给 `--section` 即可精读整节。标题稀疏或**无标题**的长文档（扫描书/纯文本/识别失败的 EPUB）会在超长区间生成 20K 步长的**合成子节锚点**（卷首区为 `卷首·续N`）（标题为 `父标题·续N`，不参与标题检索），命中归位与 `--section` 精读粒度回到 20K。**读取默认上限 30,000 字符**（`--max-chars` 对 entry/chunk/section 三读路径统一生效；0=不限），超出截断并标注 `truncated/total_chars/remaining_chars`；超大节按命中位置开窗返回（`section_ref` 内嵌命中偏移），保证内容围绕命中词。媒体命中带 `start_ms/end_ms` 时间戳（精确到命中词所在段落，`timestamp_precision: segment/window/chunk` 标注精度来源；配 `--play --at` 定位回放）。
 
 ### 管理操作全集
 
@@ -350,7 +350,7 @@ agent 收到清单后的标准流程（写入 SKILL.md 供所有 agent 遵循）
 | 条目列举  | `--workspace <名> --list`                         |
 | 条目删除  | `--workspace <名> --remove <entry-id>`（需 `--yes`） |
 | 完整性校验 | `--workspace <名> --verify`（片数/逐片一致性/覆盖/FTS 索引比对） |
-| 索引重建  | `--workspace <名> --reindex`（重建 FTS+标题锚点；**不含向量**） |
+| 索引重建  | `--workspace <名> --reindex`（重建 FTS+标题锚点+子节；**不含向量**；`consistent` 含 chunk↔full.md 逐片校验） |
 | 向量补建  | `--workspace <名> --embed`（为零向量条目补建向量，需嵌入链） |
 | 空间回收  | `--workspace <名> --vacuum`                       |
 

@@ -53,7 +53,10 @@ def test_op_without_workspace_name(cli_env):
 
 def test_chunk_requires_entry(cli_env):
     r = run(cli_env, "--chunk", "1")
-    assert r.returncode == 2 and "--entry" in r.stderr
+    # L1：argparse 误用同样走 JSON 契约（stdout 可解析）
+    assert r.returncode == 2
+    j = json.loads(r.stdout)
+    assert j["success"] is False and "entry" in j["error"]
 
 
 def test_file_not_found_bilingual(cli_env):

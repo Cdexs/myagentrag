@@ -603,6 +603,17 @@ def _gen_subsections(con, entry_id, total_chars=None, syn_chars=_SUBSECTION_CHAR
     rows = con.execute("SELECT rowid, offset, heading_text, level FROM headings"
                        " WHERE entry_id=? ORDER BY offset", (entry_id,)).fetchall()
     if not rows:
+        if total_chars and total_chars > syn_chars:   # P3：无标题文档 → 卷首 20K 步长子节
+            ins = []
+            n = 0
+            pos = syn_chars
+            while total_chars - pos > syn_chars:
+                n += 1
+                ins.append((entry_id, pos, "卷首·续%d" % n, None))
+                pos += syn_chars
+            con.executemany("INSERT INTO subsections(entry_id, offset, title, level)"
+                            " VALUES (?,?,?,?)", ins)
+            return len(ins)
         return 0
     total = total_chars if total_chars is not None else con.execute(
         "SELECT COALESCE(total_chars,0) FROM entries WHERE id=?",
@@ -794,7 +805,12 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
     entry_id = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
     entry_dir = d / "entries" / entry_id
     entry_dir.mkdir(parents=True, exist_ok=True)
-    (entry_dir / "full.md").write_text(text, encoding="utf-8")
+    tmp_full = entry_dir / "full.md.tmp"       # P1：原子写序——先临时落盘并自检，
+    tmp_full.write_text(text, encoding="utf-8")  # 事务提交后才替换正式文件，杜绝坐标脱钩
+    _chk = hashlib.sha256(tmp_full.read_text(encoding="utf-8").encode("utf-8")).hexdigest()[:16]
+    if _chk != entry_id:
+        tmp_full.unlink(missing_ok=True)
+        return messages.err_result("ingest_fullmd_mismatch")
 
     source_copy = None
     if keep_source:
@@ -824,6 +840,7 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
             try:
                 vec_values = _emb.embed_texts([w[3] for w in windows], model_id=_emb.DEFAULT_MODEL)
             except RuntimeError as e:
+                tmp_full.unlink(missing_ok=True)
                 return messages.err_result("ingest_embed_fail", err=str(e))
             vec_windows = [(w[0], w[1], w[2]) for w in windows]  # (chunk_no, win_start, win_end)
 
@@ -902,6 +919,7 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
 
     # 错误恢复（退避重试 2 次）：malformed/locked 类 → 重建连接重试，仍失败才报错
     existing, created_at = _db_call(d / WORKSPACE_DB, _write)
+    os.replace(tmp_full, entry_dir / "full.md")   # 事务提交成功才原子替换（中断不产生不一致）
 
     # 同源条目提示与替换（S4）：source_ref 相同的旧条目
     superseded = []
@@ -1447,7 +1465,9 @@ def _polish_one(h, info, idx):
         h["section_chars"] = max(0, end - off_)
     else:
         # 首个锚点之前的区域（前言/目录）：哨兵引用 #front 保证任何命中都可精读（S2）
-        h["section_ref"] = "%s#front" % h["entry_id"]
+        hoff = _hit_offset(h)
+        h["section_ref"] = ("%s#front@%d" % (h["entry_id"], hoff)
+                            if hoff is not None else "%s#front" % h["entry_id"])
         h["section_chars"] = hs[0][0] if hs else (info["total_chars"] or 0)
     loc = _source_loc_for(info, _hit_offset(h))
     h["source_loc"] = loc
@@ -1610,7 +1630,7 @@ def _entry_meta(e):
             "chunk_count": e[10]}
 
 
-def _read_front(con, d, ws_name, entry_id):
+def _read_front(con, d, ws_name, entry_id, max_chars=30000, at=None):
     """#front 哨兵：首个标题之前的区域（前言/目录）精读（S2）"""
     e = _get_entry(con, entry_id)
     if not e:
@@ -1620,11 +1640,25 @@ def _read_front(con, d, ws_name, entry_id):
     row = con.execute("SELECT MIN(offset) FROM headings WHERE entry_id=?",
                       (entry_id,)).fetchone()
     end = row[0] if row and row[0] is not None else len(text)
+    if at is not None and end > max_chars > 0:   # P5：以命中位置为中心开窗
+        half = max_chars // 2
+        wstart = max(0, min(at - half, end - max_chars))
+        wend = min(end, wstart + max_chars)
+    else:
+        wstart, wend = 0, end
+    content, cap = _cap_text(text[wstart:wend], max_chars)
+    if (end - 0) > len(content):
+        cap = {"total_chars": end, "remaining_chars": end - len(content)}
     info = _load_exit_info(con, d, entry_id)
-    return {"success": True, "workspace": ws_name, "entry": _entry_meta(e),
+    out = {"success": True, "workspace": ws_name, "entry": _entry_meta(e),
             "section": {"ref": "%s#front" % entry_id, "heading": None, "chars": end,
-                        "source_loc": _source_loc_for(info, 0)},
-            "content": text[:end]}
+                        "read_chars": len(content),
+                        "source_loc": _source_loc_for(info, at if at is not None else 0)},
+            "content": content}
+    if cap:
+        out.update(cap)
+        out["truncated"] = True
+    return out
 
 
 def _read_section(con, d, ws_name, ref, max_chars=30000):
@@ -1632,8 +1666,10 @@ def _read_section(con, d, ws_name, ref, max_chars=30000):
 
     ref 为不透明引用：agent 原样传回即可，无需理解内部结构。
     """
-    if ref.endswith("#front"):
-        return _read_front(con, d, ws_name, ref[:-len("#front")])
+    if "#front" in ref:                 # P5：front 引用可带命中偏移（#front@offset）
+        base, _, at_s = ref.partition("#front")
+        at = int(at_s[1:]) if at_s.startswith("@") and at_s[1:].isdigit() else None
+        return _read_front(con, d, ws_name, base, max_chars=max_chars, at=at)
     at = None
     if "@" in ref:                      # R4：命中偏移后缀（#s5@offset），先剥离再解析行号
         ref, at_s = ref.rsplit("@", 1)
@@ -1675,6 +1711,9 @@ def _read_section(con, d, ws_name, ref, max_chars=30000):
         wstart = start
         wend = end
     content, cap = _cap_text(text[wstart:wend], max_chars)
+    if (end - start) > len(content):     # P4：开窗/截断统一按节跨度标注
+        cap = {"total_chars": end - start,
+               "remaining_chars": (end - start) - len(content)}   # 节内未读总量（开窗后非连续）
     sec = {"ref": ref, "heading": {"text": hs[1], "level": hs[2]},
            "chars": max(0, end - hs[3]),
            "read_chars": len(content),
@@ -1941,6 +1980,22 @@ def ws_verify(name):
             "message_i18n": pair}
 
 
+def _chunks_full_mismatch_count(con, d):
+    """P2：chunk_text ⊂ full.md 逐片校验（复用 --verify 不变式），返回错位片数"""
+    bad = 0
+    for (eid,) in con.execute("SELECT id FROM entries").fetchall():
+        f = d / "entries" / eid / "full.md"
+        if not f.exists():
+            continue
+        full = f.read_text(encoding="utf-8")
+        for (ct, off, cc) in con.execute(
+                "SELECT chunk_text, file_offset, char_count FROM chunks WHERE entry_id=?",
+                (eid,)):
+            if off < 0 or off + cc > len(full) or full[off:off + cc] != ct:
+                bad += 1
+    return bad
+
+
 def ws_reindex(name):
     """重建索引：FTS 全量 rebuild + 标题锚点重解析（§8D 老条目补建；source_map 是
     提取层产物不动）。"""
@@ -1974,11 +2029,14 @@ def ws_reindex(name):
         ccount = con.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
         hcount = con.execute("SELECT COUNT(*) FROM headings").fetchone()[0]
         vcount = sum(_vector_counts(con).values())
+        bad = _chunks_full_mismatch_count(con, d)   # P2：口径与 --verify 对齐
     finally:
         _close(con)
     pair = messages.msg_pair("ws_reindexed")
     return {"success": True, "workspace": name, "fts_rows": fcount, "chunks_rows": ccount,
-            "headings_rows": hcount, "vectors_rows": vcount, "consistent": fcount == ccount,
+            "headings_rows": hcount, "vectors_rows": vcount,
+            "chunk_full_mismatch": bad,
+            "consistent": fcount == ccount and bad == 0,
             "message": pair[messages.get_lang()], "message_i18n": pair}
 
 
