@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""专用 Python 运行时 — smart-summarize v0.6.0（方案 docs/kb-sqlite-fts5-design-v1.4.md §8B）
+"""专用 Python 运行时（方案 docs/kb-sqlite-fts5-design-v1.4.md §8B）
 
 技能与用户系统 Python 彻底解耦（用户决策 2026-09-06）：
 - CPython 3.12 独立构建（python-build-standalone install_only tarball，SHA256 校验）
@@ -31,11 +31,11 @@ RUNTIME_VENV_DIR = RUNTIME_DIR / "venv"      # 扩展库 venv
 RUNTIME_MANIFEST = RUNTIME_DIR / "manifest.json"
 
 PYTHON_VERSION = "3.12.14"
-PYTHON_BUILD_TAG = os.environ.get("MYAGENTRAG_PYTHON_BUILD_TAG") or os.environ.get("SMART_SUMMARIZE_PYTHON_BUILD_TAG", "20260901")
+PYTHON_BUILD_TAG = os.environ.get("MYAGENTRAG_PYTHON_BUILD_TAG", "20260901")
 _PY_RELEASE_URL = (
     "https://github.com/astral-sh/python-build-standalone/releases/download/"
     f"{PYTHON_BUILD_TAG}")
-_PY_MIRROR = os.environ.get("MYAGENTRAG_PYTHON_MIRROR") or os.environ.get("SMART_SUMMARIZE_PYTHON_MIRROR")  # 覆盖 Python 本体下载源
+_PY_MIRROR = os.environ.get("MYAGENTRAG_PYTHON_MIRROR")  # 覆盖 Python 本体下载源
 
 RUNTIME_REQUIREMENTS = Path(__file__).resolve().parent / "requirements-libs.txt"
 
@@ -104,7 +104,7 @@ def _download(url, dest, desc):
     import urllib.request
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    req = urllib.request.Request(url, headers={"User-Agent": "smart-summarize"})
+    req = urllib.request.Request(url, headers={"User-Agent": "myagentrag"})
     with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as f:
         total = int(r.headers.get("Content-Length", 0) or 0)
         done = 0
@@ -186,26 +186,26 @@ def install_runtime():
         print("  ⬇ 安装提取扩展库（requests/pdfplumber/pymupdf/python-docx/"
               "ebooklib/openpyxl/python-pptx/yt-dlp）...", file=sys.stderr)
         cmd = [str(vpy), "-m", "pip", "install", "-r", str(RUNTIME_REQUIREMENTS)]
-        index_url = os.environ.get("MYAGENTRAG_PIP_INDEX_URL") or os.environ.get("SMART_SUMMARIZE_PIP_INDEX_URL")
+        index_url = os.environ.get("MYAGENTRAG_PIP_INDEX_URL")
         if index_url:
             cmd += ["--index-url", index_url]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
         if r.returncode != 0:
             raise RuntimeError(f"扩展库安装失败: {(r.stderr or '').strip()[-300:]}")
 
-        # 冒烟：全部库可导入 + FTS5 trigram 可用（SS_SMOKE 哨兵行隔离第三方库的导入警告输出）
+        # 冒烟：全部库可导入 + FTS5 trigram 可用（MYAGENTRAG_SMOKE 哨兵行隔离第三方库的导入警告输出）
         smoke_code = (
             "import sqlite3, requests, pdfplumber, fitz, docx, ebooklib, openpyxl, pptx, yt_dlp;"
             "c = sqlite3.connect(':memory:');"
             "c.execute(\"CREATE VIRTUAL TABLE p USING fts5(x, tokenize='trigram')\");"
-            "import sys; print('SS_SMOKE', sys.version.split()[0], sqlite3.sqlite_version)")
+            "import sys; print('MYAGENTRAG_SMOKE', sys.version.split()[0], sqlite3.sqlite_version)")
         r = subprocess.run([str(vpy), "-c", smoke_code],
                            capture_output=True, text=True, timeout=300)
         if r.returncode != 0:
             raise RuntimeError(f"运行时冒烟失败: {(r.stderr or '').strip()[-300:]}")
         try:
             toks = next(l for l in (r.stdout or "").splitlines()
-                        if l.startswith("SS_SMOKE")).split()
+                        if l.startswith("MYAGENTRAG_SMOKE")).split()
             py_ver, sqlite_ver = toks[1], toks[2]
         except (StopIteration, IndexError):
             raise RuntimeError(f"运行时冒烟输出异常: {(r.stdout or '')[-200:]}")

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""whisper.cpp 转录模块 — smart-summarize v0.6.0 模块化拆分
+"""whisper.cpp 转录模块
 
 唯一转录引擎：ffmpeg 转码、音频/视频转录入口。是否使用 GPU 取决于用户安装的
 构建（Vulkan/Metal/CUDA）；组件定位与缺失检测见 deps.py。
@@ -24,7 +24,7 @@ def _whispercpp_transcribe(file_path, model_name, want_srt):
     ffmpeg = _find_ffmpeg()
     if not (cli and ggml and ffmpeg):
         return None
-    tmpdir = make_tmpdir(f"ss_wcpp_{Path(file_path).stem}_")
+    tmpdir = make_tmpdir(f"myag_wcpp_{Path(file_path).stem}_")
     try:
         wav = tmpdir / "audio16k.wav"
         cmd = [ffmpeg, "-i", str(file_path), "-vn", "-acodec", "pcm_s16le",
@@ -99,7 +99,7 @@ def extract_audio_srt(file_path, model="large-v3-turbo"):
 
 def extract_video_text(file_path):
     """提取视频文件内容"""
-    tmpdir = make_tmpdir(f"ss_vid_{Path(file_path).stem}_")
+    tmpdir = make_tmpdir(f"myag_vid_{Path(file_path).stem}_")
 
     try:
         ffmpeg = _find_ffmpeg()

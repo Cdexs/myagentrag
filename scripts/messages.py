@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""双语反馈消息模块 — smart-summarize v0.6.0（T5，方案 docs/kb-sqlite-fts5-design-v1.3.md §8A）
+"""双语反馈消息模块（方案 docs/kb-sqlite-fts5-design-v1.3.md §8A）
 
 集中管理全部面向用户的反馈字符串（zh/en），避免文案散落：
 
@@ -411,7 +411,7 @@ def set_lang(lang):
 
 def detect_lang():
     """系统语言自动探测：MYAGENTRAG_LANG → Windows UI 语言 → POSIX locale → zh。"""
-    env = os.environ.get("MYAGENTRAG_LANG") or os.environ.get("MYAGENTRAG_LANG")
+    env = os.environ.get("MYAGENTRAG_LANG")
     if env and env[:2].lower() in SUPPORTED_LANGS:
         return env[:2].lower()
     if sys.platform == "win32":

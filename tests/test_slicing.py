@@ -64,16 +64,16 @@ def _read_chunk(manifest, n):
 
 def test_make_tmpdir_under_base_and_sweep(tmp_path, monkeypatch):
     monkeypatch.setattr(slicing, "TEMP_BASE_DIR", tmp_path)
-    stale = tmp_path / "ss_stale_x"
+    stale = tmp_path / "myag_stale_x"
     stale.mkdir()
     import os
     old = 0 - (80 * 3600)  # 80 小时前
     os.utime(stale, (old, old))
-    d = make_tmpdir("ss_new_")
-    assert d.exists() and d.name.startswith("ss_new_")
+    d = make_tmpdir("myag_new_")
+    assert d.exists() and d.name.startswith("myag_new_")
     assert d.parent == tmp_path
     assert not stale.exists()  # 超期目录被清扫
-    fresh = tmp_path / "ss_fresh"
+    fresh = tmp_path / "myag_fresh"
     fresh.mkdir()
-    make_tmpdir("ss_new2_")
+    make_tmpdir("myag_new2_")
     assert fresh.exists()  # 新目录保留

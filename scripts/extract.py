@@ -1,19 +1,8 @@
 #!/usr/bin/env python3
 """
-智能内容提取工具 (MyAgentRAG)
-功能：提取 YouTube/B站/网页/本地文件内容，不调用 LLM
+MyAgentRAG — 本地知识库构建与检索工具
+功能：把 YouTube/B站/网页/本地文件/音视频转录内容提取并入库到知识库 workspace，不调用 LLM
 支持格式：txt, md, pdf, docx, doc, epub, mp3, wav, mp4, mkv, 等
-
-变更（节选）：
-- v0.6: 模块化拆分——slicing.py（分片协议）/ extractors.py（提取器）/
-  transcribe.py（whisper 转录）/ deps.py（组件检测与安装）/
-  messages.py（zh/en 双语反馈，--lang 覆盖 + locale 自动探测）/
-  workspace.py（知识库：SQLite FTS5 检索 / 时间戳索引 / 定位回放）/
-  runtime.py（专用 Python 运行时：与用户系统环境彻底解耦，方案 v1.4 §8B）；
-  extract.py 只保留 CLI 入口、调度与运行时闸门
-- v3.5: 运行时检测缺失组件（ffmpeg/whisper-cli/ggml 模型），提示大小并经用户确认后下载安装，随后继续原任务
-- v3.4: 按操作系统寻找 whisper-cli，临时目录和 ffmpeg 查找跨平台化；cookies 改为显式环境变量
-- v3.3: 音频转录只走 whisper.cpp，移除 faster-whisper 回退
 """
 
 import sys
@@ -107,9 +96,9 @@ def _runtime_gate(args):
     - 已就绪且为当前进程 → 通过；
     - 已就绪但当前是引导层 → 透明 re-exec；
     - 缺失 → 复用组件确认 UI 引导安装（不回退用户环境），
-      SMART_SUMMARIZE_NO_RUNTIME=1 时跳过（测试用）。
+      MYAGENTRAG_NO_RUNTIME=1 时跳过（测试用）。
     """
-    if os.environ.get("MYAGENTRAG_NO_RUNTIME") or os.environ.get("SMART_SUMMARIZE_NO_RUNTIME"):
+    if os.environ.get("MYAGENTRAG_NO_RUNTIME"):
         return
     r = runtime.ensure_runtime(allow_install=args.download_deps)
     if r["status"] == "ok-current":
@@ -366,7 +355,7 @@ def main():
     parser.add_argument('--download-deps', action='store_true',
                         help='缺组件时跳过交互确认，直接下载安装（用于 agent 代为确认后调用）')
     parser.add_argument('--lang', choices=['zh', 'en'], default=None,
-                        help='反馈语言 (默认: 按系统语言自动探测，可用 SMART_SUMMARIZE_LANG 覆盖)')
+                        help='反馈语言 (默认: 按系统语言自动探测，可用 MYAGENTRAG_LANG 覆盖)')
     # ---- 知识库 workspace（v1.3 §4 管理操作全集） ----
     parser.add_argument('--workspace', metavar='名', help='知识库 workspace 名称（提取时带上即入库）')
     parser.add_argument('--create', action='store_true', help='显式创建 workspace')
@@ -420,7 +409,7 @@ def main():
         (args.search and args.mode in ("fused", "vector"))
         or args.embed
         or (args.workspace and (args.url or args.file) and not args.no_embed))
-    if needs_embed and not os.environ.get("MYAGENTRAG_NO_RUNTIME") or os.environ.get("SMART_SUMMARIZE_NO_RUNTIME"):
+    if needs_embed and not os.environ.get("MYAGENTRAG_NO_RUNTIME"):
         _kb_gate(args)
 
     if args.chunk and not args.entry:

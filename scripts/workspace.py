@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""知识库 workspace 模块 — smart-summarize v0.6.0（T6，方案 docs/kb-sqlite-fts5-design-v1.3.md）
+"""知识库 workspace 模块（方案 docs/kb-sqlite-fts5-design-v1.3.md）
 
 workspace = 目录（~/.myagentrag/workspaces/<名>/）：
   workspace.db    SQLite FTS5+trigram（entries / chunks / entries_fts 外部内容表）
@@ -91,7 +91,7 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9\u4e00-\u9fff_-]+$")
 
 
 def ws_root():
-    configured = os.environ.get("MYAGENTRAG_WORKSPACES_DIR") or os.environ.get("SMART_SUMMARIZE_WORKSPACES_DIR")
+    configured = os.environ.get("MYAGENTRAG_WORKSPACES_DIR")
     if configured:
         return Path(configured).expanduser()
     return MANAGED_HOME / "workspaces"
@@ -1553,7 +1553,7 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
     degraded = {"vector_available": mode in ("vector", "fused")}
     vector_available = mode in ("vector", "fused") and not col_filter
     vector_backend = None
-    skip_vector = bool(os.environ.get("MYAGENTRAG_NO_RUNTIME") or os.environ.get("SMART_SUMMARIZE_NO_RUNTIME"))  # 测试模式：全传统路径
+    skip_vector = bool(os.environ.get("MYAGENTRAG_NO_RUNTIME"))  # 测试模式：全传统路径
     if skip_vector:
         degraded["vector_available"] = False
     for ws in names:

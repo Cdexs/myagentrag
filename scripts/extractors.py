@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""内容提取器模块 — smart-summarize v0.6.0 模块化拆分
+"""内容提取器模块
 
 覆盖：类型检测 / YouTube / B站 / 网页 / 本地文件（文本、PDF、Word、EPUB、Excel、PowerPoint）
 原则：只提取，不调用 LLM；cookies 永不自动创建或收集。
@@ -15,10 +15,10 @@ from pathlib import Path
 from slicing import make_tmpdir
 import messages
 
-# 受管组件根目录（与 deps 共享同一解析：新名优先、旧名兼容回退）
-_managed_home_env = (os.environ.get("MYAGENTRAG_HOME")
-                     or os.environ.get("SMART_SUMMARIZE_HOME"))
-MANAGED_HOME = Path(_managed_home_env or str(Path.home() / ".myagentrag")).expanduser()
+# 受管组件根目录（与 deps.py 同一解析，可用 MYAGENTRAG_HOME 覆盖）
+MANAGED_HOME = Path(
+    os.environ.get("MYAGENTRAG_HOME") or str(Path.home() / ".myagentrag")
+).expanduser()
 
 
 def detect_content_type(url_or_path):
@@ -76,7 +76,7 @@ def clean_subtitle(content):
 def _youtube_cookies_path():
     """cookies 文件路径：环境变量优先，否则用用户受管目录下的约定位置。
     技能永不自动创建或收集 cookies；文件只由用户手动导出后放入。"""
-    configured = os.environ.get("MYAGENTRAG_YOUTUBE_COOKIES") or os.environ.get("SMART_SUMMARIZE_YOUTUBE_COOKIES")
+    configured = os.environ.get("MYAGENTRAG_YOUTUBE_COOKIES")
     if configured:
         return Path(configured).expanduser()
     return MANAGED_HOME / "cookies" / "youtube-cookies.txt"
@@ -94,7 +94,7 @@ def _bilibili_cookie_header():
     """B站 cookies：与 YouTube 同样的隐私规则，只走显式配置（环境变量或受管目录）。
     支持 Netscape 格式（yt-dlp/浏览器导出）与原生 Cookie 头格式两种文件。
     返回 Cookie 头值或空字符串。"""
-    configured = os.environ.get("MYAGENTRAG_BILIBILI_COOKIES") or os.environ.get("SMART_SUMMARIZE_BILIBILI_COOKIES")
+    configured = os.environ.get("MYAGENTRAG_BILIBILI_COOKIES")
     cookies = Path(configured).expanduser() if configured else MANAGED_HOME / "cookies" / "bilibili-cookies.txt"
     if not (cookies.exists() and cookies.is_file() and cookies.stat().st_size > 0):
         return ""
@@ -166,7 +166,7 @@ def extract_youtube(video_id):
         except Exception:
             pass
 
-        tmpdir = make_tmpdir(f"ss_yt_{video_id}_")
+        tmpdir = make_tmpdir(f"myag_yt_{video_id}_")
         try:
             sub_cmd = [ytdlp, '--js-runtimes', 'node',
                        '--write-sub', '--write-auto-sub',
@@ -207,8 +207,8 @@ def extract_bilibili(bvid):
             headers['Cookie'] = cookie_header
             messages.warn("bilibili_cookie_ok")
         # B站是国内站：Windows 系统代理（注册表）常会把国内站转发失败（SSL EOF），
-        # 默认绕过系统代理直连；用户显式设置 MYAGENTRAG_PROXY（旧 SMART_SUMMARIZE_PROXY 兼容）时尊重该代理。
-        if os.environ.get("MYAGENTRAG_PROXY") or os.environ.get("SMART_SUMMARIZE_PROXY"):
+        # 默认绕过系统代理直连；用户显式设置 MYAGENTRAG_PROXY 时尊重该代理。
+        if os.environ.get("MYAGENTRAG_PROXY"):
             proxies = None  # 交给 requests/环境变量处理
         elif os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy"):
             proxies = None  # 用户显式设置了终端代理，尊重之

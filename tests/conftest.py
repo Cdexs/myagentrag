@@ -9,7 +9,7 @@ SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import os, tempfile
-os.environ.setdefault("MYAGENTRAG_HOME", tempfile.mkdtemp(prefix="ss-test-home-"))
+os.environ.setdefault("MYAGENTRAG_HOME", tempfile.mkdtemp(prefix="myag-test-home-"))
 
 
 @pytest.fixture(autouse=True)

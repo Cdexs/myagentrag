@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""向量嵌入模块 — smart-summarize v0.7.0（方案 docs/kb-sqlite-fts5-design-v1.5.md §8C）
+"""向量嵌入模块（方案 docs/kb-sqlite-fts5-design-v1.5.md §8C）
 
 默认模型 Qwen3-Embedding-0.6B（官方 GGUF Q8_0），推理引擎 llama.cpp（用户决策 2026-09-06）：
 - 窗口切分：片内 ≤max_chars 字符窗口（中文 1 字 ≈ 1 token，800 字符保守对齐 1024 token 上限），

@@ -200,7 +200,7 @@ def test_extract_epub_text(tmp_path):
     from ebooklib import epub as epub_mod
 
     book = epub_mod.EpubBook()
-    book.set_identifier("ss-test-id")
+    book.set_identifier("myag-test-id")
     book.set_title("测试电子书")
     book.set_language("zh")
     chapter = epub_mod.EpubHtml(title="第一章", file_name="chap_01.xhtml", lang="zh")
@@ -223,7 +223,7 @@ def test_extract_epub_headings_and_chapters(tmp_path):
     from ebooklib import epub as epub_mod
 
     book = epub_mod.EpubBook()
-    book.set_identifier("ss-test-h2")
+    book.set_identifier("myag-test-h2")
     book.set_title("测试电子书2")
     book.set_language("zh")
     ch1 = epub_mod.EpubHtml(title="第一章", file_name="chap_01.xhtml", lang="zh")

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""大文档分片协议（slice protocol）— smart-summarize v0.6.0 模块化拆分
+"""大文档分片协议（slice protocol）
 
 设计：<=SLICE_THRESHOLD_CHARS 走 stdout 直出；超过则分片落盘到受管临时目录，
 stdout 只输出清单（<2KB），agent 按需读分片文件——塞爆上下文的物理上限被提取器锁死。
@@ -18,7 +18,7 @@ def _default_temp_base_dir():
     """受管临时根目录：显式环境变量优先，否则系统临时目录"""
     import os
     import tempfile
-    configured = os.environ.get("MYAGENTRAG_TMPDIR") or os.environ.get("SMART_SUMMARIZE_TMPDIR")
+    configured = os.environ.get("MYAGENTRAG_TMPDIR")
     if configured:
         return Path(configured).expanduser()
     return Path(tempfile.gettempdir())
@@ -28,11 +28,11 @@ TEMP_BASE_DIR = _default_temp_base_dir()
 
 
 def _sweep_stale_tmpdirs(max_age_hours=72):
-    """清理异常退出遗留的 ss_* 临时目录（超过 max_age_hours 即删）"""
+    """清理异常退出遗留的 myag_* 临时目录（超过 max_age_hours 即删）"""
     import datetime
     now = datetime.datetime.now().timestamp()
     try:
-        for p in TEMP_BASE_DIR.glob("ss_*"):
+        for p in TEMP_BASE_DIR.glob("myag_*"):
             if p.is_dir() and now - p.stat().st_mtime > max_age_hours * 3600:
                 import shutil
                 shutil.rmtree(p, ignore_errors=True)
@@ -95,11 +95,11 @@ def make_chunks(text, chunk_chars=CHUNK_CHARS, overlap=CHUNK_OVERLAP_CHARS):
 def write_slices(title, source_path, content, args_slice=None, temp_base_dir=None):
     """大文档分片落盘；args_slice 非 None 时只返回该片内容。
 
-    temp_base_dir：受管临时根目录（默认 SMART_SUMMARIZE_TMPDIR / 系统临时目录）。
+    temp_base_dir：受管临时根目录（默认 MYAGENTRAG_TMPDIR / 系统临时目录）。
     """
     temp_root = Path(temp_base_dir) if temp_base_dir else TEMP_BASE_DIR
     content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:8]
-    chunk_dir = temp_root / ("ss_slice_" + content_hash[:8])
+    chunk_dir = temp_root / ("myag_slice_" + content_hash[:8])
     chunks = make_chunks(content)
     chunk_entries = []
     try:

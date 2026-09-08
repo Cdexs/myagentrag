@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""运行时依赖体系 — smart-summarize v0.6.0 模块化拆分
+"""运行时依赖体系
 
 组件定位、缺失检测与确认安装（专用 Python 运行时 / ffmpeg / whisper-cli / ggml 模型）：
 缺失时列出清单（名称/用途/来源/预计大小），经用户确认后下载安装并继续原任务。
@@ -19,19 +19,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-# 受管组件根目录（与主入口共享，可用 SMART_SUMMARIZE_HOME 覆盖）
-_HOME_NEW = Path.home() / ".myagentrag"
+# 受管组件根目录（可用 MYAGENTRAG_HOME 覆盖）
 MANAGED_HOME = Path(
-    os.environ.get("MYAGENTRAG_HOME") or os.environ.get("SMART_SUMMARIZE_HOME")
-    or str(_HOME_NEW)
+    os.environ.get("MYAGENTRAG_HOME") or str(Path.home() / ".myagentrag")
 ).expanduser()
-if MANAGED_HOME == _HOME_NEW and not MANAGED_HOME.exists():   # 品牌更名一次性迁移
-    _old = Path.home() / ".smart-summarize"
-    if _old.exists():
-        try:
-            _old.rename(MANAGED_HOME)
-        except OSError:
-            pass
 MANAGED_BIN = MANAGED_HOME / "bin"
 MANAGED_MODELS = MANAGED_HOME / "models"
 
@@ -45,11 +36,11 @@ def _default_whispercpp_models_dir():
 
 
 WHISPERCPP_DIR = Path(os.environ.get(
-    "SMART_SUMMARIZE_WHISPERCPP_DIR",
+    "MYAGENTRAG_WHISPERCPP_DIR",
     str(_default_whispercpp_dir()),
 )).expanduser()
 WHISPERCPP_MODELS_DIR = Path(os.environ.get(
-    "SMART_SUMMARIZE_WHISPERCPP_MODELS_DIR",
+    "MYAGENTRAG_WHISPERCPP_MODELS_DIR",
     str(_default_whispercpp_models_dir()),
 )).expanduser()
 
@@ -62,7 +53,7 @@ WHISPERCPP_GGML_MAP = {
 # ==================== 组件定位（环境变量 → PATH → 受管目录） ====================
 
 def _find_ffmpeg():
-    configured = os.environ.get("MYAGENTRAG_FFMPEG") or os.environ.get("SMART_SUMMARIZE_FFMPEG")
+    configured = os.environ.get("MYAGENTRAG_FFMPEG")
     if configured:
         p = Path(configured).expanduser()
         if p.exists() and p.is_file():
@@ -78,7 +69,7 @@ def _find_ffmpeg():
 
 
 def _find_whispercpp_cli():
-    configured = os.environ.get("MYAGENTRAG_WHISPERCPP_CLI") or os.environ.get("SMART_SUMMARIZE_WHISPERCPP_CLI")
+    configured = os.environ.get("MYAGENTRAG_WHISPERCPP_CLI")
     if configured:
         p = Path(configured).expanduser()
         if p.exists() and p.is_file():
@@ -203,7 +194,7 @@ def install_ffmpeg():
     MANAGED_BIN.mkdir(parents=True, exist_ok=True)
     import zipfile
     import tarfile
-    with tempfile.TemporaryDirectory(prefix="ss_ffmpeg_dl_") as td:
+    with tempfile.TemporaryDirectory(prefix="myag_ffmpeg_dl_") as td:
         archive = _http_download(url, Path(td) / url.split("/")[-1].split("?")[0], "ffmpeg")
         if archive.suffix == ".zip":
             with zipfile.ZipFile(archive) as zf:
@@ -310,7 +301,7 @@ def install_whispercli():
         try:
             MANAGED_BIN.mkdir(parents=True, exist_ok=True)
             import zipfile
-            with tempfile.TemporaryDirectory(prefix="ss_wcpp_dl_") as td:
+            with tempfile.TemporaryDirectory(prefix="myag_wcpp_dl_") as td:
                 archive = _http_download(url, Path(td) / asset, asset)
                 with zipfile.ZipFile(archive) as zf:
                     zf.extractall(td)
@@ -331,7 +322,7 @@ def install_whispercli():
                     elif gpu_vendor == "amd":
                         print(f"  ⚠️ 已安装 CPU 版。检测到 AMD GPU（{gpu_name}）但官方无 A 卡 GPU 预编译；"
                               "如需 GPU 加速：安装 Vulkan SDK 后删除受管二进制重跑（将源码构建 Vulkan 版），"
-                              "或用 SMART_SUMMARIZE_WHISPERCPP_CLI 指向已有的 GPU 构建", file=sys.stderr)
+                              "或用 MYAGENTRAG_WHISPERCPP_CLI 指向已有的 GPU 构建", file=sys.stderr)
                     elif gpu_vendor in ("intel",):
                         print(f"  ⚠️ 已安装 CPU 版。检测到 Intel GPU（{gpu_name}）；"
                               "安装 Vulkan SDK 后删除受管二进制重跑可构建 Vulkan GPU 版", file=sys.stderr)
@@ -391,7 +382,7 @@ def install_whispercli():
                 print(f"  ⚠️ 未检测到可用 GPU 工具链，本次构建为 CPU 版{hint}；"
                       "如需 GPU 加速请安装对应 SDK（NVIDIA: CUDA Toolkit / AMD-Intel: Vulkan SDK）"
                       "后删除构建目录重试", file=sys.stderr)
-    custom_flags = os.environ.get("MYAGENTRAG_WHISPERCPP_CMAKE_FLAGS") or os.environ.get("SMART_SUMMARIZE_WHISPERCPP_CMAKE_FLAGS", "").split()
+    custom_flags = os.environ.get("MYAGENTRAG_WHISPERCPP_CMAKE_FLAGS", "").split()
     cmake_args = ["cmake", "-S", str(repo_dir), "-B", str(build_dir),
                   "-DCMAKE_BUILD_TYPE=Release", "-DWHISPER_BUILD_TESTS=OFF"] + gpu_flags + custom_flags
     r = subprocess.run(cmake_args, capture_output=True, text=True, timeout=600)
@@ -417,7 +408,7 @@ def install_whispercli():
     return dest
 
 def _model_download_dir():
-    configured = os.environ.get("MYAGENTRAG_WHISPERCPP_MODELS_DIR") or os.environ.get("SMART_SUMMARIZE_WHISPERCPP_MODELS_DIR")
+    configured = os.environ.get("MYAGENTRAG_WHISPERCPP_MODELS_DIR")
     if configured:
         return Path(configured).expanduser()
     return MANAGED_MODELS
@@ -508,8 +499,8 @@ def _install_dep(kind):
 
 # ==================== llama.cpp 嵌入引擎 + 向量模型（方案 v1.5 §8C） ====================
 
-LLAMA_CPP_RELEASE = os.environ.get("MYAGENTRAG_LLAMA_CPP_RELEASE") or os.environ.get("SMART_SUMMARIZE_LLAMA_CPP_RELEASE", "b10819")
-HF_BASE = os.environ.get("MYAGENTRAG_HF_MIRROR") or os.environ.get("SMART_SUMMARIZE_HF_MIRROR", "https://huggingface.co")
+LLAMA_CPP_RELEASE = os.environ.get("MYAGENTRAG_LLAMA_CPP_RELEASE", "b10819")
+HF_BASE = os.environ.get("MYAGENTRAG_HF_MIRROR", "https://huggingface.co")
 
 # 向量模型注册表（默认 Qwen3，用户决策 2026-09-06；bge-m3/e5-small 为注册表备选档）
 EMBEDDING_MODELS = {
@@ -527,7 +518,7 @@ LLAMA_EMBED_SUBDIR = "llama"  # 受管 bin/llama/：与 whisper-cli 隔离（ggm
 def _find_llama_embed():
     """定位 llama.cpp 嵌入引擎（llama-server，/v1/embeddings 端点）：
     环境变量 → 受管 bin/llama/ → PATH。新版发布包不再含独立 llama-embedding exe。"""
-    configured = os.environ.get("MYAGENTRAG_LLAMA_EMBED") or os.environ.get("SMART_SUMMARIZE_LLAMA_EMBED")
+    configured = os.environ.get("MYAGENTRAG_LLAMA_EMBED")
     if configured:
         p = Path(configured).expanduser()
         if p.exists() and p.is_file():
@@ -559,7 +550,7 @@ def install_llama_embed():
         target = MANAGED_BIN / LLAMA_EMBED_SUBDIR
         target.mkdir(parents=True, exist_ok=True)
         import zipfile
-        with tempfile.TemporaryDirectory(prefix="ss_llama_dl_") as td:
+        with tempfile.TemporaryDirectory(prefix="myag_llama_dl_") as td:
             archive = _http_download(url, Path(td) / asset, "llama.cpp 嵌入引擎")
             with zipfile.ZipFile(archive) as zf:
                 zf.extractall(td)
@@ -750,7 +741,7 @@ def install_sqlite_vec():
     失败时 GitHub loadable tarball 兜底（受管 bin/sqlite-vec/）。成功返回版本信息 dict；
     全部失败抛 RuntimeError（调用方据此回退 numpy）。"""
     cmd = [sys.executable, "-m", "pip", "install", "--upgrade", SQLITE_VEC_PACKAGE]
-    index_url = os.environ.get("MYAGENTRAG_PIP_INDEX_URL") or os.environ.get("SMART_SUMMARIZE_PIP_INDEX_URL")
+    index_url = os.environ.get("MYAGENTRAG_PIP_INDEX_URL")
     if index_url:
         cmd += ["--index-url", index_url]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
@@ -773,7 +764,7 @@ def install_sqlite_vec():
     import tarfile
     target = MANAGED_BIN / "sqlite-vec"
     target.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="ss_vec_dl_") as td:
+    with tempfile.TemporaryDirectory(prefix="myag_vec_dl_") as td:
         archive = _http_download(url, Path(td) / asset, "sqlite-vec 扩展")
         with tarfile.open(archive, "r:gz") as tf:
             tf.extractall(td)
