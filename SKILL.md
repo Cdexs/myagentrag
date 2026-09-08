@@ -135,7 +135,8 @@ agent 直接阅读 content 总结回答，不涉及知识库与任何依赖安�
 **③ "我之前存过的那份资料里关于 X 讲了什么"（检索→精读闭环，推荐主路径）**
 
 ```bash
-"$PYTHON" "$EXTRACTOR" --workspace 我的书架 --search "X 关键词"            # 默认 fused 三路融合
+"$PYTHON" "$EXTRACTOR" --workspace "@我的书架" --search "X 关键词"       # 用户以 @库名 指定：@ 原样传入即可
+"$PYTHON" "$EXTRACTOR" --workspace 我的书架 --search "X 关键词"            # 等价写法（agent 已解析库名时）
 "$PYTHON" "$EXTRACTOR" --workspace 我的书架 --search "X" --mode fts       # 纯关键词（不加载向量链）
 ```
 
