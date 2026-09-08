@@ -853,3 +853,26 @@ def test_vector_zero_hint(ws_mod):
     ws_mod.ws_ingest("库V0", content="向量缺失诊断验证内容。" * 30, title="V", no_embed=True)
     s = ws_mod.ws_search("库V0", "向量缺失", mode="vector")
     assert s["success"] and s["vectors_rows"] == 0 and s.get("vector_zero_hint") is True
+
+
+def test_n4_subsection_anchors(ws_mod):
+    """N4：超长 heading 间隙生成合成子节锚点——检索命中归位到子节，精读一节 20K 内"""
+    text = ("# 条款A 开篇\n" + "甲" * 50000 + "\n此处 reserve 深藏内容。\n" + "乙" * 50000
+            + "\n# 条款B 尾章\n" + "正文丙。" * 100)
+    ws_mod.ws_ingest("库N4", content=text, title="子节", no_embed=True)
+    d = ws_mod.ws_dir("库N4")
+    con = ws_mod._connect(d / ws_mod.WORKSPACE_DB)
+    subs = con.execute("SELECT offset, title FROM subsections ORDER BY offset").fetchall()
+    assert len(subs) >= 4                          # 50K 间隙 → 每 20K 一个合成锚点
+    assert all("·续" in t for _, t in subs)
+    s = ws_mod.ws_search("库N4", "reserve", mode="fts")
+    hit = s["hits"][0]
+    assert hit["heading"]["text"].endswith("·续%d" % int(hit["heading"]["text"].rsplit("·续", 1)[1])) \
+        or "续" in hit["heading"]["text"]           # 命中落在合成子节（导航粒度细化）
+    assert hit["section_chars"] <= 20000 + 1        # 节粒度回到 20K 步长
+    r = ws_mod.ws_read_entry("库N4", None, section=hit["section_ref"], max_chars=30000)
+    assert r["success"] and "reserve" in r["content"] and not r.get("truncated")
+    # 标题检索不受合成锚点污染
+    s2 = ws_mod.ws_search("库N4", "条款A", mode="fts")
+    assert not any((h.get("heading") or {}).get("text", "").endswith("·续1")
+                   for h in s2["hits"])

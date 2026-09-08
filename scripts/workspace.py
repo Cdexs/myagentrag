@@ -212,7 +212,16 @@ CREATE TABLE IF NOT EXISTS source_map (
     title TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_srcmap_entry ON source_map(entry_id, offset);
+CREATE TABLE IF NOT EXISTS subsections (
+    rowid INTEGER PRIMARY KEY,
+    entry_id TEXT,
+    offset INTEGER,
+    title TEXT,
+    level INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_subsections_entry ON subsections(entry_id, offset);
 """
+_SUBSECTION_CHARS = 20000   # N4：超长 heading 间隙的合成子节步长
 SCHEMA = SCHEMA + _V3_SCHEMA
 
 
@@ -586,6 +595,38 @@ def extract_headings(text, page_count=0):
     return out
 
 
+def _gen_subsections(con, entry_id, total_chars=None, syn_chars=_SUBSECTION_CHARS):
+    """N4：heading 间隙 > 20K → 合成子节锚点（title=父标题·续N）。
+    只用于 section 定位与聚合粒度，不进 headings_fts（避免污染标题检索）；
+    幂等重建，--reindex 可再生。"""
+    con.execute("DELETE FROM subsections WHERE entry_id=?", (entry_id,))
+    rows = con.execute("SELECT rowid, offset, heading_text, level FROM headings"
+                       " WHERE entry_id=? ORDER BY offset", (entry_id,)).fetchall()
+    if not rows:
+        return 0
+    total = total_chars if total_chars is not None else con.execute(
+        "SELECT COALESCE(total_chars,0) FROM entries WHERE id=?",
+        (entry_id,)).fetchone()[0]
+    bounds = [0] + [r[1] for r in rows] + [total]
+    ins = []
+    for i in range(len(bounds) - 1):
+        g0, g1 = bounds[i], bounds[i + 1]
+        if g1 - g0 <= syn_chars:
+            continue
+        ptext = rows[i - 1][2] if i > 0 else "卷首"
+        plv = rows[i - 1][3] if i > 0 else None
+        n = 0
+        pos = g0
+        while g1 - pos > syn_chars:
+            pos += syn_chars
+            n += 1
+            ins.append((entry_id, pos, "%s·续%d" % (ptext, n), plv))
+    if ins:
+        con.executemany("INSERT INTO subsections(entry_id, offset, title, level)"
+                        " VALUES (?,?,?,?)", ins)
+    return len(ins)
+
+
 def _build_anchor_rows(text, srcmap, char_spans, entry_id):
     """一个条目的锚点行：source_map（页/章/时间账本）+ headings（结构标题）。
 
@@ -828,6 +869,7 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
         con.execute("DELETE FROM vectors WHERE entry_id=?", (entry_id,))
         # 锚点与源位置账本（§8D）：幂等重建本条目行；headings_fts 全量 rebuild（量小）
         con.execute("DELETE FROM headings WHERE entry_id=?", (entry_id,))
+        con.execute("DELETE FROM subsections WHERE entry_id=?", (entry_id,))
         con.execute("DELETE FROM source_map WHERE entry_id=?", (entry_id,))
         sm_rows, hd_rows = _build_anchor_rows(text, srcmap, char_spans, entry_id)
         if sm_rows:
@@ -839,6 +881,7 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
                 "INSERT INTO headings(entry_id, heading_text, level, offset)"
                 " VALUES (?,?,?,?)", hd_rows)
             con.execute("INSERT INTO headings_fts(headings_fts) VALUES('rebuild')")
+        _gen_subsections(con, entry_id, total_chars=len(text))   # N4：子节锚点随入库重建
         if vec_windows:
             _store_vectors(con, entry_id, vec_windows, vec_values)
         con.execute(
@@ -1337,6 +1380,11 @@ def _load_exit_info(con, d, entry_id):
     headings = con.execute(
         "SELECT rowid, heading_text, level, offset FROM headings"
         " WHERE entry_id=? ORDER BY offset, rowid", (entry_id,)).fetchall()
+    subs = con.execute(
+        "SELECT rowid, title, level, offset FROM subsections"
+        " WHERE entry_id=? ORDER BY offset, rowid", (entry_id,)).fetchall()
+    headings = sorted([(r[3], "s", r[0], r[1], r[2]) for r in headings] +
+                      [(r[3], "u", r[0], r[1], r[2]) for r in subs])
     srcmap_rows = con.execute(
         "SELECT offset, kind, v1, v2, title FROM source_map"
         " WHERE entry_id=? ORDER BY offset, rowid", (entry_id,)).fetchall()
@@ -1362,7 +1410,7 @@ def _section_index(info, offset):
     hs = info["headings"]
     if not hs or offset is None:
         return -1
-    i = bisect.bisect_right([r[3] for r in hs], offset) - 1
+    i = bisect.bisect_right([r[0] for r in hs], offset) - 1
     return i
 
 
@@ -1390,17 +1438,17 @@ def _polish_one(h, info, idx):
     """单 hit 出口整形：附 heading/section/source_loc/source_ref，抹去 full.md 内部坐标"""
     hs = info["headings"]
     if idx >= 0:
-        rowid, text_, level, off_ = hs[idx]
+        off_, kind, rowid, text_, level = hs[idx]
         h["heading"] = {"text": text_, "level": level}
         hoff = _hit_offset(h)
-        h["section_ref"] = ("%s#s%d@%d" % (h["entry_id"], rowid, hoff)
-                            if hoff is not None else "%s#s%d" % (h["entry_id"], rowid))
-        end = hs[idx + 1][3] if idx + 1 < len(hs) else (info["total_chars"] or 0)
+        h["section_ref"] = ("%s#%s%d@%d" % (h["entry_id"], kind, rowid, hoff)
+                            if hoff is not None else "%s#%s%d" % (h["entry_id"], kind, rowid))
+        end = hs[idx + 1][0] if idx + 1 < len(hs) else (info["total_chars"] or 0)
         h["section_chars"] = max(0, end - off_)
     else:
-        # 首个标题之前的区域（前言/目录）：哨兵引用 #front 保证任何命中都可精读（S2）
+        # 首个锚点之前的区域（前言/目录）：哨兵引用 #front 保证任何命中都可精读（S2）
         h["section_ref"] = "%s#front" % h["entry_id"]
-        h["section_chars"] = hs[0][3] if hs else (info["total_chars"] or 0)
+        h["section_chars"] = hs[0][0] if hs else (info["total_chars"] or 0)
     loc = _source_loc_for(info, _hit_offset(h))
     h["source_loc"] = loc
     if loc and loc.get("kind") == "time":
@@ -1435,7 +1483,8 @@ def _aggregate_and_polish(hits):
             cache[ck] = info
         idx = _section_index(info, _hit_offset(h))
         # 无标题锚点 → 不聚合（保持 chunk/窗口既有粒度）；有锚点才按章节合并
-        key = ((ck[0], ck[1], "h%d" % info["headings"][idx][0]) if idx >= 0
+        key = ((ck[0], ck[1], "%s%d" % (info["headings"][idx][1],
+                                        info["headings"][idx][2])) if idx >= 0
                else ("raw", gi))
         if key not in groups:
             groups[key] = []
@@ -1592,23 +1641,29 @@ def _read_section(con, d, ws_name, ref, max_chars=30000):
             at = int(at_s)
         except ValueError:
             return messages.err_result("ws_section_not_found", ref=ref)
-    try:
-        entry_id, srowid = ref.split("#s", 1)
-        srowid = int(srowid)
-    except ValueError:
+    import re as _re
+    m = _re.fullmatch(r"(.+)#([su])(\d+)", ref)
+    if not m:
         return messages.err_result("ws_section_not_found", ref=ref)
+    entry_id, kind, srowid = m.group(1), m.group(2), int(m.group(3))
     e = _get_entry(con, entry_id)
     if not e:
         return messages.err_result("ws_entry_not_found", eid=entry_id, ws=ws_name)
-    hs = con.execute("SELECT rowid, heading_text, level, offset FROM headings"
-                     " WHERE entry_id=? AND rowid=?", (entry_id, srowid)).fetchone()
+    if kind == "s":
+        hs = con.execute("SELECT rowid, heading_text, level, offset FROM headings"
+                         " WHERE entry_id=? AND rowid=?", (entry_id, srowid)).fetchone()
+    else:
+        hs = con.execute("SELECT rowid, title, level, offset FROM subsections"
+                         " WHERE entry_id=? AND rowid=?", (entry_id, srowid)).fetchone()
     if not hs:
         return messages.err_result("ws_section_not_found", ref=ref)
-    nxt = con.execute("SELECT offset FROM headings WHERE entry_id=? AND offset>?"
-                      " ORDER BY offset LIMIT 1", (entry_id, hs[3])).fetchone()
+    nxt = con.execute(
+        "SELECT MIN(offset) FROM (SELECT offset FROM headings WHERE entry_id=? AND offset>?"
+        " UNION ALL SELECT offset FROM subsections WHERE entry_id=? AND offset>?)",
+        (entry_id, hs[3], entry_id, hs[3])).fetchone()
     full_file = d / "entries" / entry_id / "full.md"
     text = full_file.read_text(encoding="utf-8") if full_file.exists() else ""
-    end = nxt[0] if nxt else len(text)
+    end = nxt[0] if nxt and nxt[0] is not None else len(text)
     info = _load_exit_info(con, d, entry_id)
     # R4：ref 携带命中偏移（#s5@offset）→ 以命中位置为中心开窗，而非固定取节首
     start = hs[3]
@@ -1912,6 +1967,8 @@ def ws_reindex(name):
                 [(eid, t, lv, off) for (off, lv, t) in rows])
             rebuilt += len(rows)
         con.execute("INSERT INTO headings_fts(headings_fts) VALUES('rebuild')")
+        for (eid,) in con.execute("SELECT id FROM entries").fetchall():
+            _gen_subsections(con, eid)
         con.commit()
         fcount = con.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0]
         ccount = con.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
