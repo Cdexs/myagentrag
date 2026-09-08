@@ -320,9 +320,21 @@ _PDF_NOISE_RES = [
 
 
 def _pdf_noise_filter(page_text):
-    """逐行过滤 PDF 页脚噪声；在页账本记账前调用，offset 不变式保持"""
-    lines = [ln for ln in page_text.split("\n") if not any(r.search(ln) for r in _PDF_NOISE_RES)]
-    return "\n".join(lines)
+    """逐行过滤 PDF 页脚噪声；在页账本记账前调用，offset 不变式保持。
+
+    加宽规则（S9）：行首 file:/// 且行内无 CJK、长度 <100 → 判页脚
+    （正文引用 file:/// 通常是含中文说明的句子行，不受影响）
+    """
+    out = []
+    for ln in page_text.split("\n"):
+        st = ln.strip()
+        if any(r.search(st) for r in _PDF_NOISE_RES):
+            continue
+        if (st.startswith("file:///") and len(st) < 100
+                and not any("\u4e00" <= c <= "\u9fff" for c in st)):
+            continue
+        out.append(ln)
+    return "\n".join(out)
 
 
 def extract_pdf_text(file_path):

@@ -139,7 +139,7 @@ agent 直接阅读 content 总结回答，不涉及知识库与任何依赖安�
 "$PYTHON" "$EXTRACTOR" --workspace 我的书架 --search "X" --mode fts       # 纯关键词（不加载向量链）
 ```
 
-命中 JSON 字段（agent 消费指南）：`title/entry_id/source_type/source_ref`（来源文件或 URL）、`score + score_source`（多路并列如 `fused+heading`）、`snippet`（『』高亮）、`chunk_no/chars`（可 `--chunk N` 读分片）、`heading{text,level}`（所在章节）、`section_ref`（不透明精读引用）+ `section_chars`、`same_section_hits`（同节其他命中数）、`source_loc`（源文件出处：`{kind:"pdf",page}` / `{kind:"epub",chapter,title}` / `{kind:"time",start_ms,end_ms}` / `{kind:"line",n}`）、`vector_backend`。检索零命中时换词或 `--mode vector` 重试（语义路可跨语言召回）。
+命中 JSON 字段（agent 消费指南）：`title/entry_id/source_type/source_ref`（来源文件或 URL）、`score + score_source + score_kind`（多路并列如 `fused+heading`）、`scores: {fts, vector, heading}`（fused 各路 RRF 贡献）、`column_filter`（列限定降级标注）、`keyword_miss`（FTS 零命中而仅语义召回，提示术语可能与原文不一致，勿据此断言“库中没有相关内容”）、`snippet`（『』高亮）、`chunk_no/chars`（可 `--chunk N` 读分片）、`heading{text,level}`（所在章节）、`section_ref`（不透明精读引用）+ `section_chars`、`same_section_hits`（同节其他命中数）、`source_loc`（源文件出处：`{kind:"pdf",page}` / `{kind:"epub",chapter,title}` / `{kind:"time",start_ms,end_ms}` / `{kind:"line",n}`）、`vector_backend`。检索零命中时换词或 `--mode vector` 重试（语义路可跨语言召回）。
 
 **知识库检索话术对照（常见说法 → agent 动作）**
 
@@ -151,7 +151,7 @@ agent 直接阅读 content 总结回答，不涉及知识库与任何依赖安�
 | "**对比**一下 A、B 两份资料对 XXX 的说法"                    | 多源对比  | 分别 `--search`（或同库检索后按 `entry_id` 分组）→ 各取最优节 `--section` 精读 → 分来源对比陈述，引用各自 `source_loc`                                                                                                                 |
 | "知识库里**都有什么**/都有哪些资料"                           | 盘点    | `--workspace <名> --list`（条目清单）或 `--stats`（条目/字符/来源分布/db 体积）                                                                                                                                            |
 | "把这几份文件都**收进**知识库"                              | 批量入库  | 逐个 `--file ... --workspace <名>`；幂等无重复；大文件自动走分片协议                                                                                                                                                       |
-| "**搜一下**标题里有 XX 的条目"                            | 元数据过滤 | `--search 'title:XX'`（列限定 `title:/author:/publisher:/publish_date:`，可与正文词组合作 `title:XX AND 关键词`）                                                                                                       |
+| "**搜一下**标题里有 XX 的条目" | 元数据过滤 | `--search 'title:XX'`（列限定 `title:/author:/publisher:/publish_date:`，可与正文词组合作 `title:XX AND 关键词`；**列值需 ≥3 字**（trigram 物理限制）；列限定查询自动走 fts 路，结果标注 `column_filter: true`） |
 
 核实型问题的工作示例（"查一下知识库里讲 move 语义的内容"）：
 
@@ -334,7 +334,7 @@ agent 收到清单后的标准流程（写入 SKILL.md 供所有 agent 遵循）
 "$PYTHON" "$EXTRACTOR" --workspace 我的资料 --section <section_ref>       # 精读命中所在整节（推荐）
 ```
 
-检索命中附 `section_ref`（不透明引用）与 `section_chars`——agent 将 ref 原样传给 `--section` 即可精读整节；媒体命中带 `start_ms/end_ms` 时间戳（配 `--play --at` 定位回放）。
+命中落在首个标题之前（前言/目录区）时 `section_ref` 为 `entry_id#front` 哨兵引用，同样可 `--section` 精读。检索命中附 `section_ref`（不透明引用）与 `section_chars`——agent 将 ref 原样传给 `--section` 即可精读整节；媒体命中带 `start_ms/end_ms` 时间戳（配 `--play --at` 定位回放）。
 
 ### 管理操作全集
 
@@ -348,7 +348,8 @@ agent 收到清单后的标准流程（写入 SKILL.md 供所有 agent 遵循）
 | 条目列举  | `--workspace <名> --list`                         |
 | 条目删除  | `--workspace <名> --remove <entry-id>`（需 `--yes`） |
 | 完整性校验 | `--workspace <名> --verify`（片数/逐片一致性/覆盖/FTS 索引比对） |
-| 索引重建  | `--workspace <名> --reindex`                      |
+| 索引重建  | `--workspace <名> --reindex`（重建 FTS+标题锚点；**不含向量**） |
+| 向量补建  | `--workspace <名> --embed`（为零向量条目补建向量，需嵌入链） |
 | 空间回收  | `--workspace <名> --vacuum`                       |
 
 删除类操作默认只输出 `confirm_required: true` 与将删除的路径——agent 须向用户确认后加 `--yes` 重跑。跨机器迁移 = 直接拷贝 workspace 目录（自包含），无需命令。
@@ -415,6 +416,7 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 | YouTube 提示需要 cookies           | 按提示用浏览器扩展导出 Netscape 格式 cookies 保存到 `~/.smart-summarize/cookies/youtube-cookies.txt` 后重试 |
 | PDF 提取为空                       | 扫描件没有文字层，属正常；本工具不做 OCR                                                                   |
 | B站无字幕                          | 该视频没有 CC 字幕，API 返回 `success:false`，属正常                                                   |
+| `--mode vector` 恒 0 命中 | 先查该库入库时是否用了 `--no-embed`（`--list` 的 `vectors` 字段为 0 即是）；补建：`--embed` 或重入库不加减嵌入 |
 
 ## 版本
 

@@ -658,10 +658,76 @@ def _save_source_copy(entry_source_dir, *, source_file=None, raw_subtitle=None,
     return None
 
 
+def _store_vectors(con, entry_id, vec_windows, vec_values):
+    """向量入库：vec0 虚表优先，扩展不可用回退旧 vectors 表（入库/补嵌共用）"""
+    import embeddings as _emb
+    packed = [struct.pack(f"<{len(v)}f", *v) for v in vec_values]
+    if _load_vec0(con):
+        con.execute("DELETE FROM vec_items WHERE rowid IN"
+                    " (SELECT rowid FROM vec_items WHERE entry_id=?)", (entry_id,))
+        con.executemany(
+            "INSERT INTO vec_items(entry_id, chunk_no, win_start, win_end,"
+            " model_id, embedding) VALUES (?,?,?,?,?,?)",
+            [(entry_id, w[0], w[1], w[2], _emb.DEFAULT_MODEL, pk)
+             for w, pk in zip(vec_windows, packed)])
+    else:
+        con.execute("DELETE FROM vectors WHERE entry_id=?", (entry_id,))
+        con.executemany(
+            "INSERT INTO vectors(entry_id, chunk_no, win_start, win_end,"
+            " model_id, embedding) VALUES (?,?,?,?,?,?)",
+            [(entry_id, w[0], w[1], w[2], _emb.DEFAULT_MODEL, pk)
+             for w, pk in zip(vec_windows, packed)])
+
+
+def ws_embed(ws_name):
+    """为库内零向量条目补建向量（--embed；嵌入链闸门由 CLI 层强制，S3）"""
+    d = ws_dir(ws_name)
+    if d is None:
+        return messages.err_result("ws_not_found", name=ws_name)
+    import embeddings as _emb
+    con = _connect(d / WORKSPACE_DB)
+    try:
+        have = set()
+        try:
+            have |= {r[0] for r in con.execute("SELECT DISTINCT entry_id FROM vec_items")}
+        except sqlite3.Error:
+            pass
+        have |= {r[0] for r in con.execute("SELECT DISTINCT entry_id FROM vectors")}
+        targets = [r[0] for r in con.execute("SELECT id FROM entries") if r[0] not in have]
+        done, total = 0, 0
+        for eid in targets:
+            chunks = con.execute(
+                "SELECT chunk_no, file_offset, chunk_text FROM chunks"
+                " WHERE entry_id=? ORDER BY chunk_no", (eid,)).fetchall()
+            wins = []
+            for (no, off, ctext) in chunks:
+                for (ws_, we_, wt) in _emb.split_windows(ctext):
+                    wins.append((no, off + ws_, off + we_, wt))
+            if not wins:
+                continue
+            try:
+                vals = _emb.embed_texts([w[3] for w in wins], model_id=_emb.DEFAULT_MODEL)
+            except RuntimeError as e:
+                return messages.err_result("ws_embed_fail", err=str(e))
+            _store_vectors(con, eid, [(w[0], w[1], w[2]) for w in wins], vals)
+            con.commit()
+            done += 1
+            total += len(wins)
+    finally:
+        _close(con)
+    if done:
+        pair = messages.msg_pair("ws_embed_done", n=done, wins=total)
+    else:
+        pair = messages.msg_pair("ws_embed_none")
+    return {"success": True, "workspace": ws_name, "embedded_entries": done,
+            "vectors": total, "message": pair[messages.get_lang()], "message_i18n": pair}
+
+
 def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref=None,
               author=None, publisher=None, publish_date=None, segments=None,
               srt_text=None, source_file=None, keep_source=True,
-              raw_subtitle=None, raw_subtitle_ext=None, no_embed=False, srcmap=None):
+              raw_subtitle=None, raw_subtitle_ext=None, no_embed=False, srcmap=None,
+              replace=False):
     """入库：幂等（entry_id=sha256(全文)[:16]，同 id 更新）。
 
     文本来源三选一：content（文档/网页/字幕清洗文本）、srt_text（whisper SRT，
@@ -720,7 +786,19 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
                 return messages.err_result("ingest_embed_fail", err=str(e))
             vec_windows = [(w[0], w[1], w[2]) for w in windows]  # (chunk_no, win_start, win_end)
 
-    title_final = _entry_title_hint(title, text, entry_id)
+    prev = None
+    if source_ref:
+        con0 = _connect(d / WORKSPACE_DB)
+        try:
+            prev = con0.execute("SELECT title, author, publisher, publish_date FROM entries"
+                                " WHERE source_ref=? AND id<>?", (source_ref, entry_id)).fetchone()
+        finally:
+            _close(con0)
+    if prev:                            # 同源重入库：未显式指定的元数据沿用旧条目（S5）
+        author = author or prev[1]
+        publisher = publisher or prev[2]
+        publish_date = publish_date or prev[3]
+    title_final = _entry_title_hint(title or (prev and prev[0]), text, entry_id)
     now = _now_iso()
     def _write(con):
         con.executescript(SCHEMA)
@@ -762,21 +840,7 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
                 " VALUES (?,?,?,?)", hd_rows)
             con.execute("INSERT INTO headings_fts(headings_fts) VALUES('rebuild')")
         if vec_windows:
-            packed = [struct.pack(f"<{len(v)}f", *v) for v in vec_values]
-            if _load_vec0(con):
-                con.execute("DELETE FROM vec_items WHERE rowid IN"
-                            " (SELECT rowid FROM vec_items WHERE entry_id=?)", (entry_id,))
-                con.executemany(
-                    "INSERT INTO vec_items(entry_id, chunk_no, win_start, win_end,"
-                    " model_id, embedding) VALUES (?,?,?,?,?,?)",
-                    [(entry_id, w[0], w[1], w[2], embeddings.DEFAULT_MODEL, pk)
-                     for w, pk in zip(vec_windows, packed)])
-            else:
-                con.executemany(
-                    "INSERT INTO vectors(entry_id, chunk_no, win_start, win_end,"
-                    " model_id, embedding) VALUES (?,?,?,?,?,?)",
-                    [(entry_id, w[0], w[1], w[2], embeddings.DEFAULT_MODEL, pk)
-                     for w, pk in zip(vec_windows, packed)])
+            _store_vectors(con, entry_id, vec_windows, vec_values)
         con.execute(
             "INSERT INTO entries(id, title, source_type, source_ref, author, publisher,"
             " publish_date, created_at, updated_at, total_chars, chunk_count, full_path)"
@@ -795,6 +859,20 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
 
     # 错误恢复（退避重试 2 次）：malformed/locked 类 → 重建连接重试，仍失败才报错
     existing, created_at = _db_call(d / WORKSPACE_DB, _write)
+
+    # 同源条目提示与替换（S4）：source_ref 相同的旧条目
+    superseded = []
+    con = _connect(d / WORKSPACE_DB)
+    try:
+        if source_ref:
+            superseded = [r[0] for r in con.execute(
+                "SELECT id FROM entries WHERE source_ref=? AND id<>?",
+                (source_ref, entry_id)).fetchall()]
+    finally:
+        _close(con)
+    if replace:
+        for oid in superseded:          # --replace 显式授权后自动清理旧条目（内部 yes=True）
+            ws_remove_entry(ws_name, oid, yes=True)
 
     meta = {
         "id": entry_id, "title": title_final, "source_type": source_type,
@@ -815,6 +893,7 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
     return {"success": True, "workspace": ws_name, "entry_id": entry_id,
             "title": title_final, "total_chars": len(text), "chunk_count": len(rows),
             "vectors": len(vec_windows), "updated": bool(existing),
+            "supersedes": superseded, "replaced": bool(replace and superseded),
             "message": pair[messages.get_lang()],
             "message_i18n": pair}
 
@@ -1179,12 +1258,13 @@ def _headings_search_one(con, ws_name, match, limit, phrases=None):
 
 def _rrf_fuse(fts_hits, vec_hits, limit, k=60, hd_hits=None):
     """RRF 融合（三路）：score = Σ 1/(k + rank)；同键多路命中标记并列来源。"""
-    scores, hits = {}, {}
+    scores, hits, route_scores = {}, {}, {}
     for rank, h in enumerate(fts_hits):
         key = (h["workspace"], h["entry_id"], h["chunk_no"])
         h["score_source"] = "fts"
         hits.setdefault(key, h)
         scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
+        route_scores.setdefault(key, {})["fts"] = scores[key]
     for rank, h in enumerate(vec_hits):
         key = (h["workspace"], h["entry_id"], h["chunk_no"])
         if key in hits:
@@ -1195,22 +1275,31 @@ def _rrf_fuse(fts_hits, vec_hits, limit, k=60, hd_hits=None):
             h["score_source"] = "vector"
             hits[key] = h
         scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
+        route_scores.setdefault(key, {})["vector"] = scores[key]
     for rank, h in enumerate(hd_hits or []):
         key = (h["workspace"], h["entry_id"], "h%d" % h["heading_rowid"])
         h["score_source"] = "heading"
         hits.setdefault(key, h)
         scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
+        route_scores.setdefault(key, {})["heading"] = scores[key]
     ordered = sorted(scores.items(), key=lambda x: -x[1])[:limit]
     out = []
     for key, sc in ordered:
         h = dict(hits[key])
         h["score"] = round(sc, 4)
         h["score_kind"] = "rrf"          # RRF 排序分：跨查询不可比，不表达语义相关度
+        h["scores"] = {r: round(v, 4) for r, v in route_scores[key].items()}  # 分路贡献（S6）
         out.append(h)
     return out
 
 
 # ==================== 出口层整形（§8D：出处锚定源文件，full.md 内部化） ====================
+
+def _has_column_filter(query):
+    """查询含列限定语法（title:/author:/publisher:/publish_date:）→ 向量/标题路语义
+    无法承担元数据过滤，检索自动降级 FTS-only（§D1/S8）"""
+    return any(_COL_PREFIX_RE.match(t) for _, t in _tokenize_query(query))
+
 
 def _hit_offset(h):
     # hit_offset：FTS/LIKE 命中词在分片内的真实位置；win_start：向量窗口；其余退回分片起点
@@ -1222,6 +1311,19 @@ def _hit_offset(h):
     if off is None:
         off = h.get("heading_offset")
     return off
+
+
+def _vector_counts(con):
+    """entry_id -> 向量行数（vec0 主表优先，旧 vectors 表兜底合并；S1 诊断字段）"""
+    out = {}
+    try:
+        for eid, n in con.execute("SELECT entry_id, COUNT(*) FROM vec_items GROUP BY entry_id"):
+            out[eid] = out.get(eid, 0) + n
+    except sqlite3.Error:
+        pass
+    for eid, n in con.execute("SELECT entry_id, COUNT(*) FROM vectors GROUP BY entry_id"):
+        out[eid] = out.get(eid, 0) + n
+    return out
 
 
 def _load_exit_info(con, d, entry_id):
@@ -1287,6 +1389,10 @@ def _polish_one(h, info, idx):
         h["section_ref"] = "%s#s%d" % (h["entry_id"], rowid)
         end = hs[idx + 1][3] if idx + 1 < len(hs) else (info["total_chars"] or 0)
         h["section_chars"] = max(0, end - off_)
+    else:
+        # 首个标题之前的区域（前言/目录）：哨兵引用 #front 保证任何命中都可精读（S2）
+        h["section_ref"] = "%s#front" % h["entry_id"]
+        h["section_chars"] = hs[0][3] if hs else (info["total_chars"] or 0)
     h["source_loc"] = _source_loc_for(info, _hit_offset(h))
     h["source_ref"] = info.get("source_ref")
     for k in ("offset", "win_start", "win_end", "heading_rowid",
@@ -1324,6 +1430,12 @@ def _aggregate_and_polish(hits):
         members = groups[key]
         rep = dict(members[0][0])
         idx, info = members[0][1], members[0][2]
+        _rs = {}
+        for _m, _i, _f in members:
+            for _r, _v in (_m.get("scores") or {}).items():
+                _rs[_r] = max(_rs.get(_r, 0.0), _v)
+        if _rs:
+            rep["scores"] = {r: round(v, 4) for r, v in _rs.items()}
         labels = [lbl for lbl in ("fused", "heading", "fts", "vector")
                   if any(m[0].get("score_source") == lbl for m in members)]
         if labels:
@@ -1343,6 +1455,7 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
     vector_available=False；mode=vector 则返回结构化错误（不静默降级）。
     """
     match, like_terms, phrases = build_fts_query(query)
+    col_filter = _has_column_filter(query)   # 列限定 → 向量/标题路不参与（元数据过滤语义）
     if mode in ("fts", "fused") and not match and not like_terms:
         return messages.err_result("ws_search_empty")
     names = ([p.name for p in ws_root().iterdir() if (p / WORKSPACE_DB).exists()]
@@ -1351,7 +1464,7 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
         return messages.err_result("ws_not_found", name=ws_name)
     fts_all, hd_all, vec_all, searched = [], [], [], []
     degraded = {"vector_available": mode in ("vector", "fused")}
-    vector_available = mode in ("vector", "fused")  # 向量路是否参与本次检索
+    vector_available = mode in ("vector", "fused") and not col_filter
     vector_backend = None
     skip_vector = bool(os.environ.get("SMART_SUMMARIZE_NO_RUNTIME"))  # 测试模式：全传统路径
     if skip_vector:
@@ -1367,9 +1480,9 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
                                       phrases=phrases)
                       if mode in ("fts", "fused") else [])
             h_hits = (_headings_search_one(con, _ws, match, limit, phrases=phrases)
-                      if mode in ("fts", "fused") else [])
+                      if mode in ("fts", "fused") and not col_filter else [])
             v_hits, backend = [], None
-            if mode in ("vector", "fused") and not skip_vector:
+            if mode in ("vector", "fused") and not skip_vector and not col_filter:
                 try:
                     v_hits, backend = _vector_search_one(con, _ws, query, limit,
                                                          embeddings.DEFAULT_MODEL)
@@ -1392,12 +1505,17 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
     else:
         total_hits = _rrf_fuse(fts_all, vec_all, limit, hd_hits=hd_all)
     total_hits = _aggregate_and_polish(total_hits)
-    return {"success": True, "workspace": None if all_workspaces else ws_name,
-            "workspaces_searched": searched, "query": query, "mode": mode,
+    result = {"success": True, "workspace": None if all_workspaces else ws_name,
+            "workspaces_searched": searched, "query": query,
+            "mode": ("fts" if col_filter else mode),
+            "column_filter": col_filter,
+            "keyword_miss": bool(mode == "fused" and not col_filter
+                                 and not fts_all and vec_all and not skip_vector),
             "fts_query": match, "like_fallback_terms": like_terms,
             "vector_available": vector_available and degraded["vector_available"],
             "vector_backend": vector_backend,
             "total": len(total_hits), "hits": total_hits}
+    return result
 
 
 # ==================== 条目读取 / 删除（§4） ====================
@@ -1417,11 +1535,30 @@ def _entry_meta(e):
             "chunk_count": e[10]}
 
 
+def _read_front(con, d, ws_name, entry_id):
+    """#front 哨兵：首个标题之前的区域（前言/目录）精读（S2）"""
+    e = _get_entry(con, entry_id)
+    if not e:
+        return messages.err_result("ws_entry_not_found", eid=entry_id, ws=ws_name)
+    full_file = d / "entries" / entry_id / "full.md"
+    text = full_file.read_text(encoding="utf-8") if full_file.exists() else ""
+    row = con.execute("SELECT MIN(offset) FROM headings WHERE entry_id=?",
+                      (entry_id,)).fetchone()
+    end = row[0] if row and row[0] is not None else len(text)
+    info = _load_exit_info(con, d, entry_id)
+    return {"success": True, "workspace": ws_name, "entry": _entry_meta(e),
+            "section": {"ref": "%s#front" % entry_id, "heading": None, "chars": end,
+                        "source_loc": _source_loc_for(info, 0)},
+            "content": text[:end]}
+
+
 def _read_section(con, d, ws_name, ref):
     """按检索返回的 section_ref（<entry_id>#s<rowid>）精读整节内容。
 
     ref 为不透明引用：agent 原样传回即可，无需理解内部结构。
     """
+    if ref.endswith("#front"):
+        return _read_front(con, d, ws_name, ref[:-len("#front")])
     try:
         entry_id, srowid = ref.split("#s", 1)
         srowid = int(srowid)
@@ -1584,6 +1721,7 @@ def ws_stats(name):
     db_size = (d / WORKSPACE_DB).stat().st_size
     return {"success": True, "workspace": name, "path": str(d),
             "entries": row[0], "total_chars": row[1], "chunks": row[2],
+            "vectors": sum(_vector_counts(con).values()),
             "db_bytes": db_size, "source_types": dist}
 
 
@@ -1598,9 +1736,10 @@ def ws_list_entries(name):
             " chunk_count, updated_at FROM entries ORDER BY updated_at DESC").fetchall()
     finally:
         _close(con)
+    vc = _vector_counts(con)
     entries = [{"id": r[0], "title": r[1], "source_type": r[2], "author": r[3],
                 "publish_date": r[4], "total_chars": r[5], "chunk_count": r[6],
-                "updated_at": r[7]} for r in rows]
+                "updated_at": r[7], "vectors": vc.get(r[0], 0)} for r in rows]
     return {"success": True, "workspace": name, "total": len(entries), "entries": entries}
 
 
@@ -1709,11 +1848,12 @@ def ws_reindex(name):
         fcount = con.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0]
         ccount = con.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
         hcount = con.execute("SELECT COUNT(*) FROM headings").fetchone()[0]
+        vcount = sum(_vector_counts(con).values())
     finally:
         _close(con)
     pair = messages.msg_pair("ws_reindexed")
     return {"success": True, "workspace": name, "fts_rows": fcount, "chunks_rows": ccount,
-            "headings_rows": hcount, "consistent": fcount == ccount,
+            "headings_rows": hcount, "vectors_rows": vcount, "consistent": fcount == ccount,
             "message": pair[messages.get_lang()], "message_i18n": pair}
 
 

@@ -72,7 +72,19 @@ def test_lang_en_flag(cli_env):
 
 def test_no_args(cli_env):
     r = run(cli_env)
-    assert r.returncode == 1 and "--url" in r.stderr
+    # S10 契约：无任务输入同样返回结构化 JSON（stdout 可 json.loads）
+    assert r.returncode == 1
+    j = json.loads(r.stdout)
+    assert j["success"] is False and j["error_i18n"]["zh"]
+
+
+def test_search_empty_string_json(cli_env):
+    """D2：--search 空串与空格行为一致——JSON 错误而非 no_input 纯文本"""
+    d = cli_env["SMART_SUMMARIZE_WORKSPACES_DIR"]
+    r = run(cli_env, "--workspace", "CLI空串库", "--search", "")
+    assert r.returncode == 1
+    j = json.loads(r.stdout)   # 契约：失败也必须可解析
+    assert j["success"] is False and j["error_i18n"]
 
 
 def test_ingest_and_search_and_read_e2e(cli_env, tmp_path):
@@ -184,3 +196,13 @@ def test_search_limit_cli(cli_env, tmp_path):
     r = run(cli_env, "--workspace", "CLI限库", "--search", "限定", "--limit", "2")
     j = jout(r)
     assert j["success"] and j["total"] <= 2
+
+
+def test_title_strip_ext_cli(cli_env, tmp_path):
+    """S5：默认入库标题剥离扩展名"""
+    doc = tmp_path / "my_book_title.md"
+    doc.write_text("标题清洗验证内容。" * 100, encoding="utf-8")
+    j = jout(run(cli_env, "--file", str(doc), "--workspace", "CLI标库", "--no-embed"))
+    assert j["success"]
+    title = jout(run(cli_env, "--workspace", "CLI标库", "--list"))["entries"][0]["title"]
+    assert title == "my_book_title" and not title.endswith(".md")

@@ -733,3 +733,65 @@ def test_score_kind_stamping(ws_mod):
     assert s["hits"][0]["score_kind"] == "coverage"
     s = ws_mod.ws_search("库R2", "score_kind", mode="fused")
     assert s["hits"][0]["score_kind"] == "rrf"
+
+
+def test_column_filter_fts_only(ws_mod):
+    """D1：列限定查询自动降级 FTS-only，向量/标题路不参与"""
+    ws_mod.ws_ingest("库D1", content="语义路绕过验证内容 reserve。" * 30, title="某书籍")
+    for mode in ("fts", "fused"):
+        s = ws_mod.ws_search("库D1", "title:不存在的词xyz", mode=mode)
+        assert s["column_filter"] is True and s["mode"] == "fts" and s["total"] == 0
+    s = ws_mod.ws_search("库D1", "title:某书籍", mode="fused")
+    assert s["total"] >= 1  # 正向：标题命中仍然可用（列值需 ≥3 字，trigram 物理限制）
+
+
+def test_front_section_fallback(ws_mod):
+    """S2：首个标题前的命中给 #front 哨兵引用，可 --section 精读"""
+    text = "前言内容叙述，位于首个标题之前。" * 10 + "\n# 条款1 正文\n" + "正文内容叙述。" * 30
+    ws_mod.ws_ingest("库S2", content=text, title="前言", no_embed=True)
+    s = ws_mod.ws_search("库S2", "前言内容", mode="fts")
+    hit = s["hits"][0]
+    assert hit["section_ref"].endswith("#front") and hit["section_chars"] > 0
+    eid = hit["entry_id"]
+    r = ws_mod.ws_read_entry("库S2", None, section=eid + "#front")
+    assert r["success"] and "首个标题之前" in r["content"]
+
+
+def test_ws_embed_rebuild(ws_mod):
+    """S3：--embed 为零向量条目补建向量（测试环境走旧 vectors 表回退）"""
+    ws_mod.ws_ingest("库S3", content="补建向量验证内容 alpha。" * 30, title="E", no_embed=True)
+    lst = ws_mod.ws_list_entries("库S3")
+    assert lst["entries"][0]["vectors"] == 0
+    r = ws_mod.ws_embed("库S3")
+    assert r["success"] and r["embedded_entries"] == 1 and r["vectors"] > 0
+    lst = ws_mod.ws_list_entries("库S3")
+    assert lst["entries"][0]["vectors"] > 0
+    s = ws_mod.ws_search("库S3", "alpha", mode="vector")
+    assert s["total"] >= 1
+
+
+def test_supersedes_and_replace(ws_mod, tmp_path):
+    """S4：同源重入库提示 supersedes；--replace 自动清理旧条目"""
+    d = tmp_path / "bookA.md"
+    d.write_text("同源条目版本甲内容叙述。" * 50, encoding="utf-8")
+    r1 = ws_mod.ws_ingest("库S4", content="同源条目版本甲内容叙述。" * 50,
+                          title="同源书", source_ref="C:/x/bookA.md", no_embed=True)
+    r2 = ws_mod.ws_ingest("库S4", content="同源条目版本乙内容叙述不同。" * 50,
+                          title="同源书", source_ref="C:/x/bookA.md", no_embed=True)
+    assert r2["success"] and not r2["updated"] and r1["entry_id"] in r2["supersedes"]
+    r3 = ws_mod.ws_ingest("库S4", content="同源条目版本丙再变一次。" * 50,
+                          title="同源书", source_ref="C:/x/bookA.md", no_embed=True, replace=True)
+    assert r3["replaced"] and ws_mod.ws_verify("库S4")["ok"]
+    ids = [e["id"] for e in ws_mod.ws_list_entries("库S4")["entries"]]
+    assert r1["entry_id"] not in ids
+
+
+def test_metadata_reuse_and_title_strip(ws_mod):
+    """S5：同源重入库沿用未指定元数据；默认标题剥离扩展名"""
+    ws_mod.ws_ingest("库S5", content="元数据复用验证内容。" * 30, title="原书名",
+                     author="原作者", source_ref="C:/x/b.md", no_embed=True)
+    ws_mod.ws_ingest("库S5", content="元数据复用验证内容新版不同。" * 30,
+                     source_ref="C:/x/b.md", no_embed=True)
+    e = ws_mod.ws_list_entries("库S5")["entries"][0]
+    assert e["author"] == "原作者"
+    assert ws_mod._entry_title_hint(None, "任意", "x")  # hint 存在

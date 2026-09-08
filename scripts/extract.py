@@ -177,7 +177,7 @@ def _run_workspace_ops(args):
         return workspace.ws_stats(W)
     if args.list:
         return workspace.ws_list_entries(W)
-    if args.search:
+    if args.search is not None:
         return workspace.ws_search(W, args.search, all_workspaces=args.all_workspaces,
                                    mode=args.mode, no_embed=args.no_embed,
                                    limit=min(max(args.limit, 1), 100))
@@ -189,6 +189,8 @@ def _run_workspace_ops(args):
         return workspace.ws_remove_entry(W, args.remove, yes=args.yes)
     if args.verify:
         return workspace.ws_verify(W)
+    if args.embed:
+        return workspace.ws_embed(W)
     if args.reindex:
         return workspace.ws_reindex(W)
     if args.vacuum:
@@ -204,8 +206,10 @@ def _maybe_ingest(args, result):
         return result
     ct = detect_content_type(args.url or args.file)
     source_ref = args.url if args.url else (str(args.file) if args.file else None)
+    fallback_title = result.get("title") or (Path(result["filename"]).stem
+                                             if result.get("filename") else None)
     kwargs = {
-        "title": args.title or result.get("title") or result.get("filename"),
+        "title": args.title or fallback_title,
         "source_ref": source_ref,
         "author": args.author or result.get("author") or None,
         "publisher": args.publisher,
@@ -232,7 +236,7 @@ def _maybe_ingest(args, result):
         kwargs.update(source_type=ct, srt_text=result.get("_srt"), source_file=args.file)
     else:
         kwargs.update(source_type=ct, content=result.get("content"), source_file=args.file,
-                      srcmap=result.get("srcmap"))
+                      srcmap=result.get("srcmap"), replace=args.replace)
 
     ing = workspace.ws_ingest(args.workspace, **kwargs)
     if ing.get("success"):
@@ -363,7 +367,9 @@ def main():
     parser.add_argument('--section', metavar='REF', help='精读检索返回的章节引用（如 e12ab34d#s5）')
     parser.add_argument('--remove', metavar='ID', help='删除条目（需 --yes 二次确认）')
     parser.add_argument('--verify', action='store_true', help='完整性校验（片数/逐片一致性/覆盖/FTS 行数）')
-    parser.add_argument('--reindex', action='store_true', help='重建 FTS 索引')
+    parser.add_argument('--reindex', action='store_true', help='重建 FTS+标题锚点索引（不含向量）')
+    parser.add_argument('--embed', action='store_true', help='为库内零向量条目补建向量（需嵌入链）')
+    parser.add_argument('--replace', action='store_true', help='重入库同源（source_ref 相同）时自动删除旧条目')
     parser.add_argument('--vacuum', action='store_true', help='VACUUM 压缩 db')
     parser.add_argument('--play', metavar='ID', help='定位回放音视频条目（调用外部播放器）')
     parser.add_argument('--at', metavar='mm:ss', help='回放起点（mm:ss / hh:mm:ss / 秒数）')
@@ -384,6 +390,7 @@ def main():
     # 知识库依赖链闸门（v1.5 §8C.11）：嵌入引擎/向量模型缺失 → 全链确认安装
     needs_embed = bool(
         (args.search and args.mode in ("fused", "vector"))
+        or args.embed
         or (args.workspace and (args.url or args.file) and not args.no_embed))
     if needs_embed and not os.environ.get("SMART_SUMMARIZE_NO_RUNTIME"):
         _kb_gate(args)
@@ -392,8 +399,9 @@ def main():
         parser.error(messages.msg("chunk_needs_entry"))
 
     ws_mgmt = any([args.workspace_list, args.create, args.delete_workspace, args.rename,
-                   args.stats, args.list, args.search, args.entry, args.section, args.remove,
-                   args.verify, args.reindex, args.vacuum, args.play])
+                   args.stats, args.list, args.search is not None, args.entry, args.section,
+                   args.embed, args.remove, args.verify, args.reindex, args.vacuum,
+                   args.play])
     if ws_mgmt or args.workspace:
         _fts_gate(args)
     if ws_mgmt:
@@ -402,7 +410,8 @@ def main():
         sys.exit(0 if result.get("success") else 1)
 
     if not args.url and not args.file:
-        print(messages.msg("no_input"), file=sys.stderr)
+        # 无任务输入同样走 JSON 契约（S10：失败路径全部 json.loads 可解析）
+        print(json.dumps(messages.err_result("no_input"), ensure_ascii=False))
         sys.exit(1)
 
     # 本地文件不存在时提前报错（否则会被当成 unknown 类型，报错误导人）

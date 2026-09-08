@@ -245,6 +245,22 @@ MESSAGES = {
         "zh": "章节引用无效或条目无锚点: {ref}",
         "en": "Invalid section ref or entry has no anchors: {ref}",
     },
+    "ws_embed_done": {
+        "zh": "已为 {n} 个条目补建向量（{wins} 个窗口）",
+        "en": "Rebuilt vectors for {n} entries ({wins} windows)",
+    },
+    "ws_embed_none": {
+        "zh": "库内所有条目均已拥有向量，无需补建",
+        "en": "All entries already have vectors, nothing to rebuild",
+    },
+    "ws_embed_fail": {
+        "zh": "向量补建失败: {err}",
+        "en": "Vector rebuild failed: {err}",
+    },
+    "ingest_supersedes": {
+        "zh": "检测到同源旧条目 {ids}，可 --remove 清理或加 --replace 自动替换",
+        "en": "Same-source old entries found: {ids}; clean via --remove <id> or rerun with --replace",
+    },
     "ws_entry_removed": {
         "zh": "条目已删除: {eid}",
         "en": "Entry removed: {eid}",
