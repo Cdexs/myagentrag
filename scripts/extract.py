@@ -381,6 +381,10 @@ def main():
     parser.add_argument('--publisher', help='入库出版社/发布方')
     parser.add_argument('--publish-date', help='入库出版/发布时间（ISO 8601，可只到年）')
     args = parser.parse_args()
+    # @库名 约定：用户提示词里 @库名 / "在X库"等说法由 agent 解析库名；
+    # CLI 对 --workspace 的 @ 前缀自动剥离，--workspace "@库名" 原样传入即可用
+    if args.workspace:
+        args.workspace = args.workspace.strip().lstrip("@").strip()
     messages.init(args.lang)
     _transcribe_mod.NO_GPU = args.no_gpu
 

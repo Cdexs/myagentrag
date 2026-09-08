@@ -206,3 +206,16 @@ def test_title_strip_ext_cli(cli_env, tmp_path):
     assert j["success"]
     title = jout(run(cli_env, "--workspace", "CLI标库", "--list"))["entries"][0]["title"]
     assert title == "my_book_title" and not title.endswith(".md")
+
+
+def test_workspace_at_prefix(cli_env, tmp_path):
+    """@库名 约定：--workspace 带任意前缀剥离"""
+    doc = tmp_path / "at.md"
+    doc.write_text("@语法约定验证内容。" * 100, encoding="utf-8")
+    j = jout(run(cli_env, "--file", str(doc), "--workspace", "@AT库", "--no-embed",
+                 "--title", "AT"))
+    assert j["success"]
+    lst = jout(run(cli_env, "--workspace-list"))
+    assert "AT库" in [w["name"] for w in lst["workspaces"]]
+    s = jout(run(cli_env, "--workspace", "@AT库", "--search", "约定"))
+    assert s["success"] and s["total"] >= 1 and s["workspace"] == "AT库"
