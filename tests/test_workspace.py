@@ -846,3 +846,10 @@ def test_n3_read_cap_truncated(ws_mod, tmp_path):
     assert len(r["content"]) <= 1000
     r0 = ws_mod.ws_read_entry("库N3b", eid, max_chars=0)   # 0=不限
     assert "truncated" not in r0
+
+
+def test_vector_zero_hint(ws_mod):
+    """坑4：--mode vector 零命中且库内无向量 → 可诊断标注（vectors_rows/vector_zero_hint）"""
+    ws_mod.ws_ingest("库V0", content="向量缺失诊断验证内容。" * 30, title="V", no_embed=True)
+    s = ws_mod.ws_search("库V0", "向量缺失", mode="vector")
+    assert s["success"] and s["vectors_rows"] == 0 and s.get("vector_zero_hint") is True

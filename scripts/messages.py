@@ -257,6 +257,10 @@ MESSAGES = {
         "zh": "向量补建失败: {err}",
         "en": "Vector rebuild failed: {err}",
     },
+    "ws_vector_zero_hint": {
+        "zh": "向量链路就绪但该库暂无向量索引（入库时可能使用了 --no-embed）；补建：--embed 或重入库不加减嵌入",
+        "en": "Vector chain ready but no vectors indexed (ingested with --no-embed?); rebuild via --embed or re-ingest without it",
+    },
     "ingest_supersedes": {
         "zh": "检测到同源旧条目 {ids}，可 --remove 清理或加 --replace 自动替换",
         "en": "Same-source old entries found: {ids}; clean via --remove <id> or rerun with --replace",

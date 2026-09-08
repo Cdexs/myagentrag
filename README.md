@@ -144,6 +144,12 @@ workspace 目录自包含（拷走即迁移）；删除类操作需 `--yes` 二�
 - **检索增强**：标题锚点成为第三路参与 RRF；同 (entry, 章节命中自动聚合（best_window 保留最高分窗口 + `same_section_hits`），`score_source` 并列标注（如 `fused+heading`）；
 - **出处锚定源文件、full.md 内部化**：命中 `source_loc` 锚定源文件结构（PDF 页码/EPUB 章节/时间戳/文本行号），full.md 路径与偏移不再出现在 agent 可见输出；新增 `--section <ref>` 按不透明引用精读整节；
 - **修复**：组件确认 y/N 提示改走 stderr（不再污染 agent JSON 管道）；`--verify` 扩锚点校验；删除条目级联清理锚点。
+- **端侧反馈修复（WorkBuddy 两轮实测）**：列限定查询自动降级 FTS-only（`column_filter`，向量路不再绕过）；`--search ""` 空串契约修复（失败路径全部 JSON）；`--list`/`--stats` 暴露向量行数；无锚点区域 `#front` 哨兵引用可精读；`--embed` 为零向量条目补建向量；同源重入库返回 `supersedes` 并支持 `--replace` 显式清理；默认标题剥离扩展名、同源元数据沿用；fused 命中 `keyword_miss`/`scores` 分路贡献标注；检索 `vectors_rows`/`vector_zero_hint` 诊断字段；PDF 页脚噪声提取层过滤；全部失败路径 JSON 契约固化；
+- **检索定位精化**：FTS/LIKE 命中按命中词真实位置归位章节/页码（`hit_offset`）；媒体 `start_ms/end_ms` 精确到命中词所在段落（`timestamp_precision` 分级）；读路径统一 `--max-chars`（默认 30000，0=不限）+ `remaining_chars`；超大节按命中位置开窗；同 key 多窗口 scores 累加修复（`score==Σscores` 不变式）；
+- **@库名 操作约定**：用户提示词 `@库名` / “在X库” / “用X库” / “根据X库” / “使用X库” → 指定库检索；`--workspace "@库名"` 原样传入即可（CLI 自动剥离前缀）。
+
+ 
+
 
 ### v0.7.1（专用运行时 + 知识库 workspace + 混合检索 + sqlite-vec 向量后端 + 模块化拆分 + 双语反馈）
 

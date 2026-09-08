@@ -1480,6 +1480,7 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
     if mode == "vector" and not ws_dir(ws_name) and not all_workspaces:
         return messages.err_result("ws_not_found", name=ws_name)
     fts_all, hd_all, vec_all, searched = [], [], [], []
+    vrows_total = 0                       # 坑4：向量行诊断计数（被检库合计）
     degraded = {"vector_available": mode in ("vector", "fused")}
     vector_available = mode in ("vector", "fused") and not col_filter
     vector_backend = None
@@ -1515,6 +1516,11 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
         vec_all.extend(v_hits)
         if backend:
             vector_backend = backend
+        try:
+            con = _connect(d / WORKSPACE_DB)
+            vrows_total += sum(_vector_counts(con).values())
+        except Exception:
+            pass
     if mode == "fts":
         total_hits = (fts_all + hd_all)[:limit]
     elif mode == "vector":
@@ -1526,6 +1532,9 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
             "workspaces_searched": searched, "query": query,
             "mode": ("fts" if col_filter else mode),
             "column_filter": col_filter,
+            "vectors_rows": vrows_total,
+            "vector_zero_hint": bool(mode == "vector" and vrows_total == 0
+                                     and vector_available),   # 链路就绪但库内无向量
             "keyword_miss": bool(mode == "fused" and not col_filter
                                  and not fts_all and vec_all and not skip_vector),
             "fts_query": match, "like_fallback_terms": like_terms,
