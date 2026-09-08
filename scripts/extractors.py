@@ -311,6 +311,20 @@ def _docx_heading_level(para):
     return None
 
 
+_PDF_NOISE_RES = [
+    # 打印页脚签名（Effective STL 类书页）：保守匹配，正文行不受影响
+    re.compile(r"file:///\S*\(\d+ of \d+\)"),        # file:///D|/...item_14.html (1 of 3)2005-4-26 ...
+    re.compile(r"\(\d+ of \d+\)\s*\d{4}-\d+-\d+\s+\d{1,2}:\d{2}:\d{2}"),
+    re.compile(r"^\s*\d{4}-\d+-\d+\s+\d{1,2}:\d{2}:\d{2}\s*$"),
+]
+
+
+def _pdf_noise_filter(page_text):
+    """逐行过滤 PDF 页脚噪声；在页账本记账前调用，offset 不变式保持"""
+    lines = [ln for ln in page_text.split("\n") if not any(r.search(ln) for r in _PDF_NOISE_RES)]
+    return "\n".join(lines)
+
+
 def extract_pdf_text(file_path):
     """提取 PDF 文本 + 源位置账本 pages=[[起始偏移, 页码], ...]（§8D 页偏移记账）"""
     try:
@@ -319,7 +333,7 @@ def extract_pdf_text(file_path):
         off = 0
         with pdfplumber.open(file_path) as pdf:
             for i, page in enumerate(pdf.pages, 1):
-                page_text = page.extract_text() or ""
+                page_text = _pdf_noise_filter(page.extract_text() or "")
                 pages.append([off, i])
                 text_parts.append(page_text)
                 off += len(page_text) + 1          # +1 = 页间 '\n' 分隔符
@@ -344,7 +358,7 @@ def extract_pdf_text(file_path):
             except Exception:
                 outline = []
             for i, page in enumerate(doc, 1):
-                t = page.get_text()
+                t = _pdf_noise_filter(page.get_text())
                 pages.append([off, i])
                 text_parts.append(t)
                 off += len(t) + 1                  # +1 = 页间 '\n' 分隔符

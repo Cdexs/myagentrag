@@ -315,3 +315,14 @@ def test_extract_docx_heading_markers(tmp_path):
     assert isinstance(out, ex.Extraction)
     assert "# 第一章 总览" in out.text and "## 第二节 细节" in out.text
     assert "正文段落内容标记。" in out.text
+
+
+def test_pdf_noise_filter():
+    """页脚噪声过滤：签名行删除、正文行保留"""
+    page = ("正文内容保持。甲乙丙\n"
+            "file:///D|/C:/book/item_14.html (1 of 3)2005-4-26 15:16:19\n"
+            "(2 of 3)2005-4-26 15:16:19\n"
+            "2005-4-26 15:16:19\n"
+            "正文继续内容丁戊。")
+    out = ex._pdf_noise_filter(page)
+    assert "file:///" not in out and "正文继续内容丁戊。" in out and "甲乙丙" in out

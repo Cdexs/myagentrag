@@ -313,14 +313,14 @@ agent 收到清单后的标准流程（写入 SKILL.md 供所有 agent 遵循）
 ### 检索
 
 ```bash
-"$PYTHON" "$EXTRACTOR" --workspace 我的资料 --search "全文检索"
+"$PYTHON" "$EXTRACTOR" --workspace 我的资料 --search "全文检索" --limit 10
 "$PYTHON" "$EXTRACTOR" --workspace 我的资料 --search 'publisher:出版社名 AND 关键词'
 "$PYTHON" "$EXTRACTOR" --search "关键词" --all-workspaces     # 跨全部库，结果标注来源库名
 "$PYTHON" "$EXTRACTOR" --workspace 我的资料 --search "什么是机器学习" --mode vector  # 纯语义检索（跨语言）
 "$PYTHON" "$EXTRACTOR" --file doc.md --workspace 我的资料 --no-embed               # 仅 FTS 入库
 ```
 
-**混合检索（默认 fused）**：三路并行——语义向量路（Qwen3-Embedding，中英文/跨语言）、FTS5 关键词路、标题锚点路（结构标题独立索引），RRF 融合排序。命中结果带 `score_source`（fused/fts/vector/heading，多路同节命中并列标注如 `fused+heading`）；FTS 路 `score` 为 0..1 的覆盖率（命中查询词数/总词数），bm25 原值在 `fts_detail.bm25_raw`；同章节多个碎片命中自动聚合为一条（`same_section_hits` 计数），代表命中附所在标题 `heading` 与 `section_ref`。入库默认自动嵌入（`--no-embed` 可关）；首次使用知识库时一次性引导安装嵌入引擎与向量模型（y/N 确认）。
+**混合检索（默认 fused）**：三路并行——语义向量路（Qwen3-Embedding，中英文/跨语言）、FTS5 关键词路、标题锚点路（结构标题独立索引），RRF 融合排序。命中结果带 `score_source`（fused/fts/vector/heading，多路同节命中并列标注如 `fused+heading`）；`score` 的语义看 `score_kind` 判别字段：`coverage`=0..1 覆盖率（命中查询词数/总词数，`--mode fts` 与 heading 路）、`similarity`=向量余弦、`rrf`=fused 融合排序分（1/(60+rank)，**跨查询不可比、不表达语义相关度，仅组内排序**；置信度判断应结合 `score_kind` 与 `fts_detail.coverage_terms`）；bm25 原值在 `fts_detail.bm25_raw`；同章节多个碎片命中自动聚合为一条（`same_section_hits` 计数），代表命中附所在标题 `heading` 与 `section_ref`。入库默认自动嵌入（`--no-embed` 可关）；首次使用知识库时一次性引导安装嵌入引擎与向量模型（y/N 确认）。
 
 查询语法：≥3 字词进 trigram 索引（输入自动转义）；**自然多词默认 OR 召回 + 覆盖率重排**（单词命中也返回，双词命中排前）；`AND`/`OR`/`NOT`/`NEAR(a b, 5)`/`前缀*` 原样透传；`title:`/`author:`/`publisher:`/`publish_date:` 可限定列；**<3 字中文词**（trigram 物理限制）自动回退 chunks 表 LIKE 并在结果中标注 `like-low-precision`。
 

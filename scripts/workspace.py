@@ -1005,23 +1005,27 @@ def _fts_search_one(con, ws_name, match, like_terms, limit, phrases=None):
             (match,)).fetchall()
         if phrases:
             cand = _coverage_presort(con, rows, phrases)[:max(60, 3 * limit)]
-            texts = dict(con.execute(
-                "SELECT rowid, chunk_text FROM chunks WHERE rowid IN (%s)"
+            texts = dict((r[0], (r[1], r[2])) for r in con.execute(
+                "SELECT rowid, chunk_text, file_offset FROM chunks WHERE rowid IN (%s)"
                 % ",".join("?" * len(cand)), [r[0] for r in cand]).fetchall())
             scored = []
             for rowid, bm in cand:
-                low = texts.get(rowid, "").lower()
+                text, foff = texts.get(rowid, ("", 0))
+                low = text.lower()
                 cov = tf = 0
+                pos = -1
                 for ph in phrases:
-                    c = low.count(ph.lower())
-                    if c:
+                    p = low.find(ph.lower())
+                    if p >= 0:                     # 首个命中词的分片内位置（与 snippet 高亮一致）
                         cov += 1
-                        tf += min(c, 5)   # 单词频 cap 5：防高频词刷分
-                scored.append((rowid, bm, cov, tf))
+                        tf += min(low.count(ph.lower()), 5)   # 单词频 cap 5：防高频词刷分
+                        if pos < 0 or p < pos:
+                            pos = p
+                scored.append((rowid, bm, cov, tf, foff + pos if pos >= 0 else None))
             scored.sort(key=lambda x: (-x[2], -x[3], x[1]))
             final = scored[:limit]
         else:
-            final = [(r[0], r[1], None, None) for r in rows[:limit]]
+            final = [(r[0], r[1], None, None, None) for r in rows[:limit]]
         snips = {}
         if final:
             ids = [f[0] for f in final]
@@ -1029,27 +1033,38 @@ def _fts_search_one(con, ws_name, match, like_terms, limit, phrases=None):
                 "SELECT rowid, snippet(entries_fts, 1, '『', '』', '…', 16)"
                 " FROM entries_fts WHERE entries_fts MATCH ? AND rowid IN (%s)"
                 % ",".join("?" * len(ids)), [match] + ids).fetchall())
-        for rowid, bm, cov, tf in final:
+        for rowid, bm, cov, tf, hoff in final:
             if phrases:
                 score = round(cov / len(phrases), 4)
+                kind = "coverage"
                 detail = {"bm25_raw": bm, "tf": tf,
                           "coverage_terms": "%d/%d" % (cov, len(phrases))}
             else:
-                score, detail = None, {"bm25_raw": bm}
+                score, kind, detail = None, None, {"bm25_raw": bm}
             hit = _row_to_hit(con, ws_name, rowid, score, snips.get(rowid, ""))
             if hit and (hit["entry_id"], hit["chunk_no"]) not in seen:
                 seen.add((hit["entry_id"], hit["chunk_no"]))
                 hit["score_source"] = "fts"
                 hit["fts_detail"] = detail
+                if kind:
+                    hit["score_kind"] = kind
+                if hoff is not None:            # 命中词真实位置（章节/页码归位依据，出口抹去）
+                    hit["hit_offset"] = hoff
                 hits.append(hit)
     if like_terms:
         conds = " AND ".join(["chunk_text LIKE ? ESCAPE '\\'"] * len(like_terms))
         params = ["%" + t.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
                   for t in like_terms]
         for row in con.execute(
-                f"SELECT rowid, chunk_text FROM chunks WHERE {conds} LIMIT ?", params + [limit]):
+                "SELECT rowid, chunk_text, file_offset FROM chunks WHERE %s LIMIT ?" % conds,
+                params + [limit]):
+            low = row[1].lower()
+            pos = min((low.find(t.lower()) for t in like_terms if low.find(t.lower()) >= 0),
+                      default=-1)
             hit = _row_to_hit(con, ws_name, row[0], None,
                               _like_snippet(row[1], like_terms), low_precision=True)
+            if pos >= 0:                        # LIKE 命中位置同样参与章节归位
+                hit["hit_offset"] = row[2] + pos
             if hit and (hit["entry_id"], hit["chunk_no"]) not in seen:
                 seen.add((hit["entry_id"], hit["chunk_no"]))
                 hit["score_source"] = "fts"
@@ -1070,6 +1085,7 @@ def _build_vector_hit(con, ws_name, entry_id, chunk_no, win_start, win_end, scor
         return None
     hit["score"] = round(score, 4)
     hit["score_source"] = "vector"
+    hit["score_kind"] = "similarity"
     hit["win_start"], hit["win_end"] = win_start, win_end
     return hit
 
@@ -1155,7 +1171,8 @@ def _headings_search_one(con, ws_name, match, limit, phrases=None):
                     "title": e[0] if e else None, "source_type": e[1] if e else None,
                     "chunk_no": None, "chars": None,
                     "snippet": h[1], "score": round(cov / len(phrases), 4) if phrases else None,
-                    "score_source": "heading", "heading_rowid": rowid,
+                    "score_source": "heading",
+                    "score_kind": "coverage" if phrases else None, "heading_rowid": rowid,
                     "heading_text": h[1], "heading_level": h[2], "heading_offset": h[3]})
     return out
 
@@ -1188,6 +1205,7 @@ def _rrf_fuse(fts_hits, vec_hits, limit, k=60, hd_hits=None):
     for key, sc in ordered:
         h = dict(hits[key])
         h["score"] = round(sc, 4)
+        h["score_kind"] = "rrf"          # RRF 排序分：跨查询不可比，不表达语义相关度
         out.append(h)
     return out
 
@@ -1195,7 +1213,10 @@ def _rrf_fuse(fts_hits, vec_hits, limit, k=60, hd_hits=None):
 # ==================== 出口层整形（§8D：出处锚定源文件，full.md 内部化） ====================
 
 def _hit_offset(h):
-    off = h.get("win_start")
+    # hit_offset：FTS/LIKE 命中词在分片内的真实位置；win_start：向量窗口；其余退回分片起点
+    off = h.get("hit_offset")
+    if off is None:
+        off = h.get("win_start")
     if off is None:
         off = h.get("offset")
     if off is None:
@@ -1269,7 +1290,7 @@ def _polish_one(h, info, idx):
     h["source_loc"] = _source_loc_for(info, _hit_offset(h))
     h["source_ref"] = info.get("source_ref")
     for k in ("offset", "win_start", "win_end", "heading_rowid",
-              "heading_offset", "full_path"):
+              "heading_offset", "hit_offset", "full_path"):
         h.pop(k, None)
 
 

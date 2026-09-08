@@ -292,8 +292,8 @@ def test_ingest_srcmap_pages_outline(ws_mod):
     s = ws_mod.ws_search("库F2b", "主题乙", mode="fts")
     assert s["total"] >= 1
     hit = s["hits"][0]
-    assert hit["source_loc"] == {"kind": "pdf", "page": 1}   # chunk 起点所在页
-    assert hit["heading"]["text"] == "第一章 主题甲"          # 命中落在第一章区间
+    assert hit["source_loc"] == {"kind": "pdf", "page": 2}   # 按命中位置归页（hit_offset），非分片起点
+    assert hit["heading"]["text"] == "第二章 主题乙"          # 命中词真实所在章节
     # 标题路直接命中书签标题，且书签节锚到第二页
     s2 = ws_mod.ws_search("库F2b", "第二章", mode="fts")
     hd_hit = next(h for h in s2["hits"] if "heading" in (h.get("score_source") or ""))
@@ -712,3 +712,24 @@ def test_db_call_non_retryable_error(ws_mod, monkeypatch):
     except s3.OperationalError:
         pass
     assert calls["n"] == 1  # 未重试
+
+
+def test_fts_hit_offset_section_attribution(ws_mod):
+    """偏差2修复：FTS 命中的 heading/section 按 chunk 内命中位置归位，而非分片起点"""
+    text = ("# 条款1 开篇章节\n" + "甲" * 41000
+            + "\n# 条款2 目标章节\n" + "此处 reserve 关键内容。" * 60)
+    ws_mod.ws_ingest("库R1", content=text, title="归位", no_embed=True)
+    s = ws_mod.ws_search("库R1", "reserve", mode="fts")
+    assert s["total"] >= 1
+    hit = s["hits"][0]
+    assert (hit.get("heading") or {}).get("text", "").startswith("条款2")  # 命中词真实所在章节
+    assert hit["score_kind"] == "coverage"
+
+
+def test_score_kind_stamping(ws_mod):
+    """偏差1修复：score 语义由 score_kind 编程可判——fts=coverage、fused=rrf"""
+    ws_mod.ws_ingest("库R2", content="score_kind 语义验证内容。" * 20, title="K", no_embed=True)
+    s = ws_mod.ws_search("库R2", "score_kind", mode="fts")
+    assert s["hits"][0]["score_kind"] == "coverage"
+    s = ws_mod.ws_search("库R2", "score_kind", mode="fused")
+    assert s["hits"][0]["score_kind"] == "rrf"

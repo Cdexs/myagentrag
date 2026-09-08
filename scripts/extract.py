@@ -179,7 +179,8 @@ def _run_workspace_ops(args):
         return workspace.ws_list_entries(W)
     if args.search:
         return workspace.ws_search(W, args.search, all_workspaces=args.all_workspaces,
-                                   mode=args.mode, no_embed=args.no_embed)
+                                   mode=args.mode, no_embed=args.no_embed,
+                                   limit=min(max(args.limit, 1), 100))
     if args.section:
         return workspace.ws_read_entry(W, None, section=args.section)
     if args.entry:
@@ -356,6 +357,7 @@ def main():
     parser.add_argument('--no-embed', action='store_true',
                         help='本次不做向量嵌入（入库仅建 FTS 索引；检索仅走 FTS 路）')
     parser.add_argument('--all-workspaces', action='store_true', help='跨全部 workspace 检索（与 --search 搭配）')
+    parser.add_argument('--limit', type=int, default=20, metavar='N', help='检索返回条数上限（1..100，默认 20）')
     parser.add_argument('--entry', metavar='ID', help='读取条目 full.md 全文')
     parser.add_argument('--chunk', type=int, metavar='N', help='配合 --entry 读取指定分片')
     parser.add_argument('--section', metavar='REF', help='精读检索返回的章节引用（如 e12ab34d#s5）')

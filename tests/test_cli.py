@@ -173,3 +173,14 @@ def test_section_read_cli(cli_env, tmp_path):
     j = jout(r)
     assert j["success"] and j["content"].startswith("# 条款A 标题")
     assert "条款B" not in j["content"]
+
+
+def test_search_limit_cli(cli_env, tmp_path):
+    """--limit N 控制检索返回条数"""
+    for i in (1, 2, 3):
+        d = tmp_path / f"lim{i}.md"
+        d.write_text(f"限定条数验证内容{i}。" * 300, encoding="utf-8")
+        run(cli_env, "--file", str(d), "--workspace", "CLI限库", "--no-embed", "--title", f"L{i}")
+    r = run(cli_env, "--workspace", "CLI限库", "--search", "限定", "--limit", "2")
+    j = jout(r)
+    assert j["success"] and j["total"] <= 2
