@@ -47,14 +47,14 @@ def test_clean_subtitle():
 # ---------- cookies 规则 ----------
 
 def test_yt_cookies_missing_file(tmp_path, monkeypatch):
-    monkeypatch.setenv("SMART_SUMMARIZE_YOUTUBE_COOKIES", str(tmp_path / "nope.txt"))
+    monkeypatch.setenv("MYAGENTRAG_YOUTUBE_COOKIES", str(tmp_path / "nope.txt"))
     assert ex._yt_cookies_args() == []
 
 
 def test_yt_cookies_empty_file_ignored(tmp_path, monkeypatch):
     p = tmp_path / "c.txt"
     p.write_text("", encoding="utf-8")
-    monkeypatch.setenv("SMART_SUMMARIZE_YOUTUBE_COOKIES", str(p))
+    monkeypatch.setenv("MYAGENTRAG_YOUTUBE_COOKIES", str(p))
     assert ex._yt_cookies_args() == []
 
 
@@ -64,10 +64,10 @@ def test_bilibili_cookie_header_netscape(tmp_path, monkeypatch):
                  ".bilibili.com\tTRUE\t/\tTRUE\t0\tSESSDATA\tsess_value\n"
                  ".bilibili.com\tTRUE\t/\tTRUE\t0\tbili_jct\tjct_value\n"
                  ".example.com\tTRUE\t/\tTRUE\t0\tOTHER\tx\n", encoding="utf-8")
-    monkeypatch.delenv("SMART_SUMMARIZE_BILIBILI_COOKIES", raising=False)
+    monkeypatch.delenv("MYAGENTRAG_BILIBILI_COOKIES", raising=False)
     monkeypatch.setattr(ex, "MANAGED_HOME", tmp_path / "managed")
     # _bilibili_cookie_header 默认读 MANAGED_HOME/cookies/...，直接传环境变量更稳
-    monkeypatch.setenv("SMART_SUMMARIZE_BILIBILI_COOKIES", str(p))
+    monkeypatch.setenv("MYAGENTRAG_BILIBILI_COOKIES", str(p))
     hdr = ex._bilibili_cookie_header()
     assert "SESSDATA=sess_value" in hdr and "bili_jct=jct_value" in hdr and "OTHER" not in hdr
 
@@ -75,7 +75,7 @@ def test_bilibili_cookie_header_netscape(tmp_path, monkeypatch):
 def test_bilibili_cookie_header_raw(tmp_path, monkeypatch):
     p = tmp_path / "bili2.txt"
     p.write_text("SESSDATA=abc; bili_jct=def\n", encoding="utf-8")
-    monkeypatch.setenv("SMART_SUMMARIZE_BILIBILI_COOKIES", str(p))
+    monkeypatch.setenv("MYAGENTRAG_BILIBILI_COOKIES", str(p))
     assert ex._bilibili_cookie_header() == "SESSDATA=abc; bili_jct=def"
 
 

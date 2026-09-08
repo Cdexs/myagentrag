@@ -15,10 +15,10 @@ EXTRACT = REPO / "scripts" / "extract.py"
 @pytest.fixture
 def cli_env(tmp_path, monkeypatch):
     env = dict(os.environ)
-    env["SMART_SUMMARIZE_WORKSPACES_DIR"] = str(tmp_path / "workspaces")
-    env["SMART_SUMMARIZE_LANG"] = "zh"
+    env["MYAGENTRAG_WORKSPACES_DIR"] = str(tmp_path / "workspaces")
+    env["MYAGENTRAG_LANG"] = "zh"
     # 测试直接测当前解释器，跳过专用运行时闸门（运行时安装/切换由 R5 冒烟与手动验证覆盖）
-    env["SMART_SUMMARIZE_NO_RUNTIME"] = "1"
+    env["MYAGENTRAG_NO_RUNTIME"] = "1"
     return env
 
 
@@ -83,7 +83,7 @@ def test_no_args(cli_env):
 
 def test_search_empty_string_json(cli_env):
     """D2：--search 空串与空格行为一致——JSON 错误而非 no_input 纯文本"""
-    d = cli_env["SMART_SUMMARIZE_WORKSPACES_DIR"]
+    d = cli_env["MYAGENTRAG_WORKSPACES_DIR"]
     r = run(cli_env, "--workspace", "CLI空串库", "--search", "")
     assert r.returncode == 1
     j = json.loads(r.stdout)   # 契约：失败也必须可解析
@@ -117,7 +117,7 @@ def test_ingest_and_search_and_read_e2e(cli_env, tmp_path):
     assert jout(r)["entries"] == 1
 
     # source 副本（文档默认复制）
-    ws_root = Path(cli_env["SMART_SUMMARIZE_WORKSPACES_DIR"])
+    ws_root = Path(cli_env["MYAGENTRAG_WORKSPACES_DIR"])
     assert (ws_root / "CLI库" / "source" / eid / "doc.md").exists()
 
 
@@ -163,7 +163,7 @@ def test_kb_gate_lists_full_chain_when_components_missing(cli_env):
     但会真实安装组件——改为验证结构：不在此处真装，用 _missing_kb_kinds 单测覆盖。
     此处仅验证 fused 模式在 NO_RUNTIME 下按传统路径降级可检索。）"""
     doc = cli_env and None  # 占位保持结构清晰
-    doc2 = __import__("pathlib").Path(cli_env["SMART_SUMMARIZE_WORKSPACES_DIR"]).parent / "m2.md"
+    doc2 = __import__("pathlib").Path(cli_env["MYAGENTRAG_WORKSPACES_DIR"]).parent / "m2.md"
     doc2.write_text("全链依赖闸门结构验证。", encoding="utf-8")
     r = run(cli_env, "--file", str(doc2), "--workspace", "闸门库", "--no-embed")
     assert jout(r)["success"] is True

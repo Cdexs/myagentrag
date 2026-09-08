@@ -14,7 +14,7 @@ def test_human_size():
 
 
 def test_ggml_map_and_model_path(monkeypatch, tmp_path):
-    monkeypatch.setenv("SMART_SUMMARIZE_WHISPERCPP_MODELS_DIR", str(tmp_path))
+    monkeypatch.setenv("MYAGENTRAG_WHISPERCPP_MODELS_DIR", str(tmp_path))
     # 重新读取模块级常量
     monkeypatch.setattr(deps, "WHISPERCPP_MODELS_DIR", tmp_path)
     monkeypatch.setattr(deps, "MANAGED_MODELS", tmp_path / "managed")
@@ -28,9 +28,9 @@ def test_ggml_map_and_model_path(monkeypatch, tmp_path):
 def test_find_ffmpeg_env_override(tmp_path, monkeypatch):
     fake = tmp_path / "ffmpeg.exe"
     fake.write_bytes(b"x")
-    monkeypatch.setenv("SMART_SUMMARIZE_FFMPEG", str(fake))
+    monkeypatch.setenv("MYAGENTRAG_FFMPEG", str(fake))
     assert deps._find_ffmpeg() == str(fake)
-    monkeypatch.setenv("SMART_SUMMARIZE_FFMPEG", str(tmp_path / "nope.exe"))
+    monkeypatch.setenv("MYAGENTRAG_FFMPEG", str(tmp_path / "nope.exe"))
     # 回退 PATH/受管目录——只验证不抛异常且返回 str 或 None
     assert deps._find_ffmpeg() is None or isinstance(deps._find_ffmpeg(), str)
 
@@ -42,9 +42,9 @@ def test_missing_dep_kinds_all_found(tmp_path, monkeypatch):
     cli.write_bytes(b"x")
     model = tmp_path / "ggml-large-v3-turbo.bin"
     model.write_bytes(b"x")
-    monkeypatch.setenv("SMART_SUMMARIZE_FFMPEG", str(ff))
-    monkeypatch.setenv("SMART_SUMMARIZE_WHISPERCPP_CLI", str(cli))
-    monkeypatch.setenv("SMART_SUMMARIZE_WHISPERCPP_MODELS_DIR", str(tmp_path))
+    monkeypatch.setenv("MYAGENTRAG_FFMPEG", str(ff))
+    monkeypatch.setenv("MYAGENTRAG_WHISPERCPP_CLI", str(cli))
+    monkeypatch.setenv("MYAGENTRAG_WHISPERCPP_MODELS_DIR", str(tmp_path))
     monkeypatch.setattr(deps, "WHISPERCPP_MODELS_DIR", tmp_path)
     monkeypatch.setattr(deps, "MANAGED_MODELS", tmp_path)
     assert deps._missing_dep_kinds("large-v3-turbo") == []
@@ -99,7 +99,7 @@ def test_install_model_reuses_any_known_copy(tmp_path, monkeypatch):
     existing.write_bytes(b"x")
     monkeypatch.setattr(deps, "WHISPERCPP_MODELS_DIR", existing.parent)
     monkeypatch.setattr(deps, "MANAGED_MODELS", tmp_path / "managed")
-    monkeypatch.delenv("SMART_SUMMARIZE_WHISPERCPP_MODELS_DIR", raising=False)
+    monkeypatch.delenv("MYAGENTRAG_WHISPERCPP_MODELS_DIR", raising=False)
 
     def no_download(*a, **kw):
         raise AssertionError("模型已存在时不应触发下载")
@@ -110,7 +110,7 @@ def test_install_model_reuses_any_known_copy(tmp_path, monkeypatch):
 def test_install_model_downloads_into_env_dir_when_nowhere(tmp_path, monkeypatch):
     """所有已知位置都没有模型时，下载到环境变量指定的目录"""
     env_dir = tmp_path / "envmodels"
-    monkeypatch.setenv("SMART_SUMMARIZE_WHISPERCPP_MODELS_DIR", str(env_dir))
+    monkeypatch.setenv("MYAGENTRAG_WHISPERCPP_MODELS_DIR", str(env_dir))
     monkeypatch.setattr(deps, "WHISPERCPP_MODELS_DIR", env_dir)
     monkeypatch.setattr(deps, "MANAGED_MODELS", tmp_path / "managed")
 
@@ -175,9 +175,9 @@ def test_missing_kb_kinds_chain(tmp_path, monkeypatch):
     cli.write_bytes(b"x")
     model = tmp_path / "ggml-large-v3-turbo.bin"
     model.write_bytes(b"x")
-    monkeypatch.setenv("SMART_SUMMARIZE_FFMPEG", str(ff))
-    monkeypatch.setenv("SMART_SUMMARIZE_WHISPERCPP_CLI", str(cli))
-    monkeypatch.setenv("SMART_SUMMARIZE_WHISPERCPP_MODELS_DIR", str(tmp_path))
+    monkeypatch.setenv("MYAGENTRAG_FFMPEG", str(ff))
+    monkeypatch.setenv("MYAGENTRAG_WHISPERCPP_CLI", str(cli))
+    monkeypatch.setenv("MYAGENTRAG_WHISPERCPP_MODELS_DIR", str(tmp_path))
     monkeypatch.setattr(deps, "WHISPERCPP_MODELS_DIR", tmp_path)
     monkeypatch.setattr(deps, "MANAGED_MODELS", tmp_path)
     assert deps._missing_dep_kinds("large-v3-turbo") == []

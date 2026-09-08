@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """知识库 workspace 模块 — smart-summarize v0.6.0（T6，方案 docs/kb-sqlite-fts5-design-v1.3.md）
 
-workspace = 目录（~/.smart-summarize/workspaces/<名>/）：
+workspace = 目录（~/.myagentrag/workspaces/<名>/）：
   workspace.db    SQLite FTS5+trigram（entries / chunks / entries_fts 外部内容表）
   source/<id>/    原始来源文件副本（workspace 自包含，拷走即迁移）
   entries/<id>/   meta.json + full.md（全量提取文本）+ transcript.json（音视频时间戳）
 
 检索引擎零外部依赖（Python 标准库 sqlite3），trigram 需 SQLite ≥3.34；
-v1.4 起技能固定运行在专用 Python 运行时内（~/.smart-summarize/runtime/），
+v1.4 起技能固定运行在专用 Python 运行时内（~/.myagentrag/runtime/），
 trigram 由其保证，与用户系统 Python 环境彻底解耦（方案 §8B）。
 
 与 v1.3 §2.2 的实现差异（已在设计文档补记）：chunks 表冗余存储
@@ -91,7 +91,7 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9\u4e00-\u9fff_-]+$")
 
 
 def ws_root():
-    configured = os.environ.get("SMART_SUMMARIZE_WORKSPACES_DIR")
+    configured = os.environ.get("MYAGENTRAG_WORKSPACES_DIR") or os.environ.get("SMART_SUMMARIZE_WORKSPACES_DIR")
     if configured:
         return Path(configured).expanduser()
     return MANAGED_HOME / "workspaces"
@@ -1553,7 +1553,7 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
     degraded = {"vector_available": mode in ("vector", "fused")}
     vector_available = mode in ("vector", "fused") and not col_filter
     vector_backend = None
-    skip_vector = bool(os.environ.get("SMART_SUMMARIZE_NO_RUNTIME"))  # 测试模式：全传统路径
+    skip_vector = bool(os.environ.get("MYAGENTRAG_NO_RUNTIME") or os.environ.get("SMART_SUMMARIZE_NO_RUNTIME"))  # 测试模式：全传统路径
     if skip_vector:
         degraded["vector_available"] = False
     for ws in names:

@@ -1,10 +1,10 @@
 ---
-name: smart-summarize
+name: myagentrag
 description: 智能内容提取与知识库工具：提取 YouTube/B站视频字幕、网页正文、本地文件（PDF/Word/Excel/PowerPoint/EPUB/文本）与音视频语音转录；可选入库到本地知识库 workspace，支持关键词+语义混合检索（FTS5+Qwen3 向量+标题锚点三路融合）、按源文件结构（页码/章节/时间戳）定位精读与回放。只提取与索引，不调用 LLM；提取结果由当前 agent 阅读并总结。
 compatibility: Windows / macOS / Linux / WSL；引导层任意 Python ≥3.8（仅标准库），首次使用自动安装专用运行时（含 SQLite ≥3.34）；音视频转录另需 ffmpeg、whisper.cpp 及 ggml 模型
 ---
 
-# 智能内容提取工具 (smart-summarize)
+# 智能内容提取工具 (myagentrag)
 
 **设计原则**：只负责内容提取，不调用 LLM。提取结果由当前 agent 阅读、总结或进一步处理。
 
@@ -26,15 +26,15 @@ compatibility: Windows / macOS / Linux / WSL；引导层任意 Python ≥3.8（�
 
 ## 安装依赖（专用运行时，与系统 Python 彻底解耦）
 
-技能使用**专用 Python 运行时**（独立 CPython 3.12 + 锁定版本的扩展库），安装到 `~/.smart-summarize/runtime/`，与用户系统的 Python 环境完全隔离——不向用户环境安装任何库，也不依赖其安装了什么版本。
+技能使用**专用 Python 运行时**（独立 CPython 3.12 + 锁定版本的扩展库），安装到 `~/.myagentrag/runtime/`，与用户系统的 Python 环境完全隔离——不向用户环境安装任何库，也不依赖其安装了什么版本。
 
 - **首次使用自动引导安装**：检测到专用运行时缺失时，列出名称/来源/预计大小（约 150 MB 下载），经用户确认后自动下载安装（agent 征得同意后可加 `--download-deps` 非交互执行），完成后自动继续原任务；
 - **引导层要求极低**：任意 Python ≥3.8（仅标准库）即可启动技能；扩展库（requests / yt-dlp / pdfplumber / PyMuPDF / python-docx / ebooklib / openpyxl / python-pptx）全部随专用运行时预装并锁定版本——技能测试通过的版本矩阵即用户实际运行的矩阵；
-- Python 本体来自 python-build-standalone 独立构建（SHA256SUMS 校验）；下载源可用 `SMART_SUMMARIZE_PYTHON_MIRROR` 覆盖，pip 镜像可用 `SMART_SUMMARIZE_PIP_INDEX_URL`（国内网络建议配置）；
-- 重置/升级：删除 `~/.smart-summarize/runtime/` 目录后重跑即可（用户知识库数据在 `workspaces/`，组件在 `bin/`、`models/`，均不受影响）；
+- Python 本体来自 python-build-standalone 独立构建（SHA256SUMS 校验）；下载源可用 `MYAGENTRAG_PYTHON_MIRROR` 覆盖，pip 镜像可用 `MYAGENTRAG_PIP_INDEX_URL`（国内网络建议配置）；
+- 重置/升级：删除 `~/.myagentrag/runtime/` 目录后重跑即可（用户知识库数据在 `workspaces/`，组件在 `bin/`、`models/`，均不受影响）；
 - 音视频功能还需要 `ffmpeg`（首次使用按同一确认机制自动安装）；`.doc` 老格式需要 `pandoc`（不自动下载）。
 
-入口优先使用 `SMART_SUMMARIZE_PYTHON` 作为引导解释器，未设置时使用 PATH 中的 `python`——它只负责启动技能并切换到专用运行时，不需要安装任何第三方库。
+入口优先使用 `MYAGENTRAG_PYTHON` 作为引导解释器，未设置时使用 PATH 中的 `python`——它只负责启动技能并切换到专用运行时，不需要安装任何第三方库。
 
 ## 运行机制
 
@@ -65,7 +65,7 @@ extract.py 被调用（--url 或 --file）
   ├─ ③ 音视频：先查 ffmpeg/whisper-cli/ggml 模型
   │     ├─ 全部就绪 → ffmpeg 转 WAV → whisper-cli 转录 → SRT/文本
   │     └─ 有缺失  → 列出清单（名称/用途/来源/大小）→ 用户确认
-  │                    ├─ 同意 → 下载安装（仅装到 ~/.smart-summarize）→ 自动重跑原任务
+  │                    ├─ 同意 → 下载安装（仅装到 ~/.myagentrag）→ 自动重跑原任务
   │                    └─ 拒绝/非交互 → 返回 JSON 缺失清单，不下载
   └─ ④ 输出 JSON（成功：title/author/transcript/content；失败：error/missing/cookieHint）
 ```
@@ -73,7 +73,7 @@ extract.py 被调用（--url 或 --file）
 关键规则：
 
 - 提取与总结分离：脚本永不调用 LLM；
-- 组件只在缺失时、经确认后才下载，且只装进 `~/.smart-summarize`，不动系统目录；
+- 组件只在缺失时、经确认后才下载，且只装进 `~/.myagentrag`，不动系统目录；
 - 每次运行的中间文件用 `ss_*` 临时目录，正常退出即清理；
 - 无网络/组件缺失时返回结构化 JSON 错误，agent 可据此决定重试或向用户说明。
 
@@ -82,7 +82,7 @@ extract.py 被调用（--url 或 --file）
 统一入口：
 
 ```bash
-PYTHON="${SMART_SUMMARIZE_PYTHON:-python}"
+PYTHON="${MYAGENTRAG_PYTHON:-python}"
 EXTRACTOR="<技能目录>/scripts/extract.py"
 "$PYTHON" "$EXTRACTOR" --url "https://www.bilibili.com/video/BVxxxx"
 "$PYTHON" "$EXTRACTOR" --file "document.pdf"
@@ -93,7 +93,7 @@ EXTRACTOR="<技能目录>/scripts/extract.py"
 Windows PowerShell 调用：
 
 ```powershell
-$Python = if ($env:SMART_SUMMARIZE_PYTHON) { $env:SMART_SUMMARIZE_PYTHON } else { "python" }
+$Python = if ($env:MYAGENTRAG_PYTHON) { $env:MYAGENTRAG_PYTHON } else { "python" }
 & $Python "<技能目录>/scripts/extract.py" --file "lecture.mp3"
 ```
 
@@ -106,7 +106,7 @@ $Python = if ($env:SMART_SUMMARIZE_PYTHON) { $env:SMART_SUMMARIZE_PYTHON } else 
 附加参数与字段：
 
 - `--download-deps`：缺组件时跳过交互确认直接下载安装（用于 agent 在征得用户同意后代为确认后重跑）；
-- `--lang zh|en`：反馈语言。默认按系统语言自动探测（环境变量 `SMART_SUMMARIZE_LANG` 亦可覆盖）；自有错误文案在 JSON 中同时提供 `error_i18n: {"zh": ..., "en": ...}` 双份，agent 可按界面语言选用（原始异常文本不翻译）；
+- `--lang zh|en`：反馈语言。默认按系统语言自动探测（环境变量 `MYAGENTRAG_LANG` 亦可覆盖）；自有错误文案在 JSON 中同时提供 `error_i18n: {"zh": ..., "en": ...}` 双份，agent 可按界面语言选用（原始异常文本不翻译）；
 - 失败时 JSON 可能包含 `missing`（缺失组件清单）或 `cookieHint`（YouTube 需要登录验证的提示），agent 应原样展示给用户。
 
 > YouTube 需要代理时，先设置 `HTTPS_PROXY`。YouTube 受限内容可能需要 cookies；公开字幕通常不需要。
@@ -209,27 +209,27 @@ B站字幕、网页正文、文本/PDF/Word/EPUB 通常不使用本工具的临�
 
 临时根目录解析顺序：
 
-1. `SMART_SUMMARIZE_TMPDIR`（显式指定，支持 `~`）；
+1. `MYAGENTRAG_TMPDIR`（显式指定，支持 `~`）；
 2. 其余一律使用 Python `tempfile.gettempdir()`：Windows 通常为 `%LOCALAPPDATA%\Temp`，macOS 为 `/var/folders/.../T`，Linux/WSL 为 `/tmp`。
 
 例如：
 
 ```bash
-export SMART_SUMMARIZE_TMPDIR="$HOME/.cache/smart-summarize-tmp"
+export MYAGENTRAG_TMPDIR="$HOME/.cache/myagentrag-tmp"
 ```
 
 不要把 cookies、模型或重要原始文件放入临时目录。
 
 ## ffmpeg 与 whisper.cpp
 
-**初始安装不下载任何组件；实际使用时运行时检测。** 所有自动下载的组件都只装在用户目录（`~/.smart-summarize`），不写系统目录。
+**初始安装不下载任何组件；实际使用时运行时检测。** 所有自动下载的组件都只装在用户目录（`~/.myagentrag`），不写系统目录。
 
 ### 检测顺序（每次转录前自动执行）
 
-- ffmpeg：`SMART_SUMMARIZE_FFMPEG` → PATH → 已下载到受管目录的副本。
-- whisper-cli：`SMART_SUMMARIZE_WHISPERCPP_CLI` → PATH → `SMART_SUMMARIZE_WHISPERCPP_DIR` → 受管目录。
-- ggml 模型：`SMART_SUMMARIZE_WHISPERCPP_MODELS_DIR` → 受管模型目录。模型文件名为 `ggml-large-v3-turbo.bin` 或 `ggml-large-v3-turbo-q5_0.bin`。
-- 受管目录：`SMART_SUMMARIZE_HOME`（默认 `~/.smart-summarize`，下设 `bin/` 与 `models/`）。已有自定义安装的用户可用上述环境变量指向任意位置。
+- ffmpeg：`MYAGENTRAG_FFMPEG` → PATH → 已下载到受管目录的副本。
+- whisper-cli：`MYAGENTRAG_WHISPERCPP_CLI` → PATH → `MYAGENTRAG_WHISPERCPP_DIR` → 受管目录。
+- ggml 模型：`MYAGENTRAG_WHISPERCPP_MODELS_DIR` → 受管模型目录。模型文件名为 `ggml-large-v3-turbo.bin` 或 `ggml-large-v3-turbo-q5_0.bin`。
+- 受管目录：`MYAGENTRAG_HOME`（默认 `~/.myagentrag`，下设 `bin/` 与 `models/`）。已有自定义安装的用户可用上述环境变量指向任意位置。
 
 ### 缺失时：提示并经确认后下载
 
@@ -240,11 +240,11 @@ export SMART_SUMMARIZE_TMPDIR="$HOME/.cache/smart-summarize-tmp"
 
 下载来源与安装位置：
 
-- ffmpeg：Windows 用 gyan.dev zip、macOS 用 evermeet.cx、Linux x86_64/arm64 用 johnvansickle 静态包；安装到 `SMART_SUMMARIZE_HOME`（默认 `~/.smart-summarize/bin`）。
+- ffmpeg：Windows 用 gyan.dev zip、macOS 用 evermeet.cx、Linux x86_64/arm64 用 johnvansickle 静态包；安装到 `MYAGENTRAG_HOME`（默认 `~/.myagentrag/bin`）。
 - whisper-cli：按硬件自动选版本安装：
   ①macOS/Linux 有 Homebrew 时 `brew install whisper-cpp`（macOS Metal 默认启用）；
   ②Windows：检测到 **NVIDIA GPU** 时优先下载官方 **cublas 预编译版**（自带 CUDA 运行库，无需 CUDA Toolkit，约 270MB）；否则下载官方 CPU 预编译 zip，并按 GPU 厂商给出升级指引（AMD/Intel：装 Vulkan SDK 后删受管二进制重跑即可源码构建 Vulkan 版）；
-  ③源码构建兜底（需 git/cmake/编译器），构建时自动按硬件选后端：NVIDIA + CUDA Toolkit → CUDA；AMD + ROCm → HIP（自动检测 gfx 架构）；有 Vulkan SDK → Vulkan（A 卡核显如 Radeon 780M、Intel 核显的唯一官方 GPU 路径）；都没有则 CPU（并明确告知）。也可用 `SMART_SUMMARIZE_WHISPERCPP_CMAKE_FLAGS` 追加自定义 CMake 参数；需要换后端时删除 `~/.smart-summarize/whisper.cpp` 构建目录及受管 bin 中的二进制后重试。
+  ③源码构建兜底（需 git/cmake/编译器），构建时自动按硬件选后端：NVIDIA + CUDA Toolkit → CUDA；AMD + ROCm → HIP（自动检测 gfx 架构）；有 Vulkan SDK → Vulkan（A 卡核显如 Radeon 780M、Intel 核显的唯一官方 GPU 路径）；都没有则 CPU（并明确告知）。也可用 `MYAGENTRAG_WHISPERCPP_CMAKE_FLAGS` 追加自定义 CMake 参数；需要换后端时删除 `~/.myagentrag/whisper.cpp` 构建目录及受管 bin 中的二进制后重试。
 - ggml 模型：从 HuggingFace `ggerganov/whisper.cpp` 下载（large-v3-turbo 约 1.6GB，q5_0 约 560MB），存到上述模型目录首个可用位置。
 
 ### 默认下载版本矩阵（whisper-cli）
@@ -373,7 +373,7 @@ workspace 依赖 SQLite ≥3.34（FTS5 trigram）。v1.4 起技能固定运行�
 ### 目录结构（workspace 自包含，拷走目录即完成迁移）
 
 ```
-~/.smart-summarize/workspaces/<库名>/
+~/.myagentrag/workspaces/<库名>/
 ├── workspace.db            # SQLite（WAL 模式）：entries / chunks / entries_fts
 ├── source/<entry-id>/      # 原始来源副本（音视频/网页快照/字幕原始文件）
 └── entries/<entry-id>/
@@ -382,15 +382,15 @@ workspace 依赖 SQLite ≥3.34（FTS5 trigram）。v1.4 起技能固定运行�
     └── transcript.json     # 音视频段级时间戳（含每段在 full.md 中的字符区间）
 ```
 
-workspace 根目录可用 `SMART_SUMMARIZE_WORKSPACES_DIR` 覆盖（默认 `~/.smart-summarize/workspaces/`；WSL 内注意勿放 /mnt/c 下，避免性能与文件锁问题）。
+workspace 根目录可用 `MYAGENTRAG_WORKSPACES_DIR` 覆盖（默认 `~/.myagentrag/workspaces/`；WSL 内注意勿放 /mnt/c 下，避免性能与文件锁问题）。
 
 ## Cookies 隐私规则
 
 技能包**不携带任何 cookies 文件**，也不再要求用户预先配置路径。
 
 - cookies 文件的约定位置自动确定：
-  - YouTube：`~/.smart-summarize/cookies/youtube-cookies.txt`（或用 `SMART_SUMMARIZE_YOUTUBE_COOKIES` 指定任意位置）
-  - B站：`~/.smart-summarize/cookies/bilibili-cookies.txt`（或用 `SMART_SUMMARIZE_BILIBILI_COOKIES` 指定任意位置；支持 Netscape 格式或原生 Cookie 头格式两种文件）
+  - YouTube：`~/.myagentrag/cookies/youtube-cookies.txt`（或用 `MYAGENTRAG_YOUTUBE_COOKIES` 指定任意位置）
+  - B站：`~/.myagentrag/cookies/bilibili-cookies.txt`（或用 `MYAGENTRAG_BILIBILI_COOKIES` 指定任意位置；支持 Netscape 格式或原生 Cookie 头格式两种文件）
   - B站 cookies 用于登录墙内容（如 **AI 自动字幕**——无登录态时接口返回空列表，只能拿到 UP 主手动上传的 CC 字幕）；
 - 平时（公开视频）不需要 cookies，脚本直接匿名访问；
 - 只有当 yt-dlp 因登录验证/风控/年龄限制失败时，脚本才会在 `cookieHint` 字段和 stderr 中提示用户：用浏览器扩展（如 Get cookies.txt LOCALLY）导出 Netscape 格式 cookies，**自己手动**保存到上述路径后重试；
@@ -412,10 +412,10 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 
 | 症状                             | 处理                                                                                       |
 | ------------------------------ | ---------------------------------------------------------------------------------------- |
-| 找不到 `python`                   | 设置 `SMART_SUMMARIZE_PYTHON` 为目标解释器的完整路径                                                  |
+| 找不到 `python`                   | 设置 `MYAGENTRAG_PYTHON` 为目标解释器的完整路径                                                  |
 | YouTube yt-dlp 报 JS runtime 错误 | 安装 Node.js 并确保 `node` 在 PATH；脚本使用 `--js-runtimes node`                                   |
 | 音视频提示 whisper.cpp 不可用          | 运行时检查会列出缺失组件与大小；同意后确认或由 agent 加 `--download-deps` 重跑                                     |
-| YouTube 提示需要 cookies           | 按提示用浏览器扩展导出 Netscape 格式 cookies 保存到 `~/.smart-summarize/cookies/youtube-cookies.txt` 后重试 |
+| YouTube 提示需要 cookies           | 按提示用浏览器扩展导出 Netscape 格式 cookies 保存到 `~/.myagentrag/cookies/youtube-cookies.txt` 后重试 |
 | PDF 提取为空                       | 扫描件没有文字层，属正常；本工具不做 OCR                                                                   |
 | B站无字幕                          | 该视频没有 CC 字幕，API 返回 `success:false`，属正常                                                   |
 | `--mode vector` 恒 0 命中 | 先查该库入库时是否用了 `--no-embed`（`--list` 的 `vectors` 字段为 0 即是）；补建：`--embed` 或重入库不加减嵌入 |

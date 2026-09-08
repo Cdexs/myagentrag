@@ -8,6 +8,9 @@ import pytest
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+import os, tempfile
+os.environ.setdefault("MYAGENTRAG_HOME", tempfile.mkdtemp(prefix="ss-test-home-"))
+
 
 @pytest.fixture(autouse=True)
 def _pin_lang():
@@ -21,7 +24,7 @@ def _pin_lang():
 @pytest.fixture
 def ws_mod(tmp_path, monkeypatch):
     """workspace 模块 + 指向临时目录的 workspace 根"""
-    monkeypatch.setenv("SMART_SUMMARIZE_WORKSPACES_DIR", str(tmp_path / "workspaces"))
+    monkeypatch.setenv("MYAGENTRAG_WORKSPACES_DIR", str(tmp_path / "workspaces"))
     import workspace
     return workspace
 

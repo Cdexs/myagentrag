@@ -39,13 +39,13 @@ def test_unknown_key_passthrough():
 
 
 def test_detect_env_override(monkeypatch):
-    monkeypatch.setenv("SMART_SUMMARIZE_LANG", "en-US")
+    monkeypatch.setenv("MYAGENTRAG_LANG", "en-US")
     monkeypatch.delenv("LANG", raising=False)
     monkeypatch.delenv("LC_ALL", raising=False)
     assert messages.detect_lang() == "en"
-    monkeypatch.setenv("SMART_SUMMARIZE_LANG", "zh_CN")
+    monkeypatch.setenv("MYAGENTRAG_LANG", "zh_CN")
     assert messages.detect_lang() == "zh"
-    monkeypatch.delenv("SMART_SUMMARIZE_LANG")
+    monkeypatch.delenv("MYAGENTRAG_LANG")
     # 未设置时应有确定值（zh 或 en，取决于宿主系统）
     assert messages.detect_lang() in ("zh", "en")
 

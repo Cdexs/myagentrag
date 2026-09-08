@@ -28,7 +28,7 @@ def test_triple_matrix(monkeypatch):
 def test_asset_url_built_from_triple(monkeypatch):
     monkeypatch.setattr(runtime.sys, "platform", "win32")
     monkeypatch.setattr(runtime.platform, "machine", lambda: "AMD64")
-    monkeypatch.delenv("SMART_SUMMARIZE_PYTHON_MIRROR", raising=False)
+    monkeypatch.delenv("MYAGENTRAG_PYTHON_MIRROR", raising=False)
     asset = (f"cpython-{runtime.PYTHON_VERSION}+{runtime.PYTHON_BUILD_TAG}"
              f"-{runtime._triple()}-install_only_stripped.tar.gz")
     assert asset.startswith("cpython-3.12.")

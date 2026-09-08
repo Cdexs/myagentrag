@@ -3,8 +3,8 @@
 
 技能与用户系统 Python 彻底解耦（用户决策 2026-09-06）：
 - CPython 3.12 独立构建（python-build-standalone install_only tarball，SHA256 校验）
-  装到 ~/.smart-summarize/runtime/python/；
-- venv（~/.smart-summarize/runtime/venv/）安装 scripts/requirements-libs.txt 锁定的扩展库；
+  装到 ~/.myagentrag/runtime/python/；
+- venv（~/.myagentrag/runtime/venv/）安装 scripts/requirements-libs.txt 锁定的扩展库；
 - 本模块可在"引导层"运行——引导层是任意 Python ≥3.8，**只允许标准库**
   （下载用 urllib、解压用 tarfile，禁 import requests/pip 库）；
 - 不设置任何系统环境变量；路径全部由受管目录 MANAGED_HOME 进程内解析。
@@ -31,11 +31,11 @@ RUNTIME_VENV_DIR = RUNTIME_DIR / "venv"      # 扩展库 venv
 RUNTIME_MANIFEST = RUNTIME_DIR / "manifest.json"
 
 PYTHON_VERSION = "3.12.14"
-PYTHON_BUILD_TAG = os.environ.get("SMART_SUMMARIZE_PYTHON_BUILD_TAG", "20260901")
+PYTHON_BUILD_TAG = os.environ.get("MYAGENTRAG_PYTHON_BUILD_TAG") or os.environ.get("SMART_SUMMARIZE_PYTHON_BUILD_TAG", "20260901")
 _PY_RELEASE_URL = (
     "https://github.com/astral-sh/python-build-standalone/releases/download/"
     f"{PYTHON_BUILD_TAG}")
-_PY_MIRROR = os.environ.get("SMART_SUMMARIZE_PYTHON_MIRROR")  # 覆盖 Python 本体下载源
+_PY_MIRROR = os.environ.get("MYAGENTRAG_PYTHON_MIRROR") or os.environ.get("SMART_SUMMARIZE_PYTHON_MIRROR")  # 覆盖 Python 本体下载源
 
 RUNTIME_REQUIREMENTS = Path(__file__).resolve().parent / "requirements-libs.txt"
 
@@ -186,7 +186,7 @@ def install_runtime():
         print("  ⬇ 安装提取扩展库（requests/pdfplumber/pymupdf/python-docx/"
               "ebooklib/openpyxl/python-pptx/yt-dlp）...", file=sys.stderr)
         cmd = [str(vpy), "-m", "pip", "install", "-r", str(RUNTIME_REQUIREMENTS)]
-        index_url = os.environ.get("SMART_SUMMARIZE_PIP_INDEX_URL")
+        index_url = os.environ.get("MYAGENTRAG_PIP_INDEX_URL") or os.environ.get("SMART_SUMMARIZE_PIP_INDEX_URL")
         if index_url:
             cmd += ["--index-url", index_url]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)

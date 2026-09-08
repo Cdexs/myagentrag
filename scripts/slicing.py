@@ -18,7 +18,7 @@ def _default_temp_base_dir():
     """受管临时根目录：显式环境变量优先，否则系统临时目录"""
     import os
     import tempfile
-    configured = os.environ.get("SMART_SUMMARIZE_TMPDIR")
+    configured = os.environ.get("MYAGENTRAG_TMPDIR") or os.environ.get("SMART_SUMMARIZE_TMPDIR")
     if configured:
         return Path(configured).expanduser()
     return Path(tempfile.gettempdir())

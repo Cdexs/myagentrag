@@ -3,7 +3,7 @@
 
 集中管理全部面向用户的反馈字符串（zh/en），避免文案散落：
 
-- 语言优先级：``--lang`` 显式参数 > 环境变量 SMART_SUMMARIZE_LANG > 系统语言自动探测 > zh
+- 语言优先级：``--lang`` 显式参数 > 环境变量 MYAGENTRAG_LANG > 系统语言自动探测 > zh
 - JSON 失败结构：``error``（当前语言文案）+ ``error_i18n: {"zh": ..., "en": ...}``（双份，
   调用方 agent 可按自身界面语言选用）
 - 原始异常文本（str(e)）不翻译，保持单语 error，不加 error_i18n
@@ -367,8 +367,8 @@ MESSAGES = {
         "en": "Skill-dedicated Python runtime (fully isolated from system Python; bundles all extraction libraries and the FTS5 search engine)",
     },
     "dep_source_runtime": {
-        "zh": "python-build-standalone（CPython 3.12 独立构建，SHA256 校验）+ PyPI 锁定扩展库 → ~/.smart-summarize/runtime/",
-        "en": "python-build-standalone (standalone CPython 3.12, SHA256 verified) + pinned libraries from PyPI → ~/.smart-summarize/runtime/",
+        "zh": "python-build-standalone（CPython 3.12 独立构建，SHA256 校验）+ PyPI 锁定扩展库 → ~/.myagentrag/runtime/",
+        "en": "python-build-standalone (standalone CPython 3.12, SHA256 verified) + pinned libraries from PyPI → ~/.myagentrag/runtime/",
     },
     "dep_size_runtime": {
         "zh": "约 150 MB 下载 / 约 350 MB 磁盘（以实际为准）",
@@ -379,24 +379,24 @@ MESSAGES = {
         "en": "Vector-search embedding engine (CPU inference, same mechanism as whisper-cli; isolated subdirectory to avoid ggml DLL conflicts)",
     },
     "dep_source_llama_embed": {
-        "zh": "GitHub Releases（llama.cpp {tag}，Windows zip / macOS brew / Linux 源码构建）→ ~/.smart-summarize/bin/llama/",
-        "en": "GitHub Releases (llama.cpp {tag}: Windows zip / macOS brew / Linux source build) → ~/.smart-summarize/bin/llama/",
+        "zh": "GitHub Releases（llama.cpp {tag}，Windows zip / macOS brew / Linux 源码构建）→ ~/.myagentrag/bin/llama/",
+        "en": "GitHub Releases (llama.cpp {tag}: Windows zip / macOS brew / Linux source build) → ~/.myagentrag/bin/llama/",
     },
     "dep_purpose_embedding_model": {
         "zh": "向量检索模型 {model}（中英文语义嵌入，本地推理）",
         "en": "Vector-search model {model} (zh/en semantic embeddings, local inference)",
     },
     "dep_source_embedding_model": {
-        "zh": "HuggingFace（可配 SMART_SUMMARIZE_HF_MIRROR 镜像）→ ~/.smart-summarize/models/embedding/{model}/",
-        "en": "HuggingFace (SMART_SUMMARIZE_HF_MIRROR supported) → ~/.smart-summarize/models/embedding/{model}/",
+        "zh": "HuggingFace（可配 MYAGENTRAG_HF_MIRROR 镜像）→ ~/.myagentrag/models/embedding/{model}/",
+        "en": "HuggingFace (MYAGENTRAG_HF_MIRROR supported) → ~/.myagentrag/models/embedding/{model}/",
     },
     "dep_purpose_sqlite_vec": {
         "zh": "向量检索加速后端（SQLite C 扩展，库内 SIMD 扫描，降低内存占用）",
         "en": "Vector-search acceleration backend (SQLite C extension, in-DB SIMD scan, lower memory)",
     },
     "dep_source_sqlite_vec": {
-        "zh": "PyPI（可配 SMART_SUMMARIZE_PIP_INDEX_URL 镜像）/ GitHub Releases → 专用运行时 venv",
-        "en": "PyPI (SMART_SUMMARIZE_PIP_INDEX_URL supported) / GitHub Releases → dedicated runtime venv",
+        "zh": "PyPI（可配 MYAGENTRAG_PIP_INDEX_URL 镜像）/ GitHub Releases → 专用运行时 venv",
+        "en": "PyPI (MYAGENTRAG_PIP_INDEX_URL supported) / GitHub Releases → dedicated runtime venv",
     },
 }
 
@@ -410,8 +410,8 @@ def set_lang(lang):
 
 
 def detect_lang():
-    """系统语言自动探测：SMART_SUMMARIZE_LANG → Windows UI 语言 → POSIX locale → zh。"""
-    env = os.environ.get("SMART_SUMMARIZE_LANG")
+    """系统语言自动探测：MYAGENTRAG_LANG → Windows UI 语言 → POSIX locale → zh。"""
+    env = os.environ.get("MYAGENTRAG_LANG") or os.environ.get("MYAGENTRAG_LANG")
     if env and env[:2].lower() in SUPPORTED_LANGS:
         return env[:2].lower()
     if sys.platform == "win32":

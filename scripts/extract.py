@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-智能内容提取工具 (smart-summarize)
+智能内容提取工具 (MyAgentRAG)
 功能：提取 YouTube/B站/网页/本地文件内容，不调用 LLM
 支持格式：txt, md, pdf, docx, doc, epub, mp3, wav, mp4, mkv, 等
 
@@ -109,7 +109,7 @@ def _runtime_gate(args):
     - 缺失 → 复用组件确认 UI 引导安装（不回退用户环境），
       SMART_SUMMARIZE_NO_RUNTIME=1 时跳过（测试用）。
     """
-    if os.environ.get("SMART_SUMMARIZE_NO_RUNTIME"):
+    if os.environ.get("MYAGENTRAG_NO_RUNTIME") or os.environ.get("SMART_SUMMARIZE_NO_RUNTIME"):
         return
     r = runtime.ensure_runtime(allow_install=args.download_deps)
     if r["status"] == "ok-current":
@@ -420,7 +420,7 @@ def main():
         (args.search and args.mode in ("fused", "vector"))
         or args.embed
         or (args.workspace and (args.url or args.file) and not args.no_embed))
-    if needs_embed and not os.environ.get("SMART_SUMMARIZE_NO_RUNTIME"):
+    if needs_embed and not os.environ.get("MYAGENTRAG_NO_RUNTIME") or os.environ.get("SMART_SUMMARIZE_NO_RUNTIME"):
         _kb_gate(args)
 
     if args.chunk and not args.entry:
