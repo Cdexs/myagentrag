@@ -1263,8 +1263,10 @@ def _rrf_fuse(fts_hits, vec_hits, limit, k=60, hd_hits=None):
         key = (h["workspace"], h["entry_id"], h["chunk_no"])
         h["score_source"] = "fts"
         hits.setdefault(key, h)
-        scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
-        route_scores.setdefault(key, {})["fts"] = scores[key]
+        before = scores.get(key, 0.0)
+        scores[key] = before + 1.0 / (k + rank + 1)
+        _rs = route_scores.setdefault(key, {})
+        _rs["fts"] = _rs.get("fts", 0.0) + (scores[key] - before)   # 本路贡献累加（R1）
     for rank, h in enumerate(vec_hits):
         key = (h["workspace"], h["entry_id"], h["chunk_no"])
         if key in hits:
@@ -1274,14 +1276,18 @@ def _rrf_fuse(fts_hits, vec_hits, limit, k=60, hd_hits=None):
         else:
             h["score_source"] = "vector"
             hits[key] = h
-        scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
-        route_scores.setdefault(key, {})["vector"] = scores[key]
+        before = scores.get(key, 0.0)
+        scores[key] = before + 1.0 / (k + rank + 1)
+        _rs = route_scores.setdefault(key, {})
+        _rs["vector"] = _rs.get("vector", 0.0) + (scores[key] - before)   # 同 key 多窗口累加（R1）
     for rank, h in enumerate(hd_hits or []):
         key = (h["workspace"], h["entry_id"], "h%d" % h["heading_rowid"])
         h["score_source"] = "heading"
         hits.setdefault(key, h)
-        scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
-        route_scores.setdefault(key, {})["heading"] = scores[key]
+        before = scores.get(key, 0.0)
+        scores[key] = before + 1.0 / (k + rank + 1)
+        _rs = route_scores.setdefault(key, {})
+        _rs["heading"] = _rs.get("heading", 0.0) + (scores[key] - before)   # 累加（R1）
     ordered = sorted(scores.items(), key=lambda x: -x[1])[:limit]
     out = []
     for key, sc in ordered:
@@ -1386,14 +1392,24 @@ def _polish_one(h, info, idx):
     if idx >= 0:
         rowid, text_, level, off_ = hs[idx]
         h["heading"] = {"text": text_, "level": level}
-        h["section_ref"] = "%s#s%d" % (h["entry_id"], rowid)
+        hoff = _hit_offset(h)
+        h["section_ref"] = ("%s#s%d@%d" % (h["entry_id"], rowid, hoff)
+                            if hoff is not None else "%s#s%d" % (h["entry_id"], rowid))
         end = hs[idx + 1][3] if idx + 1 < len(hs) else (info["total_chars"] or 0)
         h["section_chars"] = max(0, end - off_)
     else:
         # 首个标题之前的区域（前言/目录）：哨兵引用 #front 保证任何命中都可精读（S2）
         h["section_ref"] = "%s#front" % h["entry_id"]
         h["section_chars"] = hs[0][3] if hs else (info["total_chars"] or 0)
-    h["source_loc"] = _source_loc_for(info, _hit_offset(h))
+    loc = _source_loc_for(info, _hit_offset(h))
+    h["source_loc"] = loc
+    if loc and loc.get("kind") == "time":
+        # N2：命中词真实位置（hit_offset/win_start）对齐 source_map time 行 → 段级时间戳
+        h["start_ms"] = loc["start_ms"]
+        h["end_ms"] = loc["end_ms"]
+        h["timestamp_precision"] = ("segment" if h.get("hit_offset") is not None
+                                    else "window" if h.get("win_start") is not None
+                                    else "chunk")
     h["source_ref"] = info.get("source_ref")
     for k in ("offset", "win_start", "win_end", "heading_rowid",
               "heading_offset", "hit_offset", "full_path"):
@@ -1433,9 +1449,10 @@ def _aggregate_and_polish(hits):
         _rs = {}
         for _m, _i, _f in members:
             for _r, _v in (_m.get("scores") or {}).items():
-                _rs[_r] = max(_rs.get(_r, 0.0), _v)
+                _rs[_r] = _rs.get(_r, 0.0) + _v      # 按路求和（R1 附带：聚合层合并语义）
         if _rs:
             rep["scores"] = {r: round(v, 4) for r, v in _rs.items()}
+            rep["score"] = round(sum(_rs.values()), 4)   # 聚合分=各路总和，score==Σscores 恒成立
         labels = [lbl for lbl in ("fused", "heading", "fts", "vector")
                   if any(m[0].get("score_source") == lbl for m in members)]
         if labels:
@@ -1552,13 +1569,20 @@ def _read_front(con, d, ws_name, entry_id):
             "content": text[:end]}
 
 
-def _read_section(con, d, ws_name, ref):
+def _read_section(con, d, ws_name, ref, max_chars=30000):
     """按检索返回的 section_ref（<entry_id>#s<rowid>）精读整节内容。
 
     ref 为不透明引用：agent 原样传回即可，无需理解内部结构。
     """
     if ref.endswith("#front"):
         return _read_front(con, d, ws_name, ref[:-len("#front")])
+    at = None
+    if "@" in ref:                      # R4：命中偏移后缀（#s5@offset），先剥离再解析行号
+        ref, at_s = ref.rsplit("@", 1)
+        try:
+            at = int(at_s)
+        except ValueError:
+            return messages.err_result("ws_section_not_found", ref=ref)
     try:
         entry_id, srowid = ref.split("#s", 1)
         srowid = int(srowid)
@@ -1577,21 +1601,46 @@ def _read_section(con, d, ws_name, ref):
     text = full_file.read_text(encoding="utf-8") if full_file.exists() else ""
     end = nxt[0] if nxt else len(text)
     info = _load_exit_info(con, d, entry_id)
+    # R4：ref 携带命中偏移（#s5@offset）→ 以命中位置为中心开窗，而非固定取节首
+    start = hs[3]
+    if at is not None and (end - start) > max_chars > 0:
+        half = max_chars // 2
+        wstart = max(start, min(at - half, end - max_chars))
+        wend = min(end, wstart + max_chars)
+    else:
+        wstart = start
+        wend = end
+    content, cap = _cap_text(text[wstart:wend], max_chars)
     sec = {"ref": ref, "heading": {"text": hs[1], "level": hs[2]},
            "chars": max(0, end - hs[3]),
-           "source_loc": _source_loc_for(info, hs[3])}
-    return {"success": True, "workspace": ws_name, "entry": _entry_meta(e),
-            "section": sec, "content": text[hs[3]:end]}
+           "read_chars": len(content),
+           "source_loc": _source_loc_for(info, at if at is not None else hs[3])}
+    out = {"success": True, "workspace": ws_name, "entry": _entry_meta(e),
+            "section": sec, "content": content}
+    if cap:
+        out.update(cap)
+        out["truncated"] = True
+    return out
 
 
-def ws_read_entry(ws_name, entry_id, chunk_no=None, section=None):
+def _cap_text(text, max_chars):
+    """N3：读路径统一长度保护；段落边界对齐截断，返回 (内容, 截断信息|None)"""
+    if not max_chars or max_chars <= 0 or len(text) <= max_chars:
+        return text, None
+    cut = text.rfind("\n", 0, max_chars)
+    if cut < max_chars // 2:
+        cut = max_chars                      # 半径内无段落边界 → 硬截
+    return text[:cut], {"total_chars": len(text), "remaining_chars": len(text) - cut}
+
+
+def ws_read_entry(ws_name, entry_id, chunk_no=None, section=None, max_chars=30000):
     d = ws_dir(ws_name)
     if d is None:
         return messages.err_result("ws_not_found", name=ws_name)
     con = _connect(d / WORKSPACE_DB)
     try:
         if section:
-            return _read_section(con, d, ws_name, section)
+            return _read_section(con, d, ws_name, section, max_chars=max_chars)
         e = _get_entry(con, entry_id)
         if not e:
             return messages.err_result("ws_entry_not_found", eid=entry_id, ws=ws_name)
@@ -1601,12 +1650,22 @@ def ws_read_entry(ws_name, entry_id, chunk_no=None, section=None):
                             " FROM chunks WHERE entry_id=? AND chunk_no=?", (entry_id, chunk_no)).fetchone()
             if not c:
                 return messages.err_result("ws_entry_not_found", eid=f"{entry_id}#chunk{chunk_no}", ws=ws_name)
-            return {"success": True, "workspace": ws_name, "entry": meta,
+            content, cap = _cap_text(c[1], max_chars)   # R2：chunk 40K 也可能超上限
+            out = {"success": True, "workspace": ws_name, "entry": meta,
                     "chunk": {"chunk_no": c[0], "chars": c[3],
-                              "start_ms": c[4], "end_ms": c[5]}, "content": c[1]}
+                              "start_ms": c[4], "end_ms": c[5]}, "content": content}
+            if cap:
+                out.update(cap)
+                out["truncated"] = True
+            return out
         full_file = d / "entries" / entry_id / "full.md"
         text = full_file.read_text(encoding="utf-8") if full_file.exists() else ""
-        return {"success": True, "workspace": ws_name, "entry": meta, "chunk": None, "content": text}
+        text, cap = _cap_text(text, max_chars)   # R2：entry 分支同样受保护
+        out = {"success": True, "workspace": ws_name, "entry": meta, "chunk": None, "content": text}
+        if cap:
+            out.update(cap)
+            out["truncated"] = True
+        return out
     finally:
         _close(con)
 

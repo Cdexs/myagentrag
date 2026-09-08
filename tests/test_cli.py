@@ -219,3 +219,44 @@ def test_workspace_at_prefix(cli_env, tmp_path):
     assert "AT库" in [w["name"] for w in lst["workspaces"]]
     s = jout(run(cli_env, "--workspace", "@AT库", "--search", "约定"))
     assert s["success"] and s["total"] >= 1 and s["workspace"] == "AT库"
+
+
+def test_n5_supersedes_dual_path(cli_env, tmp_path):
+    """N5+R3：同源内容变更重入库——小文档路径 supersedes 可见；--replace 清理；
+    supersedes 非空场景端到端断言"""
+    p = tmp_path / "n5doc.md"
+    p.write_text("第一版内容叙述。" * 200, encoding="utf-8")
+    r1 = jout(run(cli_env, "--file", str(p), "--workspace", "CLI_N5库", "--no-embed"))
+    assert r1["success"] and r1["workspace"]["supersedes"] == []
+    p.write_text("内容已经变更的新叙述。" * 200, encoding="utf-8")   # 同源内容变更
+    r2 = jout(run(cli_env, "--file", str(p), "--workspace", "CLI_N5库", "--no-embed"))
+    assert r1["workspace"]["entry_id"] in r2["workspace"]["supersedes"]  # 非空（R3 断言）
+    assert r2["workspace"]["title"] == "n5doc"           # S5 标题剥离扩展名
+    p.write_text("第三次变更内容再改。" * 200, encoding="utf-8")
+    r3 = jout(run(cli_env, "--file", str(p), "--workspace", "CLI_N5库", "--no-embed",
+                  "--replace"))
+    assert r3["workspace"]["replaced"] is True
+    assert jout(run(cli_env, "--workspace", "CLI_N5库", "--list"))["total"] == 1
+
+
+def test_n5_slice_path_workspace_preserved(cli_env, tmp_path):
+    """N5 深层：>256K 走分片路径，workspace 信息（含 entry_id）不丢失"""
+    p = tmp_path / "big.md"
+    p.write_text("超大文档分片路径验证内容。" * 30000, encoding="utf-8")   # >256K
+    r = run(cli_env, "--file", str(p), "--workspace", "CLI分片库", "--no-embed",
+            "--title", "分片库")
+    j = jout(r)
+    assert j["platform"] == "slices"                     # 确认走了分片路径
+    assert j.get("workspace", {}).get("entry_id")        # 入库信息未被覆盖丢失
+
+
+def test_n3_max_chars_cli(cli_env, tmp_path):
+    doc = tmp_path / "cap.md"
+    doc.write_text("截断上限验证内容。" * 5000, encoding="utf-8")
+    j = jout(run(cli_env, "--file", str(doc), "--workspace", "CLI截库", "--no-embed",
+                 "--title", "截"))
+    eid = j["workspace"]["entry_id"]
+    j2 = jout(run(cli_env, "--workspace", "CLI截库", "--entry", eid, "--max-chars", "800"))
+    assert j2["truncated"] is True and j2["remaining_chars"] > 0
+    j3 = jout(run(cli_env, "--workspace", "CLI截库", "--entry", eid, "--max-chars", "0"))
+    assert "truncated" not in j3

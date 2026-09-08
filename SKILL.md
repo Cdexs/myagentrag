@@ -130,7 +130,7 @@ agent 直接阅读 content 总结回答，不涉及知识库与任何依赖安�
 "$PYTHON" "$EXTRACTOR" --file "book.epub" --workspace 我的书架
 ```
 
-入库结果含 entry_id/chunk_count/vectors（向量窗口数）；随后 agent 阅读提取文本给摘要。首次使用知识库会一次性引导安装嵌入链（llama.cpp 引擎 ~34MB + Qwen3 模型 ~610MB + sqlite-vec ~0.3MB）：交互终端直接 y/N；agent 先向用户展示清单征得同意，再以 `--download-deps` 重跑。库不存在隐式创建；同名内容幂等只更新。
+入库结果含 entry_id/chunk_count/vectors（向量窗口数）；随后 agent 阅读提取文本给摘要。首次使用知识库会一次性引导安装嵌入链（llama.cpp 引擎 ~34MB + Qwen3 模型 ~610MB + sqlite-vec ~0.3MB）：交互终端直接 y/N；agent 先向用户展示清单征得同意，再以 `--download-deps` 重跑。库不存在隐式创建；同名内容幂等只更新。**同源重入库**（source_ref 相同）内容变更时会产生新条目，响应 `workspace.supersedes` 列出旧条目 id 并在 stderr 警告——确认后 `--remove <旧id>` 清理，或入库时加 `--replace` 自动替换。
 
 **③ "我之前存过的那份资料里关于 X 讲了什么"（检索→精读闭环，推荐主路径）**
 
@@ -336,7 +336,7 @@ agent 收到清单后的标准流程（写入 SKILL.md 供所有 agent 遵循）
 "$PYTHON" "$EXTRACTOR" --workspace 我的资料 --section <section_ref>       # 精读命中所在整节（推荐）
 ```
 
-命中落在首个标题之前（前言/目录区）时 `section_ref` 为 `entry_id#front` 哨兵引用，同样可 `--section` 精读。检索命中附 `section_ref`（不透明引用）与 `section_chars`——agent 将 ref 原样传给 `--section` 即可精读整节；媒体命中带 `start_ms/end_ms` 时间戳（配 `--play --at` 定位回放）。
+命中落在首个标题之前（前言/目录区）时 `section_ref` 为 `entry_id#front` 哨兵引用，同样可 `--section` 精读。检索命中附 `section_ref`（不透明引用）与 `section_chars`——agent 将 ref 原样传给 `--section` 即可精读整节。**读取默认上限 30,000 字符**（`--max-chars` 对 entry/chunk/section 三读路径统一生效；0=不限），超出截断并标注 `truncated/total_chars/remaining_chars`；超大节按命中位置开窗返回（`section_ref` 内嵌命中偏移），保证内容围绕命中词。媒体命中带 `start_ms/end_ms` 时间戳（精确到命中词所在段落，`timestamp_precision: segment/window/chunk` 标注精度来源；配 `--play --at` 定位回放）。
 
 ### 管理操作全集
 
@@ -344,7 +344,7 @@ agent 收到清单后的标准流程（写入 SKILL.md 供所有 agent 遵循）
 | ----- | ------------------------------------------------ |
 | 显式创建  | `--workspace <名> --create`                       |
 | 列举库   | `--workspace-list`                               |
-| 删除库   | `--workspace <名> --delete-workspace`（需 `--yes`）  |
+| 删除库   | `--workspace <名> --delete-workspace`（需 `--yes`；误用 `--delete-workspace <名>` 走 usage 错误，须配 --workspace） |
 | 重命名   | `--workspace <旧名> --rename <新名>`                 |
 | 统计    | `--workspace <名> --stats`（条目/字符/分片/来源分布/db 体积）   |
 | 条目列举  | `--workspace <名> --list`                         |

@@ -795,3 +795,54 @@ def test_metadata_reuse_and_title_strip(ws_mod):
     e = ws_mod.ws_list_entries("库S5")["entries"][0]
     assert e["author"] == "原作者"
     assert ws_mod._entry_title_hint(None, "任意", "x")  # hint 存在
+
+
+def test_n1_route_scores_invariant(ws_mod):
+    """N1+R1：scores 为各路真实贡献（多窗口同 key 累加），score==Σscores 恒成立"""
+    ws_mod.ws_ingest("库N1", content="多窗口贡献验证 reserve alpha 内容。" * 400, title="N1")
+    s = ws_mod.ws_search("库N1", "reserve alpha", mode="fused")
+    assert s["total"] >= 1
+    checked = 0
+    for h in s["hits"]:
+        if "scores" in h:
+            assert abs(h["score"] - round(sum(h["scores"].values()), 4)) < 1e-3
+            assert all(v > 0 for v in h["scores"].values())
+            checked += 1
+    assert checked >= 1
+
+
+def test_n2_media_timestamp_override(ws_mod):
+    """N2：命中时间戳精确到命中词所在段落（time 账本覆写 chunk 级全文件区间）"""
+    segs = [{"text": "开场白内容叙述甲。" * 30, "start_ms": 0, "end_ms": 20000},
+            {"text": "关键主题 reserve 讨论段乙。" * 30, "start_ms": 60000, "end_ms": 90000},
+            {"text": "结尾收束内容丙。" * 30, "start_ms": 120000, "end_ms": 150000}]
+    ws_mod.ws_ingest("库N2", segments=segs, title="音频", source_type="audio", no_embed=True)
+    s = ws_mod.ws_search("库N2", "reserve 讨论段", mode="fts")
+    assert s["total"] >= 1
+    h = s["hits"][0]
+    assert 60000 <= h["start_ms"] < 90000          # 覆写为命中词所在段，而非 0~150000
+    assert h["timestamp_precision"] == "segment"
+    assert h["source_loc"]["kind"] == "time"
+
+
+def test_r4_windowed_section_read(ws_mod):
+    """R4：section_ref 携带命中偏移，开窗返回含命中词的内容"""
+    text = "# 条款A 标题\n" + "甲" * 120000 + "\n此处 reserve 关键内容深藏。\n" + "乙" * 120000
+    ws_mod.ws_ingest("库N3", content=text, title="长节", no_embed=True)
+    s = ws_mod.ws_search("库N3", "reserve", mode="fts")
+    ref = s["hits"][0]["section_ref"]
+    assert "@" in ref                              # 命中偏移已内嵌
+    r = ws_mod.ws_read_entry("库N3", None, section=ref, max_chars=30000)
+    assert r["success"] and "reserve" in r["content"]   # 开窗以命中为中心，内容含命中词
+
+
+def test_n3_read_cap_truncated(ws_mod, tmp_path):
+    """N3+R2：entry/chunk/section 读路径统一截断标注 truncated/remaining_chars"""
+    text = "# 节甲\n" + "长" * 40000
+    ws_mod.ws_ingest("库N3b", content=text, title="截断", no_embed=True)
+    eid = ws_mod.ws_list_entries("库N3b")["entries"][0]["id"]
+    r = ws_mod.ws_read_entry("库N3b", eid, max_chars=1000)
+    assert r["truncated"] and r["total_chars"] >= 40000 and r["remaining_chars"] > 0
+    assert len(r["content"]) <= 1000
+    r0 = ws_mod.ws_read_entry("库N3b", eid, max_chars=0)   # 0=不限
+    assert "truncated" not in r0

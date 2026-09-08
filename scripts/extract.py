@@ -182,9 +182,11 @@ def _run_workspace_ops(args):
                                    mode=args.mode, no_embed=args.no_embed,
                                    limit=min(max(args.limit, 1), 100))
     if args.section:
-        return workspace.ws_read_entry(W, None, section=args.section)
+        return workspace.ws_read_entry(W, None, section=args.section,
+                                       max_chars=max(0, args.max_chars))
     if args.entry:
-        return workspace.ws_read_entry(W, args.entry, chunk_no=args.chunk)
+        return workspace.ws_read_entry(W, args.entry, chunk_no=args.chunk,
+                                       max_chars=max(0, args.max_chars))
     if args.remove:
         return workspace.ws_remove_entry(W, args.remove, yes=args.yes)
     if args.verify:
@@ -241,9 +243,18 @@ def _maybe_ingest(args, result):
     ing = workspace.ws_ingest(args.workspace, **kwargs)
     if ing.get("success"):
         result["workspace"] = {"name": args.workspace, "entry_id": ing["entry_id"],
+                               "title": ing.get("title"),
                                "chunk_count": ing["chunk_count"], "vectors": ing["vectors"],
-                               "total_chars": ing["total_chars"], "updated": ing["updated"]}
-        print(f"  📥 {ing['message']}", file=sys.stderr)
+                               "total_chars": ing["total_chars"], "updated": ing["updated"],
+                               "supersedes": ing.get("supersedes") or [],
+                               "replaced": ing.get("replaced", False),
+                               "message": ing.get("message"),
+                               "message_i18n": ing.get("message_i18n")}
+        if ing.get("supersedes"):   # N5：同源旧条目警告对 agent 可见（非交互路径）
+            print(messages.msg("ingest_supersedes",
+                               ids=", ".join(ing["supersedes"])), file=sys.stderr)
+        else:
+            print(f"  📥 {ing['message']}", file=sys.stderr)
     else:
         result["workspace_error"] = ing
     return result
@@ -362,6 +373,8 @@ def main():
                         help='本次不做向量嵌入（入库仅建 FTS 索引；检索仅走 FTS 路）')
     parser.add_argument('--all-workspaces', action='store_true', help='跨全部 workspace 检索（与 --search 搭配）')
     parser.add_argument('--limit', type=int, default=20, metavar='N', help='检索返回条数上限（1..100，默认 20）')
+    parser.add_argument('--max-chars', type=int, default=30000, metavar='N',
+                        help='读取内容上限（字符；0=不限；默认 30000，超出截断并标注 truncated/remaining_chars）')
     parser.add_argument('--entry', metavar='ID', help='读取条目 full.md 全文')
     parser.add_argument('--chunk', type=int, metavar='N', help='配合 --entry 读取指定分片')
     parser.add_argument('--section', metavar='REF', help='精读检索返回的章节引用（如 e12ab34d#s5）')
@@ -436,8 +449,11 @@ def main():
         # slice protocol：超过阈值的内容分片落盘，stdout 只输出清单——
         # agent 按清单逐片读取（塞爆上下文的物理上限被提取器锁死）
         title = result.get("title") or result.get("filename") or str(args.file)
+        _ws_info = result.get("workspace")   # 分片覆盖前保留入库信息（N5 深层根因）
         result = write_slices(title, args.file, result["content"],
                               args_slice=args.slice)
+        if _ws_info:
+            result["workspace"] = _ws_info
     if args.output == 'json':
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.output == 'srt':
