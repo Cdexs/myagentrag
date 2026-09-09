@@ -686,11 +686,11 @@ def test_db_call_retry_on_locked(ws_mod, monkeypatch):
     calls = {"n": 0}
     real = ws_mod._fts_search_one
 
-    def flaky(con, ws_name, match, like_terms, limit, phrases=None):
+    def flaky(con, ws_name, match, like_terms, limit, phrases=None, entry_set=None):
         calls["n"] += 1
         if calls["n"] == 1:
             raise s3.OperationalError("database is locked")
-        return real(con, ws_name, match, like_terms, limit, phrases=phrases)
+        return real(con, ws_name, match, like_terms, limit, phrases=phrases, entry_set=entry_set)
     monkeypatch.setattr(ws_mod, "_fts_search_one", flaky)
     s = ws_mod.ws_search("库R1", "重试机制", mode="fts")
     assert s["success"] and s["total"] >= 1 and calls["n"] == 2
@@ -702,7 +702,7 @@ def test_db_call_non_retryable_error(ws_mod, monkeypatch):
     ws_mod.ws_ingest("库R2", content="非重试错误验证。", title="N")
     calls = {"n": 0}
 
-    def boom(con, ws_name, match, like_terms, limit, phrases=None):
+    def boom(con, ws_name, match, like_terms, limit, phrases=None, entry_set=None):
         calls["n"] += 1
         raise s3.OperationalError("no such table: entries_fts")
     monkeypatch.setattr(ws_mod, "_fts_search_one", boom)
@@ -967,3 +967,68 @@ def test_fused_oversample_small_limit(ws_mod):
     assert r["success"] and r["total"] == 1
     assert r["vector_available"] is True
     assert r["hits"][0]["title"] in ("甲", "乙")
+
+
+# ---------- 元数据场景过滤 + 深度 PRAGMA（2026-09-09 性能轮二） ----------
+
+def test_connection_pragmas_and_indexes(ws_mod):
+    """深度调优 PRAGMA 生效 + entries 日期索引随幂等迁移创建 + 计划命中索引"""
+    ws_mod.ws_ingest("P库", content="PRAGMA 验证内容。" * 10, title="P",
+                     publish_date="2024-05-01")
+    d = ws_mod.ws_dir("P库")
+    con = ws_mod._connect(d / "workspace.db")
+    assert con.execute("PRAGMA mmap_size").fetchone()[0] == 1073741824
+    assert con.execute("PRAGMA cache_size").fetchone()[0] == -64000
+    assert con.execute("PRAGMA temp_store").fetchone()[0] == 2       # MEMORY
+    assert con.execute("PRAGMA synchronous").fetchone()[0] == 1      # NORMAL (WAL)
+    idx = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    assert {"idx_entries_publish_date", "idx_entries_created_at"} <= idx
+    plan = " ".join(str(r) for r in con.execute(
+        "EXPLAIN QUERY PLAN SELECT id FROM entries WHERE publish_date >= ?",
+        ("2024",)).fetchall())
+    assert "idx_entries_publish_date" in plan   # QA 建议第 5 条：计划命中索引而非全表扫描
+
+
+def test_metadata_range_filter(ws_mod):
+    """范围过滤：publish_date>=2024 只召回 2024 年条目，且三路全部参与
+    （向量路带候选集约束——QA 文章方案的元数据过滤域落地）"""
+    ws_mod.ws_ingest("库MF", content="战役过程与结果验证内容。" * 20,
+                     title="旧战役", publish_date="2023-01-01")
+    ws_mod.ws_ingest("库MF", content="战役过程与结果验证内容。" * 20,
+                     title="新战役", publish_date="2024-06-01")
+    s = ws_mod.ws_search("库MF", "publish_date>=2024 战役", mode="fused")
+    assert s["success"] and s["column_filter"] is True
+    assert s["filtered_entries"] == 1
+    assert s["vector_available"] is True
+    assert {h["title"] for h in s["hits"]} <= {"新战役"}
+    assert s["total"] >= 1
+
+
+def test_metadata_range_filter_empty_candidates(ws_mod):
+    """范围过滤零候选：success:true + total:0 + filtered_entries:0（与库名错误可区分）"""
+    ws_mod.ws_ingest("库MF2", content="范围空候选验证内容。" * 10,
+                     title="X", publish_date="2023-01-01")
+    s = ws_mod.ws_search("库MF2", "publish_date>=2030 范围", mode="fused")
+    assert s["success"] and s["total"] == 0 and s["filtered_entries"] == 0
+    assert s["hits"] == []
+
+
+def test_range_only_query_errors(ws_mod):
+    """仅范围过滤无主题词：结构化错误（排序检索需主题词；浏览用 --list）"""
+    ws_mod.ws_ingest("库MF3", content="范围专用错误验证内容。" * 10, title="Y")
+    s = ws_mod.ws_search("库MF3", "publish_date>=2024")
+    assert s["success"] is False and "主题词" in s["error"] and "error_i18n" in s
+
+
+def test_column_filter_with_topic_three_routes(ws_mod):
+    """契约升级：列限定 + 主题词并存时，向量路不再被强制降级，
+    以候选 entry 集参与三路融合（旧行为：强制 FTS-only）"""
+    ws_mod.ws_ingest("库CT", content="列限定三路融合验证语义内容。" * 20,
+                     title="目标书籍", author="王小明")
+    ws_mod.ws_ingest("库CT", content="无关条目填充内容。" * 20,
+                     title="其他书籍", author="李四")
+    s = ws_mod.ws_search("库CT", "title:目标书籍 语义", mode="fused")
+    assert s["success"] and s["column_filter"] is True
+    assert s["vector_available"] is True          # 向量路参与（legacy 后端 = numpy）
+    assert s["filtered_entries"] == 1
+    assert {h["title"] for h in s["hits"]} == {"目标书籍"}

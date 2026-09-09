@@ -293,6 +293,10 @@ MESSAGES = {
         "zh": "请提供 --search 查询词",
         "en": "A --search query is required",
     },
+    "ws_range_only": {
+        "zh": "仅元数据范围过滤（publish_date/created_at 配 >=/<=/>/<）无法排序检索，请附加主题词（浏览可用 --list）",
+        "en": "Range-only filters (publish_date/created_at with >=/<=/>/<) cannot be ranked; add topic words (or use --list to browse)",
+    },
     "ws_name_required": {
         "zh": "该操作需要 --workspace <名>",
         "en": "This operation requires --workspace <name>",

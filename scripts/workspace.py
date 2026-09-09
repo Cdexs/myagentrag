@@ -186,6 +186,8 @@ CREATE TABLE IF NOT EXISTS vectors (
     model_id TEXT,
     embedding BLOB
 );
+CREATE INDEX IF NOT EXISTS idx_entries_publish_date ON entries(publish_date);
+CREATE INDEX IF NOT EXISTS idx_entries_created_at ON entries(created_at);
 """
 
 # v0.8.0 §8D 结构感知入库：标题锚点 + 源位置账本（老库经 _ensure_extra_tables 幂等迁移）
@@ -229,6 +231,10 @@ SCHEMA = SCHEMA + _V3_SCHEMA
 def _ensure_extra_tables(con):
     """老库幂等迁移：v0.8.0 新表（headings/headings_fts/source_map）缺失时补建。"""
     con.executescript(_V3_SCHEMA)
+    # 元数据过滤索引：老库补建（新库由 SCHEMA 自带）；空库（entries 未建）跳过
+    if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='entries'").fetchone():
+        con.execute("CREATE INDEX IF NOT EXISTS idx_entries_publish_date ON entries(publish_date)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_entries_created_at ON entries(created_at)")
     con.commit()
 
 
@@ -273,6 +279,12 @@ def _connect(db_path, create=True, rebuild=False):
     con.execute("PRAGMA journal_mode=WAL")
     # WAL 下同步降为 NORMAL：提交不逐次 fsync（防崩溃安全由 WAL 保留），批量入库明显提速
     con.execute("PRAGMA synchronous=NORMAL")
+    # 深度调优（产品大库场景）：mmap 上限 1GiB——虚拟地址空间按需缺页，无预占用，
+    # 大库读取省去 read() 拷贝；pager cache 64MB/连接（真实堆分配，按需增长）；
+    # 临时排序驻留内存。库超出 mmap 范围自动退回 read() 路径，优雅降级。
+    con.execute("PRAGMA mmap_size=1073741824")
+    con.execute("PRAGMA cache_size=-64000")
+    con.execute("PRAGMA temp_store=MEMORY")
     con.execute("PRAGMA user_version=3")  # v3：+headings/source_map（v0.8.0 §8D）
     _ensure_extra_tables(con)  # 老库幂等迁移（新连接保证一次）
     _CONN_POOL[key] = con
@@ -967,6 +979,8 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
 _FTS_KEYWORDS = {"AND", "OR", "NOT"}
 # FTS5 可限定的列名前缀（title:/author:/publisher:/publish_date:/chunk_text:）
 _COL_PREFIX_RE = re.compile(r"^(title|author|publisher|publish_date|chunk_text):(.+)$")
+# 元数据范围过滤（元数据场景过滤）：publish_date/created_at 为 TEXT ISO 形态，字典序即时间序
+_COL_RANGE_RE = re.compile(r"^(publish_date|created_at)(>=|<=|>|<)(.+)$")
 
 
 def _tokenize_query(q):
@@ -1008,7 +1022,7 @@ def _tokenize_query(q):
     return toks
 
 
-def build_fts_query(q):
+def build_fts_query(q, metadata_out=None):
     """用户查询 → (fts_match | None, like_terms, phrases)。
 
     ≥3 字词 → trigram 短语（语法转义）；自然词间以 OR 连接（召回优先，排序交给
@@ -1017,6 +1031,10 @@ def build_fts_query(q):
     <3 字词（trigram 无法命中）→ 回退 chunks 表 LIKE。
     phrases：参与 coverage 重排的正文自然词（去重；列前缀仅 chunk_text: 计入，
     title:/author: 等元数据过滤词不计——命中不在正文，coverage 无从统计）。
+    metadata_out：传入 list 时，元数据列限定（title/author/publisher/publish_date）
+    不再进 MATCH，改以 (col, val) 收集于此——由调用方构造候选 entry 集注入三路
+    （元数据场景过滤；chunk_text: 与范围 token 之外的所有列 token 均剥离）。
+    范围过滤 token（publish_date>=X 等）永远不进 MATCH（非 FTS 语法）。
     """
     parts, like_terms, phrases = [], [], []
     _seen_phr = set()
@@ -1040,9 +1058,15 @@ def build_fts_query(q):
         if up.startswith("NEAR("):
             parts.append(tok)
             continue
+        if _COL_RANGE_RE.match(tok):
+            continue
         cm = _COL_PREFIX_RE.match(tok)
         if cm:
             col, rest = cm.group(1), cm.group(2).strip('"')
+            if metadata_out is not None and col != "chunk_text":
+                if rest:
+                    metadata_out.append((col, rest))
+                continue
             if len(rest) >= 3:
                 quoted = f'{col}:"{rest.replace(chr(34), chr(34) * 2)}"'
                 _term(quoted, rest if col == "chunk_text" else None)
@@ -1134,18 +1158,25 @@ def _coverage_presort(con, rows, phrases):
     return sorted(rows, key=lambda r: (-cov.get(r[0], 0), r[1]))
 
 
-def _fts_search_one(con, ws_name, match, like_terms, limit, phrases=None):
+def _fts_search_one(con, ws_name, match, like_terms, limit, phrases=None, entry_set=None):
     """FTS5 + LIKE 路。自然词查询两阶段：OR 召回（cap 500）→ coverage/tf 重排
     （coverage↓ > tf↓ > bm25↑）；纯运算符/列过滤查询走 bm25 原路。
     score = coverage（命中查询词数/总词数，0..1），bm25 原值全精度在 fts_detail。
-    """
+    entry_set：(SQL, params) 候选 entry 集合子查询（元数据过滤），非 None 时
+    以 rowid IN (SELECT rowid FROM chunks WHERE entry_id IN (…)) 限定检索范围。"""
     phrases = phrases or []
     hits, seen = [], set()
+    entry_cond, entry_params = "", []
+    if entry_set:
+        entry_cond = (" AND rowid IN (SELECT rowid FROM chunks WHERE entry_id IN (%s))"
+                      % entry_set[0])
+        entry_params = list(entry_set[1])
     if match:
         rows = con.execute(
             "SELECT rowid, bm25(entries_fts) FROM entries_fts"
-            " WHERE entries_fts MATCH ? ORDER BY bm25(entries_fts) LIMIT 500",
-            (match,)).fetchall()
+            " WHERE entries_fts MATCH ?" + entry_cond
+            + " ORDER BY bm25(entries_fts) LIMIT 500",
+            [match] + entry_params).fetchall()
         if phrases:
             cand = _coverage_presort(con, rows, phrases)[:max(60, 3 * limit)]
             texts = dict((r[0], (r[1], r[2])) for r in con.execute(
@@ -1198,6 +1229,9 @@ def _fts_search_one(con, ws_name, match, like_terms, limit, phrases=None):
         conds = " AND ".join(["chunk_text LIKE ? ESCAPE '\\'"] * len(like_terms))
         params = ["%" + t.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
                   for t in like_terms]
+        if entry_set:
+            conds += " AND entry_id IN (%s)" % entry_set[0]
+            params += list(entry_set[1])
         for row in con.execute(
                 "SELECT rowid, chunk_text, file_offset FROM chunks WHERE %s LIMIT ?" % conds,
                 params + [limit]):
@@ -1240,21 +1274,29 @@ def _vector_search_one(con, ws_name, query, limit, model_id):
     return _vector_knn(con, ws_name, qv, query, limit, model_id)
 
 
-def _vector_knn(con, ws_name, qv, query, limit, model_id):
+def _vector_knn(con, ws_name, qv, query, limit, model_id, entry_ids=None):
     """向量 KNN（查询向量已就绪）：vec0 可用 → 库内 KNN（SQL MATCH）；
-    确实不可用 → numpy 全量扫描回退。返回 (hits, backend)：backend ∈ "sqlite-vec" | "numpy"。"""
+    确实不可用 → numpy 全量扫描回退。返回 (hits, backend)：backend ∈ "sqlite-vec" | "numpy"。
+    entry_ids：候选 entry 集合（元数据过滤）——vec0 走元数据列过滤（服务端剪枝），
+    numpy 回退按集合后过滤；None = 不过滤；空集 = 直接返回空。"""
     import embeddings as _emb
     backend = "numpy"
     _migrate_legacy_vectors(con)
+    if entry_ids is not None and not entry_ids:
+        return [], None
+    idset = set(entry_ids) if entry_ids is not None else None
     qblob = struct.pack(f"<{len(qv)}f", *qv)
     hits, seen = [], set()
     # 1) vec0 库内 KNN
     if _load_vec0(con):
         try:
-            rows = con.execute(
-                "SELECT entry_id, chunk_no, win_start, win_end, distance"
-                " FROM vec_items WHERE embedding MATCH ? AND k = ? AND model_id = ?"
-                " ORDER BY distance", (qblob, limit, model_id)).fetchall()
+            vec_sql = ("SELECT entry_id, chunk_no, win_start, win_end, distance"
+                       " FROM vec_items WHERE embedding MATCH ? AND k = ? AND model_id = ?")
+            vec_params = [qblob, limit, model_id]
+            if entry_ids is not None:
+                vec_sql += (" AND entry_id IN (%s)" % ",".join("?" * len(entry_ids)))
+                vec_params += list(entry_ids)
+            rows = con.execute(vec_sql + " ORDER BY distance", vec_params).fetchall()
             for (entry_id, chunk_no, win_start, win_end, dist) in rows:
                 if (entry_id, chunk_no) in seen:
                     continue
@@ -1279,6 +1321,8 @@ def _vector_knn(con, ws_name, qv, query, limit, model_id):
                                " FROM vectors WHERE model_id=?", (model_id,)).fetchall()
         except sqlite3.OperationalError:
             return []
+    if idset is not None:
+        rows = [r for r in rows if r[0] in idset]
     vecs = [struct.unpack(f"<{len(b) // 4}f", b) for (_, _, _, _, _, b) in rows]
     top = _emb.knn_top(qv, vecs, k=limit * 4)
     for idx, score in top:
@@ -1292,7 +1336,7 @@ def _vector_knn(con, ws_name, qv, query, limit, model_id):
     return hits, backend
 
 
-def _headings_search_one(con, ws_name, match, limit, phrases=None):
+def _headings_search_one(con, ws_name, match, limit, phrases=None, entry_set=None):
     """标题路（§8D 第三路）：headings_fts（trigram）检索结构标题。
 
     标题短文本直接 Python coverage 计分（score=coverage/总词数）；老库迁移前
@@ -1300,11 +1344,17 @@ def _headings_search_one(con, ws_name, match, limit, phrases=None):
     """
     if not match:
         return []
+    entry_cond, entry_params = "", []
+    if entry_set:
+        entry_cond = (" AND rowid IN (SELECT rowid FROM headings WHERE entry_id IN (%s))"
+                      % entry_set[0])
+        entry_params = list(entry_set[1])
     try:
         rows = con.execute(
             "SELECT rowid, bm25(headings_fts) FROM headings_fts"
-            " WHERE headings_fts MATCH ? ORDER BY bm25(headings_fts) LIMIT 200",
-            (match,)).fetchall()
+            " WHERE headings_fts MATCH ?" + entry_cond
+            + " ORDER BY bm25(headings_fts) LIMIT 200",
+            [match] + entry_params).fetchall()
     except sqlite3.OperationalError:
         return []
     phrases = phrases or []
@@ -1372,9 +1422,51 @@ def _rrf_fuse(fts_hits, vec_hits, limit, k=60, hd_hits=None):
 # ==================== 出口层整形（§8D：出处锚定源文件，full.md 内部化） ====================
 
 def _has_column_filter(query):
-    """查询含列限定语法（title:/author:/publisher:/publish_date:）→ 向量/标题路语义
-    无法承担元数据过滤，检索自动降级 FTS-only（§D1/S8）"""
-    return any(_COL_PREFIX_RE.match(t) for _, t in _tokenize_query(query))
+    """查询含元数据过滤（列限定语法或范围过滤）→ 需候选集限定检索"""
+    return (any(_COL_PREFIX_RE.match(t) for _, t in _tokenize_query(query))
+            or bool(_parse_metadata_filters(query)))
+
+
+def _parse_metadata_filters(q):
+    """范围过滤 token → [(col, op, val)]；publish_date/created_at 为 TEXT ISO 形态，
+    字典序比较即时间序（"2024" 可匹配 "2024-03-01" >= "2024"）。"""
+    out = []
+    for _, tok in _tokenize_query(q):
+        m = _COL_RANGE_RE.match(tok)
+        if m:
+            out.append((m.group(1), m.group(2), m.group(3).strip('"')))
+    return out
+
+
+def _entry_filter_sql(meta_cols, range_filters):
+    """元数据过滤 → (entry 集合子查询 SQL, 参数) 或 None（无过滤）。
+
+    文本列限定（≥3 字）走 entries_fts 列过滤回联 chunks（trigram 索引），
+    <3 字走 chunks 列 LIKE；范围过滤走 entries B-Tree 索引（idx_entries_publish_date /
+    idx_entries_created_at）。多条件求交集（嵌套 id IN）。"""
+    subs, params = [], []
+    for col, val in (meta_cols or []):
+        if len(val) >= 3:
+            subs.append("SELECT c.entry_id FROM chunks c WHERE c.rowid IN"
+                        " (SELECT rowid FROM entries_fts WHERE entries_fts MATCH ?)")
+            params.append(f'{col}:"{val.replace(chr(34), chr(34) * 2)}"')
+        else:
+            subs.append(f"SELECT entry_id FROM chunks WHERE {col} LIKE ?")
+            params.append(f"%{val}%")
+    for col, op, val in (range_filters or []):
+        subs.append(f"SELECT id FROM entries WHERE {col} {op} ?")
+        params.append(val)
+    if not subs:
+        return None
+    return ("SELECT id FROM entries WHERE "
+            + " AND ".join(f"id IN ({s})" for s in subs), params)
+
+
+_VEC_FILTER_CAP = 2000   # vec0 元数据 entry_id IN 的字面列表上限（超出 → 向量路降级标注）
+
+
+class _VecFilterCapExceeded(Exception):
+    """候选 entry 集超过向量过滤字面列表上限（内部信号，fused 降级 / vector 报错）"""
 
 
 def _hit_offset(h):
@@ -1549,8 +1641,23 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
     向量路不可用（组件缺失/推理失败）时：mode=fused 降级为 FTS-only 并在结果标注
     vector_available=False；mode=vector 则返回结构化错误（不静默降级）。
     """
-    match, like_terms, phrases = build_fts_query(query)
-    col_filter = _has_column_filter(query)   # 列限定 → 向量/标题路不参与（元数据过滤语义）
+    range_filters = _parse_metadata_filters(query)
+    col_meta = []   # (col, val)：文本列限定（元数据场景过滤：候选 entry 集注入三路）
+    match, like_terms, phrases = build_fts_query(query, metadata_out=col_meta)
+    has_topic = bool(match or like_terms)
+    if not has_topic and not col_meta and not range_filters:
+        return messages.err_result("ws_search_empty")
+    if not has_topic and range_filters:
+        # 范围过滤无主题词：无排序语义（浏览用 --list）
+        return messages.err_result("ws_range_only")
+    col_filter = bool(col_meta or range_filters)
+    fts_only_degrade = col_filter and not has_topic
+    if not has_topic and col_meta:
+        # 仅文本列限定（浏览语义）：保留旧契约——列过滤留在 MATCH、FTS 单路
+        match, like_terms, phrases = build_fts_query(query)
+        col_meta = []
+    # 候选 entry 集合（元数据场景过滤）：主题词 + 过滤并存时三路全部参与
+    entry_set = _entry_filter_sql(col_meta, range_filters) if (has_topic and col_filter) else None
     if mode in ("fts", "fused") and not match and not like_terms:
         return messages.err_result("ws_search_empty")
     root = ws_root()
@@ -1567,8 +1674,10 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
     fts_all, hd_all, vec_all, searched = [], [], [], []
     db_paths = []                         # (ws_name, db_path)：向量路与诊断共用
     vrows_total = 0                       # 坑4：向量行诊断计数（被检库合计）
-    degraded = {"vector_available": mode in ("vector", "fused")}
-    vector_available = mode in ("vector", "fused") and not col_filter
+    filtered_total = 0                    # 元数据过滤命中的候选 entry 数（各被检库合计）
+    vector_candidates_exceeded = False    # 候选集超过向量过滤上限 → 向量路降级标注
+    degraded = {"vector_available": mode in ("vector", "fused") and not fts_only_degrade}
+    vector_available = mode in ("vector", "fused") and not fts_only_degrade
     vector_backend = None
     skip_vector = bool(os.environ.get("MYAGENTRAG_NO_RUNTIME"))  # 测试模式：全传统路径
     if skip_vector:
@@ -1576,7 +1685,7 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
     # 过量检索：各路召回 3×limit 候选，融合/聚合后截回 limit——防同节聚合
     # 吃掉配额、防关键文档在早期被截断（融合排序对候选量不敏感，截断在出口）
     route_k = min(max(limit * 3, 20), 100)
-    need_vec = mode in ("vector", "fused") and not skip_vector and not col_filter
+    need_vec = mode in ("vector", "fused") and not skip_vector and not fts_only_degrade
 
     # 查询嵌入提升到库循环之外 + 后台线程：跨库检索只拉起一次 llama-server
     # （此前每库一次，N 库 N 次），且与 FTS/标题路并行执行
@@ -1601,15 +1710,23 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
 
         def _run_fts(con, _ws=ws):
             f_hits = (_fts_search_one(con, _ws, match, like_terms, route_k,
-                                      phrases=phrases)
+                                      phrases=phrases, entry_set=entry_set)
                       if mode in ("fts", "fused") else [])
-            h_hits = (_headings_search_one(con, _ws, match, route_k, phrases=phrases)
-                      if mode in ("fts", "fused") and not col_filter else [])
-            return f_hits, h_hits
+            h_hits = (_headings_search_one(con, _ws, match, route_k, phrases=phrases,
+                                           entry_set=entry_set)
+                      if mode in ("fts", "fused") and not fts_only_degrade else [])
+            n_cand = None
+            if entry_set:
+                n_cand = con.execute(
+                    "SELECT COUNT(*) FROM entries WHERE id IN (%s)" % entry_set[0],
+                    entry_set[1]).fetchone()[0]
+            return f_hits, h_hits, n_cand
 
-        f_hits, h_hits = _db_call(d / WORKSPACE_DB, _run_fts)
+        f_hits, h_hits, n_cand = _db_call(d / WORKSPACE_DB, _run_fts)
         fts_all.extend(f_hits)
         hd_all.extend(h_hits)
+        if n_cand is not None:
+            filtered_total += n_cand
 
     if need_vec:
         embed_thread.join()
@@ -1621,17 +1738,32 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
             qv = qv_box["qv"]
             for _ws, dbp in db_paths:
                 def _run_vec(con, _ws=_ws):
+                    ids = None
+                    if entry_set:
+                        ids = [r[0] for r in con.execute(entry_set[0],
+                                                         entry_set[1]).fetchall()]
+                        if len(ids) > _VEC_FILTER_CAP:
+                            raise _VecFilterCapExceeded()
                     return _vector_knn(con, _ws, qv, query, route_k,
-                                       embeddings.DEFAULT_MODEL)
+                                       embeddings.DEFAULT_MODEL, entry_ids=ids)
                 try:
                     v_hits, backend = _db_call(dbp, _run_vec)
                     vec_all.extend(v_hits)
                     if backend:
                         vector_backend = backend
+                except _VecFilterCapExceeded:
+                    if mode == "vector":
+                        raise RuntimeError(
+                            f"候选 entry 集（{filtered_total}）超过向量过滤上限 "
+                            f"({_VEC_FILTER_CAP}），请缩小过滤范围")
+                    degraded["vector_available"] = False
+                    vector_candidates_exceeded = True
                 except RuntimeError:
                     if mode == "vector":
                         raise
                     degraded["vector_available"] = False
+        if entry_set and filtered_total == 0:
+            degraded["vector_available"] = False   # 候选集为空：三路均未执行
 
     for _ws, dbp in db_paths:             # 坑4：向量行诊断计数（所有模式）
         try:
@@ -1648,13 +1780,15 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
     total_hits = _aggregate_and_polish(total_hits)
     result = {"success": True, "workspace": None if all_workspaces else ws_name,
             "workspaces_searched": searched, "query": query,
-            "mode": ("fts" if col_filter else mode),
+            "mode": ("fts" if fts_only_degrade else mode),
             "column_filter": col_filter,
+            "filtered_entries": filtered_total if entry_set is not None else None,
+            "vector_candidates_exceeded": vector_candidates_exceeded or None,
             "vectors_rows": vrows_total,
             "vector_zero_hint": bool(mode == "vector" and vrows_total == 0
                                      and vector_available),   # 链路就绪但库内无向量
-            "keyword_miss": bool(mode == "fused" and not col_filter
-                                 and not fts_all and vec_all and not skip_vector),
+            "keyword_miss": bool(mode == "fused" and need_vec and not vector_candidates_exceeded
+                                 and not fts_all and vec_all),
             "fts_query": match, "like_fallback_terms": like_terms,
             "vector_available": vector_available and degraded["vector_available"],
             "vector_backend": vector_backend,
