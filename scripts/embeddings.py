@@ -30,6 +30,69 @@ EMBED_BATCH = 16
 # （NO_PROXY 项分隔符错漏就会让 127.0.0.1 被送进代理，健康检查全败）——显式绕过。
 _LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
+# ==================== 查询嵌入持久化缓存（仅单条查询，不缓存入库分片） ====================
+
+_QUERY_CACHE_CAP = 512  # 条数上限（1024 维 float32 ≈ 4KB/条，上限约 2MB）
+
+
+def _query_cache_store(key, vec):
+    """写入缓存并按 created 裁剪到上限；任何故障静默吞掉（best-effort）。"""
+    import sqlite3
+    import struct
+    try:
+        d = deps.MANAGED_HOME / "cache"
+        d.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(str(d / "query-embeddings.db"), timeout=5)
+        try:
+            con.execute("CREATE TABLE IF NOT EXISTS qembed("
+                        "key TEXT PRIMARY KEY, dim INTEGER, vec BLOB, created REAL)")
+            con.execute("INSERT OR REPLACE INTO qembed VALUES(?,?,?,?)",
+                        (key, len(vec), struct.pack(f"<{len(vec)}f", *vec), time.time()))
+            con.execute("DELETE FROM qembed WHERE rowid NOT IN"
+                        " (SELECT rowid FROM qembed ORDER BY created DESC LIMIT ?)",
+                        (_QUERY_CACHE_CAP,))
+            con.commit()
+        finally:
+            con.close()
+    except Exception:
+        pass
+
+
+def cached_query_embedding(text, model_id=DEFAULT_MODEL):
+    """查询向量（持久化缓存）：同模型+同文本二次检索零嵌入开销（跳过 llama-server
+    拉起，约省 1s+）。缓存键含模型文件路径+大小+mtime——换模型自动失效。
+    缓存读写任何故障都静默回退到直接嵌入，绝不影响检索正确性。"""
+    import hashlib
+    import sqlite3
+    import struct
+    gguf = deps._find_model_file_embedding(model_id)
+    sig = ""
+    if gguf:
+        p = Path(gguf)
+        try:
+            sig = f"{p}|{p.stat().st_size}|{int(p.stat().st_mtime)}"
+        except OSError:
+            sig = str(p)
+    key = hashlib.sha256(f"{model_id}|{sig}|{text}".encode("utf-8")).hexdigest()
+    try:
+        d = deps.MANAGED_HOME / "cache"
+        d.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(str(d / "query-embeddings.db"), timeout=5)
+        try:
+            con.execute("CREATE TABLE IF NOT EXISTS qembed("
+                        "key TEXT PRIMARY KEY, dim INTEGER, vec BLOB, created REAL)")
+            row = con.execute("SELECT dim, vec FROM qembed WHERE key=?", (key,)).fetchone()
+            if row:
+                dim, blob = row
+                return list(struct.unpack(f"<{dim}f", blob))
+        finally:
+            con.close()
+    except Exception:
+        pass
+    vec = embed_texts([text], model_id=model_id)[0]
+    _query_cache_store(key, vec)
+    return vec
+
 
 # ==================== 窗口切分（字符偏移精确跟踪） ====================
 

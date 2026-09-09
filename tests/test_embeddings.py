@@ -85,3 +85,28 @@ def test_local_opener_bypasses_proxy(monkeypatch):
             assert r.status == 200
     finally:
         srv.shutdown()
+
+
+def test_query_embedding_cache(monkeypatch):
+    """查询嵌入持久化缓存：同模型同文本第二次命中缓存（零嵌入调用）；
+    缓存故障静默回退不影响正确性。"""
+    import deps
+    calls = {"n": 0}
+    real = embeddings.embed_texts
+
+    def counting(texts, model_id=None):
+        calls["n"] += 1
+        return real(texts, model_id=model_id)
+
+    monkeypatch.setattr(embeddings, "embed_texts", counting)
+    fake_file = "fake-qwen3.gguf"
+    monkeypatch.setattr(deps, "_find_llama_embed", lambda: fake_file)
+    monkeypatch.setattr(deps, "_find_model_file_embedding", lambda mid: fake_file)
+
+    v1 = embeddings.cached_query_embedding("缓存命中测试句子甲", model_id="Qwen3-Embedding-0.6B")
+    v2 = embeddings.cached_query_embedding("缓存命中测试句子甲", model_id="Qwen3-Embedding-0.6B")
+    # 缓存存 float32（KNN 实际消费精度），回读与首算允许 1e-6 级浮点差
+    assert all(abs(a - b) < 1e-6 for a, b in zip(v1, v2)) and len(v1) == len(v2)
+    assert calls["n"] == 1
+    embeddings.cached_query_embedding("另一个不同句子乙", model_id="Qwen3-Embedding-0.6B")
+    assert calls["n"] == 2

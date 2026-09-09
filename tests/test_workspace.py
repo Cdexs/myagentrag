@@ -925,3 +925,45 @@ def test_p1_fullmd_selfcheck(ws_mod):
     f = d / "entries" / r["entry_id"] / "full.md"
     h = hashlib.sha256(f.read_text(encoding="utf-8").encode("utf-8")).hexdigest()[:16]
     assert h == r["entry_id"]
+
+
+def test_cross_workspace_search_embeds_query_once(ws_mod, monkeypatch):
+    """性能（QA 建议落地）：跨库检索只做一次查询嵌入（llama-server 只拉起一次，
+    与被检库数量无关——此前每库各拉起一次，N 库 N×1.2s）"""
+    import embeddings
+    ws_mod.ws_ingest("跨库A", content="跨库检索内容阿尔法验证。" * 10, title="A")
+    ws_mod.ws_ingest("跨库B", content="跨库检索内容贝塔验证。" * 10, title="B")
+    calls = {"n": 0}
+    real = embeddings.embed_texts
+
+    def counting(texts, model_id=None):
+        calls["n"] += 1
+        return real(texts, model_id=model_id)
+
+    monkeypatch.setattr(embeddings, "embed_texts", counting)
+    r = ws_mod.ws_search("跨库A", "跨库检索", all_workspaces=True)
+    assert r["success"] and r["total"] >= 1
+    assert len(r["workspaces_searched"]) == 2
+    assert calls["n"] == 1  # 2 个库 → 查询只嵌 1 次
+
+
+def test_reindex_runs_analyze(ws_mod):
+    """--reindex 后生成 sqlite_stat1（查询规划器统计刷新）"""
+    ws_mod.ws_ingest("分析库", content="ANALYZE 统计信息验证内容。" * 10, title="T")
+    r = ws_mod.ws_reindex("分析库")
+    assert r["success"] and r["consistent"]
+    d = ws_mod.ws_dir("分析库")
+    con = ws_mod._connect(d / "workspace.db")
+    n = con.execute("SELECT COUNT(*) FROM sqlite_stat1").fetchone()[0]
+    assert n >= 1
+
+
+def test_fused_oversample_small_limit(ws_mod):
+    """过量检索（各路 3×limit 候选后融合截断）：limit=1 仍返回最优单条，
+    向量路参与（vector_available=true）"""
+    ws_mod.ws_ingest("过量库", content="过量检索句子甲。无关填充内容。" * 5, title="甲")
+    ws_mod.ws_ingest("过量库", content="过量检索句子乙。别的填充内容。" * 5, title="乙")
+    r = ws_mod.ws_search("过量库", "过量检索", limit=1)
+    assert r["success"] and r["total"] == 1
+    assert r["vector_available"] is True
+    assert r["hits"][0]["title"] in ("甲", "乙")

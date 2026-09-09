@@ -133,6 +133,8 @@ $Python = if ($env:MYAGENTRAG_PYTHON) { $env:MYAGENTRAG_PYTHON } else { "python"
 
 命中 JSON 字段（agent 消费指南）：`title/entry_id/source_type/source_ref`（来源文件或 URL）、`score + score_source + score_kind`（多路并列如 `fused+heading`）、`scores: {fts, vector, heading}`（fused 各路 RRF 贡献）、`column_filter`（列限定降级标注）、`keyword_miss`（FTS 零命中而仅语义召回，提示术语可能与原文不一致，勿据此断言“库中没有相关内容”）、`snippet`（『』高亮）、`chunk_no/chars`（可 `--chunk N` 读分片）、`heading{text,level}`（所在章节）、`section_ref`（不透明精读引用）+ `section_chars`、`same_section_hits`（同节其他命中数）、`source_loc`（源文件出处：`{kind:"pdf",page}` / `{kind:"epub",chapter,title}` / `{kind:"time",start_ms,end_ms}` / `{kind:"line",n}`）、`vector_backend`。**空结果的两种形态严格区分**：库名不存在 → rc=1 结构化错误 `ws_not_found`（所有模式一致，含列限定；跨库检索在无任何库时报 `ws_no_workspaces`）；库名正确但无匹配 → success:true + `workspaces_searched` 列出被检库 + hits 为空。检索零命中时换词或 `--mode vector` 重试（语义路可跨语言召回）。
 
+性能语义（对 agent 透明）：各路过量召回 3×limit 候选再融合截断；跨库检索只拉起一次嵌入引擎（与库数无关）；查询嵌入带持久化缓存（`~/.myagentrag/cache/query-embeddings.db`，同模型同查询二次检索零嵌入开销；换模型自动失效，可整文件删除重建）。
+
 **知识库检索话术对照（常见说法 → agent 动作）**
 
 | 用户说法                                            | 判定    | agent 动作                                                                                                                                                                                               |
@@ -302,7 +304,7 @@ GPU 是否启用取决于 whisper.cpp 二进制编译时包含的后端；CPU �
 | 条目列举  | `--workspace <名> --list`                         |
 | 条目删除  | `--workspace <名> --remove <entry-id>`（需 `--yes`） |
 | 完整性校验 | `--workspace <名> --verify`（片数/逐片一致性/覆盖/FTS 索引比对） |
-| 索引重建  | `--workspace <名> --reindex`（重建 FTS+标题锚点+子节；**不含向量**；`consistent` 含 chunk↔full.md 逐片校验） |
+| 索引重建  | `--workspace <名> --reindex`（重建 FTS+标题锚点+子节；**不含向量**；`consistent` 含 chunk↔full.md 逐片校验；重建后刷新 ANALYZE 统计） |
 | 向量补建  | `--workspace <名> --embed`（为零向量条目补建向量，需嵌入链） |
 | 空间回收  | `--workspace <名> --vacuum`                       |
 

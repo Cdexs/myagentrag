@@ -25,6 +25,7 @@ import sqlite3
 import struct
 import subprocess
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -270,6 +271,8 @@ def _connect(db_path, create=True, rebuild=False):
         raise FileNotFoundError(f"workspace 数据库不存在: {key}")
     con = sqlite3.connect(str(db_path))
     con.execute("PRAGMA journal_mode=WAL")
+    # WAL 下同步降为 NORMAL：提交不逐次 fsync（防崩溃安全由 WAL 保留），批量入库明显提速
+    con.execute("PRAGMA synchronous=NORMAL")
     con.execute("PRAGMA user_version=3")  # v3：+headings/source_map（v0.8.0 §8D）
     _ensure_extra_tables(con)  # 老库幂等迁移（新连接保证一次）
     _CONN_POOL[key] = con
@@ -1231,12 +1234,18 @@ def _build_vector_hit(con, ws_name, entry_id, chunk_no, win_start, win_end, scor
 
 
 def _vector_search_one(con, ws_name, query, limit, model_id):
-    """向量路：vec0 可用 → 库内 KNN（SQL MATCH）；确实不可用 → numpy 全量扫描回退。
-    返回 (hits, backend)：backend ∈ "sqlite-vec" | "numpy"。"""
+    """向量路（单库，自嵌查询）：嵌入 + KNN。ws_search 已把查询嵌入提升到
+    循环外（跨库只嵌一次、只拉起一次 llama-server），此包装保留给直接调用方。"""
+    qv = embeddings.cached_query_embedding(query, model_id=model_id)
+    return _vector_knn(con, ws_name, qv, query, limit, model_id)
+
+
+def _vector_knn(con, ws_name, qv, query, limit, model_id):
+    """向量 KNN（查询向量已就绪）：vec0 可用 → 库内 KNN（SQL MATCH）；
+    确实不可用 → numpy 全量扫描回退。返回 (hits, backend)：backend ∈ "sqlite-vec" | "numpy"。"""
     import embeddings as _emb
     backend = "numpy"
     _migrate_legacy_vectors(con)
-    qv = _emb.embed_texts([query], model_id=model_id)[0]
     qblob = struct.pack(f"<{len(qv)}f", *qv)
     hits, seen = [], set()
     # 1) vec0 库内 KNN
@@ -1556,6 +1565,7 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
     if all_workspaces and not names:
         return messages.err_result("ws_no_workspaces")
     fts_all, hd_all, vec_all, searched = [], [], [], []
+    db_paths = []                         # (ws_name, db_path)：向量路与诊断共用
     vrows_total = 0                       # 坑4：向量行诊断计数（被检库合计）
     degraded = {"vector_available": mode in ("vector", "fused")}
     vector_available = mode in ("vector", "fused") and not col_filter
@@ -1563,37 +1573,69 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
     skip_vector = bool(os.environ.get("MYAGENTRAG_NO_RUNTIME"))  # 测试模式：全传统路径
     if skip_vector:
         degraded["vector_available"] = False
+    # 过量检索：各路召回 3×limit 候选，融合/聚合后截回 limit——防同节聚合
+    # 吃掉配额、防关键文档在早期被截断（融合排序对候选量不敏感，截断在出口）
+    route_k = min(max(limit * 3, 20), 100)
+    need_vec = mode in ("vector", "fused") and not skip_vector and not col_filter
+
+    # 查询嵌入提升到库循环之外 + 后台线程：跨库检索只拉起一次 llama-server
+    # （此前每库一次，N 库 N 次），且与 FTS/标题路并行执行
+    qv_box = {}
+    embed_thread = None
+    if need_vec:
+        def _embed_query():
+            try:
+                qv_box["qv"] = embeddings.cached_query_embedding(
+                    query, model_id=embeddings.DEFAULT_MODEL)
+            except Exception as e:
+                qv_box["err"] = e
+        embed_thread = threading.Thread(target=_embed_query, daemon=True)
+        embed_thread.start()
+
     for ws in names:
         d = ws_dir(ws)
         if d is None:
             continue
         searched.append(ws)
+        db_paths.append((ws, d / WORKSPACE_DB))
 
-        def _run(con, _ws=ws):
-            f_hits = (_fts_search_one(con, _ws, match, like_terms, limit,
+        def _run_fts(con, _ws=ws):
+            f_hits = (_fts_search_one(con, _ws, match, like_terms, route_k,
                                       phrases=phrases)
                       if mode in ("fts", "fused") else [])
-            h_hits = (_headings_search_one(con, _ws, match, limit, phrases=phrases)
+            h_hits = (_headings_search_one(con, _ws, match, route_k, phrases=phrases)
                       if mode in ("fts", "fused") and not col_filter else [])
-            v_hits, backend = [], None
-            if mode in ("vector", "fused") and not skip_vector and not col_filter:
+            return f_hits, h_hits
+
+        f_hits, h_hits = _db_call(d / WORKSPACE_DB, _run_fts)
+        fts_all.extend(f_hits)
+        hd_all.extend(h_hits)
+
+    if need_vec:
+        embed_thread.join()
+        if "err" in qv_box:
+            if mode == "vector":
+                raise qv_box["err"]
+            degraded["vector_available"] = False   # fused：嵌入失败静默降级为 FTS-only
+        else:
+            qv = qv_box["qv"]
+            for _ws, dbp in db_paths:
+                def _run_vec(con, _ws=_ws):
+                    return _vector_knn(con, _ws, qv, query, route_k,
+                                       embeddings.DEFAULT_MODEL)
                 try:
-                    v_hits, backend = _vector_search_one(con, _ws, query, limit,
-                                                         embeddings.DEFAULT_MODEL)
+                    v_hits, backend = _db_call(dbp, _run_vec)
+                    vec_all.extend(v_hits)
+                    if backend:
+                        vector_backend = backend
                 except RuntimeError:
                     if mode == "vector":
                         raise
                     degraded["vector_available"] = False
-            return f_hits, h_hits, v_hits, backend
 
-        f_hits, h_hits, v_hits, backend = _db_call(d / WORKSPACE_DB, _run)
-        fts_all.extend(f_hits)
-        hd_all.extend(h_hits)
-        vec_all.extend(v_hits)
-        if backend:
-            vector_backend = backend
+    for _ws, dbp in db_paths:             # 坑4：向量行诊断计数（所有模式）
         try:
-            con = _connect(d / WORKSPACE_DB)
+            con = _connect(dbp)
             vrows_total += sum(_vector_counts(con).values())
         except Exception:
             pass
@@ -2031,6 +2073,7 @@ def ws_reindex(name):
         con.execute("INSERT INTO headings_fts(headings_fts) VALUES('rebuild')")
         for (eid,) in con.execute("SELECT id FROM entries").fetchall():
             _gen_subsections(con, eid)
+        con.execute("ANALYZE")   # 全量重建后刷新查询规划器统计（sqlite_stat1）
         con.commit()
         fcount = con.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0]
         ccount = con.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
