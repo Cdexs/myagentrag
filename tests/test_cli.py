@@ -263,3 +263,38 @@ def test_n3_max_chars_cli(cli_env, tmp_path):
     assert j2["truncated"] is True and j2["remaining_chars"] > 0
     j3 = jout(run(cli_env, "--workspace", "CLI截库", "--entry", eid, "--max-chars", "0"))
     assert "truncated" not in j3
+
+
+def test_search_missing_workspace_errors_p8(cli_env):
+    """P8（QA 2026-09-09）：--search 对不存在的库名必须报 ws_not_found，
+    不得静默返回 success:true + 空结果（调用方无法与"库内无匹配"区分）"""
+    r = run(cli_env, "--workspace", "不存在XYZ123", "--search", "测试")
+    assert r.returncode == 1
+    j = json.loads(r.stdout)
+    assert j["success"] is False
+    assert "不存在" in j["error"] and "不存在XYZ123" in j["error"]
+    assert j["error_i18n"]["en"].startswith("workspace not found")
+
+
+def test_search_correct_name_no_match_distinguishable(cli_env):
+    """P8 对照面：库名正确但无匹配 → success:true，且 workspaces_searched 指明被检库"""
+    run(cli_env, "--workspace", "P8库", "--create")
+    r = run(cli_env, "--workspace", "P8库", "--search", "绝无此词XYZ")
+    j = jout(r)
+    assert j["success"] is True and j["total"] == 0
+    assert j["workspaces_searched"] == ["P8库"]
+
+
+def test_search_all_workspaces_empty_root_errors(cli_env):
+    """P8 关联：跨库检索但尚无任何库 → 明确报错而非 success:true 空结果"""
+    r = run(cli_env, "--search", "随便查查", "--all-workspaces")
+    assert r.returncode == 1
+    j = json.loads(r.stdout)
+    assert j["success"] is False and "尚无任何" in j["error"]
+
+
+def test_search_vector_mode_missing_workspace_still_errors(cli_env):
+    """原 vector 守卫行为保持：不存在库名在 vector 模式同样报错"""
+    r = run(cli_env, "--workspace", "不存在XYZ123", "--search", "测试", "--mode", "vector")
+    j = jout(r)
+    assert j["success"] is False and "不存在XYZ123" in j["error"]

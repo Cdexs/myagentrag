@@ -131,7 +131,7 @@ $Python = if ($env:MYAGENTRAG_PYTHON) { $env:MYAGENTRAG_PYTHON } else { "python"
 "$PYTHON" "$EXTRACTOR" --workspace 我的书架 --search "X" --mode fts       # 纯关键词（不加载向量链）
 ```
 
-命中 JSON 字段（agent 消费指南）：`title/entry_id/source_type/source_ref`（来源文件或 URL）、`score + score_source + score_kind`（多路并列如 `fused+heading`）、`scores: {fts, vector, heading}`（fused 各路 RRF 贡献）、`column_filter`（列限定降级标注）、`keyword_miss`（FTS 零命中而仅语义召回，提示术语可能与原文不一致，勿据此断言“库中没有相关内容”）、`snippet`（『』高亮）、`chunk_no/chars`（可 `--chunk N` 读分片）、`heading{text,level}`（所在章节）、`section_ref`（不透明精读引用）+ `section_chars`、`same_section_hits`（同节其他命中数）、`source_loc`（源文件出处：`{kind:"pdf",page}` / `{kind:"epub",chapter,title}` / `{kind:"time",start_ms,end_ms}` / `{kind:"line",n}`）、`vector_backend`。检索零命中时换词或 `--mode vector` 重试（语义路可跨语言召回）。
+命中 JSON 字段（agent 消费指南）：`title/entry_id/source_type/source_ref`（来源文件或 URL）、`score + score_source + score_kind`（多路并列如 `fused+heading`）、`scores: {fts, vector, heading}`（fused 各路 RRF 贡献）、`column_filter`（列限定降级标注）、`keyword_miss`（FTS 零命中而仅语义召回，提示术语可能与原文不一致，勿据此断言“库中没有相关内容”）、`snippet`（『』高亮）、`chunk_no/chars`（可 `--chunk N` 读分片）、`heading{text,level}`（所在章节）、`section_ref`（不透明精读引用）+ `section_chars`、`same_section_hits`（同节其他命中数）、`source_loc`（源文件出处：`{kind:"pdf",page}` / `{kind:"epub",chapter,title}` / `{kind:"time",start_ms,end_ms}` / `{kind:"line",n}`）、`vector_backend`。**空结果的两种形态严格区分**：库名不存在 → rc=1 结构化错误 `ws_not_found`（所有模式一致，含列限定；跨库检索在无任何库时报 `ws_no_workspaces`）；库名正确但无匹配 → success:true + `workspaces_searched` 列出被检库 + hits 为空。检索零命中时换词或 `--mode vector` 重试（语义路可跨语言召回）。
 
 **知识库检索话术对照（常见说法 → agent 动作）**
 
@@ -371,3 +371,4 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 | PDF 提取为空                       | 扫描件没有文字层，属正常；本工具不做 OCR                                                                   |
 | B站无字幕                          | 该视频没有 CC 字幕，API 返回 `success:false`，属正常                                                   |
 | `--mode vector` 恒 0 命中 | 先查该库入库时是否用了 `--no-embed`（`--list` 的 `vectors` 字段为 0 即是）；补建：`--embed` 或重入库不加减嵌入 |
+| `--search` 报 "workspace 不存在" | 库名拼写错误；`--workspace-list` 列出全部库名核对（`@库名` 前缀会自动剥离）；与"库内无匹配"（success:true + 空结果）严格区分 |

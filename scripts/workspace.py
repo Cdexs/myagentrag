@@ -1544,10 +1544,17 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
     col_filter = _has_column_filter(query)   # 列限定 → 向量/标题路不参与（元数据过滤语义）
     if mode in ("fts", "fused") and not match and not like_terms:
         return messages.err_result("ws_search_empty")
-    names = ([p.name for p in ws_root().iterdir() if (p / WORKSPACE_DB).exists()]
-             if all_workspaces else [ws_name])
-    if mode == "vector" and not ws_dir(ws_name) and not all_workspaces:
+    root = ws_root()
+    # 跨库扫描容错：workspaces 根目录尚不存在（全新安装）时视为无库
+    names = ([p.name for p in root.iterdir() if (p / WORKSPACE_DB).exists()]
+             if all_workspaces and root.exists() else
+             ([ws_name] if not all_workspaces else []))
+    # 存在性校验对所有模式生效（P8 修复：此前仅 vector 模式校验，fused/fts 对不存在的
+    # 库名静默返回 success:true + 空结果，无法与"库内无匹配"区分）
+    if not all_workspaces and not ws_dir(ws_name):
         return messages.err_result("ws_not_found", name=ws_name)
+    if all_workspaces and not names:
+        return messages.err_result("ws_no_workspaces")
     fts_all, hd_all, vec_all, searched = [], [], [], []
     vrows_total = 0                       # 坑4：向量行诊断计数（被检库合计）
     degraded = {"vector_available": mode in ("vector", "fused")}
