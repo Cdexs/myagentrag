@@ -53,3 +53,35 @@ def test_fake_embed_deterministic_and_normalized():
     assert abs(n - 1.0) < 1e-5  # 已归一化
     b = embeddings.fake_embed(["完全不同的另一段文本内容"])
     assert a1[0] != b[0]
+
+
+def test_local_opener_bypasses_proxy(monkeypatch):
+    """回归（2026-09-09）：环境 HTTP_PROXY 指向代理且 NO_PROXY 残缺（如含全角逗号，
+    127.0.0.1 不被绕过）时，回环请求若走默认 opener 会被代理 503，嵌入链路整体超时。
+    _LOCAL_OPENER 显式绕过代理，该行为不得回退。"""
+    import http.server
+    import threading
+
+    class _HealthHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *args):
+            pass
+
+    # 敌意代理环境：HTTP_PROXY 指向死端口，且无 NO_PROXY 兜底
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:9")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _HealthHandler)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        with embeddings._LOCAL_OPENER.open(f"http://127.0.0.1:{port}/health", timeout=5) as r:
+            assert r.status == 200
+    finally:
+        srv.shutdown()

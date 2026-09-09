@@ -26,6 +26,10 @@ WINDOW_CHARS = 800
 WINDOW_OVERLAP = 100
 EMBED_BATCH = 16
 
+# 本地回环（llama-server）流量永不走代理：用户环境的 HTTP_PROXY/NO_PROXY 不可控
+# （NO_PROXY 项分隔符错漏就会让 127.0.0.1 被送进代理，健康检查全败）——显式绕过。
+_LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 
 # ==================== 窗口切分（字符偏移精确跟踪） ====================
 
@@ -71,23 +75,25 @@ def _wait_health(proc, port, timeout=180):
     """等待 llama-server 就绪（含模型加载）；进程提前退出即报错。"""
     deadline = time.time() + timeout
     url = f"http://127.0.0.1:{port}/health"
+    last_err = None
     while time.time() < deadline:
         if proc.poll() is not None:
             raise RuntimeError("llama-server 进程提前退出（模型或参数问题）")
         try:
-            with urllib.request.urlopen(url, timeout=5) as r:
+            with _LOCAL_OPENER.open(url, timeout=5) as r:
                 if r.status == 200:
                     return
-        except Exception:
+        except Exception as e:
+            last_err = e
             time.sleep(0.5)
-    raise RuntimeError("llama-server 健康检查超时")
+    raise RuntimeError(f"llama-server 健康检查超时（最后一次错误: {last_err!r}）")
 
 
 def _post_embeddings(port, texts, timeout=300):
     body = json.dumps({"input": list(texts)}).encode("utf-8")
     req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/embeddings",
                                  data=body, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with _LOCAL_OPENER.open(req, timeout=timeout) as r:
         data = json.load(r)
     emb = sorted(data["data"], key=lambda d: d.get("index", 0))
     return [d["embedding"] for d in emb]
