@@ -146,7 +146,7 @@ $Python = if ($env:MYAGENTRAG_PYTHON) { $env:MYAGENTRAG_PYTHON } else { "python"
 | "**对比**一下 A、B 两份资料对 XXX 的说法"                    | 多源对比  | 分别 `--search`（或同库检索后按 `entry_id` 分组）→ 各取最优节 `--section` 精读 → 分来源对比陈述，引用各自 `source_loc`；建议 `--limit 50` 保证各来源都有候选                                                                                                                 |
 | "**列出/找全**所有讲 XXX 的内容 / 所有涉及 XXX 的条目"            | 枚举型    | `--search "XXX" --limit 50`（默认 20 是覆盖度权衡；枚举/清点/多实体场景显式调大；条目级全景可配 `--list` 对照）                                                                                                                              |
 | "知识库里**都有什么**/都有哪些资料"                           | 盘点    | `--workspace <名> --list`（条目清单）或 `--stats`（条目/字符/来源分布/db 体积）                                                                                                                                            |
-| "把这几份文件都**收进**知识库"                              | 批量入库  | 逐个 `--file ... --workspace <名>`；幂等无重复                                                                                                                                                              |
+| "把这几份文件都**收进**知识库"                              | 批量入库  | 多 `--file a.pdf --file b.docx` 或 `--dir 目录` 一次批量入库（**全部窗口合并为一次嵌入调用**）；幂等无重复；单文件提取失败跳过不阻塞其余；契约见「摄入」节批量契约                                                                                              |
 | "**搜一下**标题里有 XX 的条目" | 元数据过滤 | `--search 'title:XX'`（列限定 `title:/author:/publisher:/publish_date:`，可与正文词组合作 `title:XX AND 关键词`；**列值需 ≥3 字**（trigram 物理限制）；范围过滤 `publish_date>=2024`（`created_at` 同理，支持 >=/<=/>/<）；过滤以候选 entry 集限定**三路检索全部参与**，结果标注 `column_filter: true` + `filtered_entries`；**仅过滤无主题词**不可排序检索（结构化报错，浏览用 `--list`）） |
 
 核实型问题的工作示例（"查一下知识库里讲 move 语义的内容"）：
@@ -270,7 +270,7 @@ GPU 是否启用取决于 whisper.cpp 二进制编译时包含的后端；CPU �
 - **幂等**：条目 id = 内容 sha256 前 16 位；同内容重灌只更新元数据，不产生重复条目；
 - **来源副本**：本地文件与网页快照默认复制到 `source/<id>/`（音视频默认复制——回放必需），`--no-keep-source` 可关；
 - **音视频时间戳索引**：入库的音视频统一走 whisper SRT 转录，段级时间戳存 `transcript.json`，每个分片带 `start_ms`/`end_ms`（普通提取不受影响：视频仍先试内置字幕）；
-- **批量契约**（多 `--file` 或 `--dir` 时）：输出 `{"batch": true, "results": [每文件 entry 摘要或 {success:false,error}], "failed": [失败文件], "embedded_windows": N}`，rc = 全部成功 0 / 任一失败 1；单文件提取失败跳过不阻塞其余；**合并嵌入失败 → 整批不入库**（结构化错误）；`--url` 不参与批量（与多文件同给时报错）；**`--dir` 恒为 batch 形态**（即使只扫到 1 个受支持文件，调用方只需解析一种契约）；单 `--file` 用法输出契约不变。
+- **批量契约**（多 `--file` 或 `--dir` 时）：输出 `{"batch": true, "results": [每文件 entry 摘要（含 entry_id/title/chunk_count/vectors/updated/**supersedes/replaced**）或 {success:false,error}], "failed": [失败文件], "embedded_windows": N}`，rc = 全部成功 0 / 任一失败 1；单文件提取失败跳过不阻塞其余；**合并嵌入失败 → 整批不入库**（结构化错误）；`--url` 不参与批量（与多文件同给时报错）；**`--dir` 恒为 batch 形态**（即使只扫到 1 个受支持文件，调用方只需解析一种契约）；单 `--file` 用法输出契约不变。
 
 ### 检索
 
@@ -311,7 +311,7 @@ GPU 是否启用取决于 whisper.cpp 二进制编译时包含的后端；CPU �
 | 统计    | `--workspace <名> --stats`（条目/字符/分片/来源分布/db 体积）   |
 | 条目列举  | `--workspace <名> --list`                         |
 | 条目删除  | `--workspace <名> --remove <entry-id>`（需 `--yes`） |
-| 完整性校验 | `--workspace <名> --verify`（片数/逐片一致性/覆盖/FTS 索引比对） |
+| 完整性校验 | `--workspace <名> --verify`（片数/逐片一致性/覆盖/FTS 索引比对；**含孤儿条目目录与 full.md.tmp 残留检测**——`orphan_entry_dir`/`tmp_residual`，嵌入失败回滚残留可被检出） |
 | 索引重建  | `--workspace <名> --reindex`（重建 FTS+标题锚点+子节；**不含向量**；`consistent` 含 chunk↔full.md 逐片校验；重建后刷新 ANALYZE 统计） |
 | 向量补建  | `--workspace <名> --embed`（为零向量条目补建向量，需嵌入链） |
 | 空间回收  | `--workspace <名> --vacuum`                       |
