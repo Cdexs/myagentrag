@@ -790,22 +790,21 @@ def ws_embed(ws_name):
             "vectors": total, "message": pair[messages.get_lang()], "message_i18n": pair}
 
 
-def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref=None,
-              author=None, publisher=None, publish_date=None, segments=None,
-              srt_text=None, source_file=None, keep_source=True,
-              raw_subtitle=None, raw_subtitle_ext=None, no_embed=False, srcmap=None,
-              replace=False):
-    """入库：幂等（entry_id=sha256(全文)[:16]，同 id 更新）。
+def _ingest_prepare(ws_name, *, content=None, title=None, source_type=None, source_ref=None,
+                    author=None, publisher=None, publish_date=None, segments=None,
+                    srt_text=None, source_file=None, keep_source=True,
+                    raw_subtitle=None, raw_subtitle_ext=None, srcmap=None):
+    """入库准备阶段（不嵌入、不写库）：全文/时间戳/entry_id/full.md 临时落盘/
+    来源副本/分片与窗口/元数据解析。返回 (prep, None) 或 (None, error_dict)。
 
-    文本来源三选一：content（文档/网页/字幕清洗文本）、srt_text（whisper SRT，
-    解析为段数组）、segments（B站等自带时间戳的段数组）。
-    srcmap：提取层源位置账本（pdf 页偏移+outline / epub 章节），纯增量维度，
-    缺省 None（老调用方/音视频时间账本由 char_spans 生成）。
-    """
+    prep 键：d / entry_id / entry_dir / tmp_full / text / rows（分片+时间戳）/
+    char_spans / windows（(chunk_no, win_start, win_end, wtext)，嵌入文本在尾位）/
+    source_copy / source_type / source_ref / author / publisher / publish_date /
+    title_final / srcmap / now。"""
     try:
         d = _ensure_workspace(ws_name)
     except ValueError as e:
-        return {"success": False, "error": str(e)}
+        return None, {"success": False, "error": str(e)}
     # 构造全文与时间戳段
     char_spans = []
     if srt_text:
@@ -815,7 +814,7 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
     else:
         text = content or ""
     if not text or not text.strip():
-        return messages.err_result("ingest_empty")
+        return None, messages.err_result("ingest_empty")
 
     entry_id = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
     entry_dir = d / "entries" / entry_id
@@ -825,7 +824,7 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
     _chk = hashlib.sha256(tmp_full.read_text(encoding="utf-8").encode("utf-8")).hexdigest()[:16]
     if _chk != entry_id:
         tmp_full.unlink(missing_ok=True)
-        return messages.err_result("ingest_fullmd_mismatch")
+        return None, messages.err_result("ingest_fullmd_mismatch")
 
     source_copy = None
     if keep_source:
@@ -842,22 +841,12 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
             start_ms, end_ms = _time_range_for(char_spans, cs, ce)
         rows.append((entry_id, no, ctext, cs, ce - cs, start_ms, end_ms))
 
-    # 向量嵌入（v1.5 §8C：片内窗口粒度；--no-embed 跳过并在结果标注）
-    vec_windows = []
-    vec_values = []
-    if not no_embed:
-        import embeddings as _emb
-        windows = []
-        for (eid, no, ctext, off, cc, sms, ems) in rows:
-            for (ws_, we_, wtext) in _emb.split_windows(ctext):
-                windows.append((no, off + ws_, off + we_, wtext))
-        if windows:
-            try:
-                vec_values = _emb.embed_texts([w[3] for w in windows], model_id=_emb.DEFAULT_MODEL)
-            except RuntimeError as e:
-                tmp_full.unlink(missing_ok=True)
-                return messages.err_result("ingest_embed_fail", err=str(e))
-            vec_windows = [(w[0], w[1], w[2]) for w in windows]  # (chunk_no, win_start, win_end)
+    # 窗口切分（v1.5 §8C：片内窗口粒度）——嵌入由调用方执行（单文件一次 / 批量合并一次）
+    import embeddings as _emb
+    windows = []
+    for (eid, no, ctext, off, cc, sms, ems) in rows:
+        for (ws_, we_, wtext) in _emb.split_windows(ctext):
+            windows.append((no, off + ws_, off + we_, wtext))
 
     prev = None
     if source_ref:
@@ -873,6 +862,34 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
         publish_date = publish_date or prev[3]
     title_final = _entry_title_hint(title or (prev and prev[0]), text, entry_id)
     now = _now_iso()
+    prep = {"d": d, "entry_id": entry_id, "entry_dir": entry_dir, "tmp_full": tmp_full,
+            "text": text, "rows": rows, "char_spans": char_spans, "windows": windows,
+            "source_copy": source_copy, "source_type": source_type, "source_ref": source_ref,
+            "author": author, "publisher": publisher, "publish_date": publish_date,
+            "title_final": title_final, "srcmap": srcmap, "now": now}
+    return prep, None
+
+
+def _ingest_commit(ws_name, prep, vec_windows, vec_values, replace=False):
+    """入库提交阶段：写库（分片/FTS/锚点/向量/条目）→ 原子替换 full.md →
+    supersede 处理 → meta.json/transcript.json → 返回结果 dict。"""
+    d = prep["d"]
+    entry_id = prep["entry_id"]
+    entry_dir = prep["entry_dir"]
+    tmp_full = prep["tmp_full"]
+    text = prep["text"]
+    rows = prep["rows"]
+    char_spans = prep["char_spans"]
+    srcmap = prep["srcmap"]
+    source_copy = prep["source_copy"]
+    source_type = prep["source_type"]
+    source_ref = prep["source_ref"]
+    author = prep["author"]
+    publisher = prep["publisher"]
+    publish_date = prep["publish_date"]
+    title_final = prep["title_final"]
+    now = prep["now"]
+
     def _write(con):
         con.executescript(SCHEMA)
         existing = con.execute("SELECT created_at FROM entries WHERE id=?", (entry_id,)).fetchone()
@@ -929,7 +946,6 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
              created_at, now, len(text), len(rows), "full.md"))
         con.commit()
 
-
         return existing, created_at
 
     # 错误恢复（退避重试 2 次）：malformed/locked 类 → 重建连接重试，仍失败才报错
@@ -972,6 +988,102 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
             "supersedes": superseded, "replaced": bool(replace and superseded),
             "message": pair[messages.get_lang()],
             "message_i18n": pair}
+
+
+def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref=None,
+              author=None, publisher=None, publish_date=None, segments=None,
+              srt_text=None, source_file=None, keep_source=True,
+              raw_subtitle=None, raw_subtitle_ext=None, no_embed=False, srcmap=None,
+              replace=False):
+    """入库：幂等（entry_id=sha256(全文)[:16]，同 id 更新）。
+
+    文本来源三选一：content（文档/网页/字幕清洗文本）、srt_text（whisper SRT，
+    解析为段数组）、segments（B站等自带时间戳的段数组）。
+    srcmap：提取层源位置账本（pdf 页偏移+outline / epub 章节），纯增量维度，
+    缺省 None（老调用方/音视频时间账本由 char_spans 生成）。
+    两阶段实现：_ingest_prepare（提取/分片/窗口，不嵌入）→ 本条窗口一次
+    embed_texts → _ingest_commit；批量多文件请用 ws_ingest_batch（合并嵌入）。
+    """
+    prep, err = _ingest_prepare(
+        ws_name, content=content, title=title, source_type=source_type,
+        source_ref=source_ref, author=author, publisher=publisher,
+        publish_date=publish_date, segments=segments, srt_text=srt_text,
+        source_file=source_file, keep_source=keep_source,
+        raw_subtitle=raw_subtitle, raw_subtitle_ext=raw_subtitle_ext, srcmap=srcmap)
+    if err:
+        return err
+    vec_windows = []
+    vec_values = []
+    if not no_embed:
+        import embeddings as _emb
+        if prep["windows"]:
+            try:
+                vec_values = _emb.embed_texts([w[3] for w in prep["windows"]],
+                                              model_id=_emb.DEFAULT_MODEL)
+            except RuntimeError as e:
+                prep["tmp_full"].unlink(missing_ok=True)
+                return messages.err_result("ingest_embed_fail", err=str(e))
+            vec_windows = [(w[0], w[1], w[2]) for w in prep["windows"]]
+    return _ingest_commit(ws_name, prep, vec_windows, vec_values, replace=replace)
+
+
+def ws_ingest_batch(ws_name, *, items, no_embed=False, replace=False):
+    """批量入库：N 个文档一次嵌入调用（llama-server 只拉起一次，N×1.2s → 1×1.2s）。
+
+    两阶段：先逐条 _ingest_prepare（单条失败跳过并记入 results，不阻塞其余），
+    再以一次 embed_texts 合并嵌入全部窗口（失败 → 整批不入库、临时文件清理，
+    与单文件"嵌入失败未入库"语义一致），最后逐条 _ingest_commit。
+    items：每项为 _ingest_prepare 的 kwargs（content/srt_text/segments/title/…）。
+    返回：{"success": 全部成功, "batch": True, "workspace", "results": [逐项],
+           "failed": [失败项标识], "embedded_windows": 合并嵌入窗口总数}。
+    同批次内相同内容 → 幂等更新同一条目（sha256 键控）。
+    """
+    import embeddings as _emb
+    results = [None] * len(items)
+    preps = []                # (item 序号, prep, 该条 replace)
+    failed = []
+    for i, item in enumerate(items):
+        item = dict(item)
+        item.pop("no_embed", None)          # 嵌入开关由批量参数统一控制
+        item_replace = item.pop("replace", replace)
+        prep, err = _ingest_prepare(ws_name, **item)
+        if err:
+            failed.append(item.get("title") or item.get("source_file")
+                          or item.get("source_ref") or f"item#{i + 1}")
+            results[i] = err
+            continue
+        preps.append((i, prep, item_replace))
+
+    flat, spans = [], []      # 合并窗口池：(entry_id, chunk_no, ws_, we_, wtext) + 各条目区间
+    for i, p, item_replace in preps:
+        start = len(flat)
+        for (no, s, e, t) in p["windows"]:
+            flat.append((p["entry_id"], no, s, e, t))
+        spans.append((i, p, item_replace, start, len(flat) - start))
+
+    vec_values = []
+    if not no_embed and flat:
+        try:
+            vec_values = _emb.embed_texts([w[4] for w in flat], model_id=_emb.DEFAULT_MODEL)
+        except RuntimeError as e:
+            for _, p, _, _, _ in spans:
+                p["tmp_full"].unlink(missing_ok=True)   # 整批回滚：不留半成品
+            err = messages.err_result("ingest_embed_fail", err=str(e))
+            err.update({"batch": True, "workspace": ws_name, "results": results,
+                        "failed": failed})
+            return err
+
+    embedded = 0
+    for i, p, item_replace, start, n in spans:
+        vv = vec_values[start:start + n] if vec_values else []
+        vw = ([(no, s, e) for (_, no, s, e, _) in flat[start:start + n]]
+              if vv else [])          # 无向量时与单文件 no_embed 行为一致（空窗口表）
+        results[i] = _ingest_commit(ws_name, p, vw, vv, replace=item_replace)
+        embedded += len(vv)
+
+    return {"success": all(r.get("success") for r in results),
+            "batch": True, "workspace": ws_name, "results": results,
+            "failed": failed, "embedded_windows": embedded}
 
 
 # ==================== 检索（§6 读取路径） ====================

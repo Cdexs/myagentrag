@@ -191,10 +191,9 @@ def _run_workspace_ops(args):
     return None
 
 
-def _maybe_ingest(args, result):
-    """提取成功且带 --workspace 时入库（§5）。返回追加 workspace 信息的 result。"""
-    if not args.workspace or not result.get("success"):
-        return result
+def _ingest_kwargs(args, result):
+    """提取结果 → ws_ingest/ws_ingest_batch 的 kwargs（按内容类型装配
+    segments/srt/srcmap；title/author 等元数据缺省沿用提取结果）。"""
     ct = detect_content_type(args.url or args.file)
     source_ref = args.url if args.url else (str(args.file) if args.file else None)
     fallback_title = result.get("title") or (Path(result["filename"]).stem
@@ -228,7 +227,15 @@ def _maybe_ingest(args, result):
     else:
         kwargs.update(source_type=ct, content=result.get("content"), source_file=args.file,
                       srcmap=result.get("srcmap"), replace=args.replace)
+    return kwargs
 
+
+def _maybe_ingest(args, result):
+    """提取成功且带 --workspace 时入库（§5）。返回追加 workspace 信息的 result。"""
+    if not args.workspace or not result.get("success"):
+        return result
+    kwargs = _ingest_kwargs(args, result)
+    kwargs.setdefault("replace", False)   # 原契约：仅文档类型分支携带 --replace
     ing = workspace.ws_ingest(args.workspace, **kwargs)
     if ing.get("success"):
         result["workspace"] = {"name": args.workspace, "entry_id": ing["entry_id"],
@@ -248,6 +255,94 @@ def _maybe_ingest(args, result):
     else:
         result["workspace_error"] = ing
     return result
+
+
+# ==================== 批量入库（多文件合并嵌入） ====================
+
+# --dir 扫描的受支持扩展名（与 SKILL.md「支持的内容源」一致）
+_DIR_EXTS = {".txt", ".md", ".markdown", ".rst", ".csv", ".pdf", ".docx", ".doc",
+             ".epub", ".xlsx", ".xlsm", ".pptx",
+             ".mp3", ".wav", ".aac", ".m4a", ".flac", ".ogg", ".wma",
+             ".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv", ".webm"}
+
+
+def _scan_dir_files(d):
+    """--dir 扫描：目录下受支持扩展名的文件（不含子目录），按文件名排序。"""
+    p = Path(d)
+    return sorted((str(f) for f in p.iterdir()
+                   if f.is_file() and f.suffix.lower() in _DIR_EXTS),
+                  key=lambda s: s.lower())
+
+
+def _run_batch(args, files):
+    """批量模式：逐文件提取 → 一次 ws_ingest_batch（合并嵌入，N×1.2s → 1×1.2s）。
+
+    单文件提取失败跳过并记入 results（不阻塞其余）；合并嵌入失败 → 整批不入库
+    （与单文件"嵌入失败未入库"语义一致）；单文件提取异常按文件隔离（批量容错）。
+    输出恒为 JSON（--output text/srt 不适用于批量）。"""
+    import copy
+    import traceback
+    items, results, item_pos = [], [], []
+    for f in files:
+        entry = {"file": f}
+        a = copy.copy(args)
+        a.file = f
+        try:
+            if not Path(f).exists():
+                raise FileNotFoundError(str(f))
+            try:
+                r = _run_extraction(a)
+            except MissingDependencyError as e:
+                r = _handle_missing_deps(a, e)
+            if not r.get("success"):
+                entry["success"] = False
+                entry["error"] = r.get("error") or messages.msg("unknown_error")
+                if r.get("error_i18n"):
+                    entry["error_i18n"] = r["error_i18n"]
+                results.append(entry)
+                continue
+            if not args.workspace:
+                entry["success"] = True
+                entry["title"] = r.get("title")
+                results.append(entry)
+                continue
+            items.append(_ingest_kwargs(a, r))
+            item_pos.append(len(results))
+            results.append(entry)            # 占位：入库结果回填
+        except Exception as e:               # 批量容错：单文件异常不拖垮整批
+            print(traceback.format_exc(), file=sys.stderr)
+            entry["success"] = False
+            entry["error"] = str(e) or e.__class__.__name__
+            results.append(entry)
+
+    ing = None
+    if items and args.workspace:
+        ing = workspace.ws_ingest_batch(args.workspace, items=items,
+                                        no_embed=args.no_embed, replace=args.replace)
+        for k, pos in enumerate(item_pos):
+            res = ing["results"][k]
+            entry = results[pos]
+            if res.get("success"):
+                entry["success"] = True
+                entry["title"] = res.get("title")
+                entry["entry_id"] = res.get("entry_id")
+                entry["chunk_count"] = res.get("chunk_count")
+                entry["vectors"] = res.get("vectors")
+                entry["updated"] = res.get("updated")
+            else:
+                entry["success"] = False
+                entry["error"] = res.get("error")
+                if res.get("error_i18n"):
+                    entry["error_i18n"] = res["error_i18n"]
+    else:
+        for pos in item_pos:                 # 无 --workspace：提取成功即成功
+            results[pos]["success"] = True
+
+    failed = [e["file"] for e in results if not e.get("success")]
+    return {"success": bool(results) and not failed, "batch": True,
+            "workspace": args.workspace or None, "results": results,
+            "failed": failed,
+            "embedded_windows": (ing or {}).get("embedded_windows", 0)}
 
 
 # ==================== 主函数 ====================
@@ -344,9 +439,12 @@ class _JsonArgParser(argparse.ArgumentParser):
 
 
 def main():
-    parser = _JsonArgParser(description='智能内容提取工具')
+    parser = _JsonArgParser(description='MyAgentRAG — 本地知识库构建与检索工具')
     parser.add_argument('--url', help='要提取的 URL')
-    parser.add_argument('--file', help='要提取的本地文件')
+    parser.add_argument('--file', action='append', metavar='文件',
+                        help='要提取的本地文件（可重复：多文件批量入库，合并为一次嵌入调用）')
+    parser.add_argument('--dir', metavar='目录',
+                        help='批量入库：扫描目录下受支持的文件（不含子目录，按文件名排序）')
     parser.add_argument('--output', choices=['json', 'text', 'srt'], default='json', help='输出格式 (srt 仅支持音频/视频转字幕)')
     parser.add_argument('--model', default='large-v3-turbo', help='Whisper 模型名称 (默认: large-v3-turbo; 可选 large-v3-turbo-q5_0 快速档)')
     parser.add_argument('--no-gpu', action='store_true', help='强制 CPU 转录（禁用 GPU 后端）')
@@ -426,10 +524,31 @@ def main():
         print(json.dumps(result, ensure_ascii=False, indent=2))
         sys.exit(0 if result.get("success") else 1)
 
-    if not args.url and not args.file:
+    # 批量输入归集：--file 可重复 + --dir 目录扫描（单输入 → 原路径，零行为变化）
+    files = list(args.file or [])
+    if args.dir:
+        if not Path(args.dir).is_dir():
+            print(json.dumps(messages.err_result("dir_not_found", path=args.dir),
+                             ensure_ascii=False))
+            sys.exit(1)
+        files.extend(_scan_dir_files(args.dir))
+    if args.url and len(files) > 1:
+        print(json.dumps(messages.err_result("url_batch_conflict"), ensure_ascii=False))
+        sys.exit(1)
+
+    if not args.url and not files:
         # 无任务输入同样走 JSON 契约（S10：失败路径全部 json.loads 可解析）
         print(json.dumps(messages.err_result("no_input"), ensure_ascii=False))
         sys.exit(1)
+
+    if len(files) > 1:
+        # 批量模式：逐文件提取 + 一次合并嵌入入库（输出恒为 JSON）
+        args.file = files
+        result = _run_batch(args, files)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        sys.exit(0 if result.get("success") else 1)
+
+    args.file = files[0] if files else None  # 单输入：归一化回 str，原路径零行为变化
 
     # 本地文件不存在时提前报错（否则会被当成 unknown 类型，报错误导人）
     if args.file and not Path(args.file).exists():

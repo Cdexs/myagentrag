@@ -256,6 +256,10 @@ GPU 是否启用取决于 whisper.cpp 二进制编译时包含的后端；CPU �
 # --workspace 带上即入库；库名不存在时隐式创建（也支持显式 --workspace <名> --create）
 "$PYTHON" "$EXTRACTOR" --file "document.pdf" --workspace 我的资料
 "$PYTHON" "$EXTRACTOR" --url "https://www.bilibili.com/video/BVxxxx" --workspace 我的资料
+# 批量入库：多 --file 或 --dir（扫描目录受支持文件，不含子目录）——全部窗口合并为
+# 一次嵌入调用（llama-server 只拉起一次，N 文件 N×1.2s → 1×1.2s）；输出恒为 JSON
+"$PYTHON" "$EXTRACTOR" --file a.pdf --file b.docx --file c.epub --workspace 我的资料
+"$PYTHON" "$EXTRACTOR" --dir "资料目录" --workspace 我的资料
 # 元数据可选指定（title/author/publisher/publish-date），缺省自动取自内容或文件名
 "$PYTHON" "$EXTRACTOR" --file "lecture.mp3" --workspace 我的资料 --title "讲座标题" --author "作者"
 ```
@@ -264,7 +268,8 @@ GPU 是否启用取决于 whisper.cpp 二进制编译时包含的后端；CPU �
 
 - **幂等**：条目 id = 内容 sha256 前 16 位；同内容重灌只更新元数据，不产生重复条目；
 - **来源副本**：本地文件与网页快照默认复制到 `source/<id>/`（音视频默认复制——回放必需），`--no-keep-source` 可关；
-- **音视频时间戳索引**：入库的音视频统一走 whisper SRT 转录，段级时间戳存 `transcript.json`，每个分片带 `start_ms`/`end_ms`（普通提取不受影响：视频仍先试内置字幕）。
+- **音视频时间戳索引**：入库的音视频统一走 whisper SRT 转录，段级时间戳存 `transcript.json`，每个分片带 `start_ms`/`end_ms`（普通提取不受影响：视频仍先试内置字幕）；
+- **批量契约**（多 `--file` 或 `--dir` 时）：输出 `{"batch": true, "results": [每文件 entry 摘要或 {success:false,error}], "failed": [失败文件], "embedded_windows": N}`，rc = 全部成功 0 / 任一失败 1；单文件提取失败跳过不阻塞其余；**合并嵌入失败 → 整批不入库**（结构化错误）；`--url` 不参与批量（与多文件同给时报错）；单文件用法输出契约不变。
 
 ### 检索
 

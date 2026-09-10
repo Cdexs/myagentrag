@@ -97,10 +97,12 @@ Note: Python libraries and components require **no pre-installation** — everyt
 Extracted content is stored into a local knowledge base for search and deep reading: SQLite FTS5+trigram full-text search (built into the Python standard library — zero extra dependencies; BM25 ranking, snippet highlights, boolean/NEAR queries), heading anchors as a third route in fusion ranking, source-file snapshots, timestamp indexing with seeked playback for audio/video (VLC/PotPlayer/mpv/system default, probed per platform), and 13 management operations (create/list/delete/rename/stats/verify/reindex/vacuum…).
 
 ```bash
-python scripts/extract.py --file document.pdf --workspace my-docs             # extract + ingest
-python scripts/extract.py --workspace my-docs --search "keyword"              # search (with offset/chunk locators)
-python scripts/extract.py --workspace my-docs --entry <id> --section <ref>    # section-aware deep reading
-python scripts/extract.py --workspace my-docs --play <entry-id> --at 12:33    # seeked playback
+python scripts/extract.py --file document.pdf --workspace my-docs            # extract + ingest
+python scripts/extract.py --file a.pdf --file b.docx --workspace my-docs     # batch ingest (merged embeddings)
+python scripts/extract.py --dir docs-folder --workspace my-docs              # whole-directory batch ingest
+python scripts/extract.py --workspace my-docs --search "keyword"             # three-route hybrid search
+python scripts/extract.py --workspace my-docs --entry <id> --max-chars 8000  # located deep reading
+python scripts/extract.py --workspace my-docs --play <id> --at 12:33         # seeked playback
 ```
 
 A workspace directory is self-contained (copy it to migrate); destructive operations require a `--yes` confirmation. The knowledge base requires SQLite ≥3.34 (satisfied by official CPython builds; if the current interpreter lacks it, the skill auto-switches to a capable one instead of degrading search quality). For search syntax, deep reading, playback, and the full set of management operations, see the "Knowledge-base workspace" section in [SKILL.md](SKILL.md).

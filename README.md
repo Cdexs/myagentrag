@@ -96,10 +96,12 @@ python scripts/extract.py --workspace 我的资料 --play <id> --at 12:33       
 提取的内容存入本地知识库做检索与精读：SQLite FTS5+trigram 全文检索（Python 标准库内置，零外部依赖，BM25 排序/snippet 片段预览/布尔与 NEAR 查询）、标题锚点作为第三路参与融合排序、来源文件副本、音视频时间戳索引与定位回放（VLC/PotPlayer/mpv/系统关联按平台探测）、13 项管理操作（创建/列举/删除/改名/统计/校验/重建/压缩等）。
 
 ```bash
-python scripts/extract.py --file document.pdf --workspace 我的资料              # 提取并入库
-python scripts/extract.py --workspace 我的资料 --search "全文检索"               # 检索（含偏移/分片定位）
-python scripts/extract.py --workspace 我的资料 --entry <id> --section <ref>    # 按章节/结构精读
-python scripts/extract.py --workspace 我的资料 --play <entry-id> --at 12:33    # 音视频定位回放
+python scripts/extract.py --file document.pdf --workspace 我的资料            # 提取并入库
+python scripts/extract.py --file a.pdf --file b.docx --workspace 我的资料      # 批量入库（合并嵌入）
+python scripts/extract.py --dir 资料目录 --workspace 我的资料                   # 整目录批量入库
+python scripts/extract.py --workspace 我的资料 --search "检索词"              # 三路混合检索
+python scripts/extract.py --workspace 我的资料 --entry <id> --max-chars 8000  # 定位精读
+python scripts/extract.py --workspace 我的资料 --play <id> --at 12:33         # 音视频定位回放
 ```
 
 workspace 目录自包含（拷走即迁移）；删除类操作需 `--yes` 二次确认。知识库需要 SQLite ≥3.34（CPython 官方构建默认满足，不满足时自动切换可用解释器，不做降级检索）。检索语法、定位精读、回放与管理操作全集详见 [SKILL.md](SKILL.md)「知识库 workspace」章节。

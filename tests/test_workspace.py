@@ -1032,3 +1032,80 @@ def test_column_filter_with_topic_three_routes(ws_mod):
     assert s["vector_available"] is True          # 向量路参与（legacy 后端 = numpy）
     assert s["filtered_entries"] == 1
     assert {h["title"] for h in s["hits"]} == {"目标书籍"}
+
+
+# ---------- 批量入库合并嵌入（2026-09-09） ----------
+
+def test_ws_ingest_batch_one_embed_call(ws_mod, monkeypatch):
+    """批量 N 条目 → embed_texts 恰好调用 1 次（llama-server 只拉起一次）"""
+    import embeddings
+    calls = {"n": 0}
+    real = embeddings.embed_texts
+
+    def counting(texts, model_id=None):
+        calls["n"] += 1
+        return real(texts, model_id=model_id)
+
+    monkeypatch.setattr(embeddings, "embed_texts", counting)
+    items = [{"content": f"批量入库条目{c}内容验证。" * 20, "title": c} for c in "甲乙丙"]
+    r = ws_mod.ws_ingest_batch("批量库", items=items)
+    assert r["success"] and r["batch"] is True and r["embedded_windows"] >= 3
+    assert calls["n"] == 1
+    assert len(r["results"]) == 3 and all(x["success"] for x in r["results"])
+    assert ws_mod.ws_list_entries("批量库")["total"] == 3
+
+
+def test_ws_ingest_batch_vectors_belong(ws_mod):
+    """合并嵌入后向量按 entry_id 正确归属（无跨条目串位）"""
+    import struct
+    r = ws_mod.ws_ingest_batch("归属库", items=[
+        {"content": "归属验证甲甲甲。" * 30, "title": "甲"},
+        {"content": "归属验证乙乙乙。" * 30, "title": "乙"}])
+    assert r["success"]
+    d = ws_mod.ws_dir("归属库")
+    con = ws_mod._connect(d / "workspace.db")
+    for res in r["results"]:
+        n = con.execute("SELECT COUNT(*) FROM vectors WHERE entry_id=?",
+                        (res["entry_id"],)).fetchone()[0]
+        assert n == res["vectors"] >= 1
+        b = con.execute("SELECT embedding FROM vectors WHERE entry_id=?",
+                        (res["entry_id"],)).fetchone()[0]
+        vals = struct.unpack(f"<{len(b) // 4}f", b)
+        assert all(-2 <= x <= 2 for x in vals)
+
+
+def test_ws_ingest_batch_partial_skip(ws_mod):
+    """批量中单条 prepare 失败（空文本）→ 跳过记入 results，不阻塞其余"""
+    items = [{"content": ""}, {"content": "有效条目内容验证。" * 10, "title": "有效"}]
+    r = ws_mod.ws_ingest_batch("跳过库", items=items)
+    assert r["success"] is False and r["failed"]
+    assert r["results"][0]["success"] is False and "error" in r["results"][0]
+    assert r["results"][1]["success"] is True
+    assert ws_mod.ws_list_entries("跳过库")["total"] == 1
+
+
+def test_ws_ingest_batch_embed_fail_rollback(ws_mod, monkeypatch):
+    """合并嵌入失败 → 整批不入库（无 entry、无 .tmp 残留）"""
+    import embeddings
+
+    def boom(texts, model_id=None):
+        raise RuntimeError("推理引擎不可用")
+
+    monkeypatch.setattr(embeddings, "embed_texts", boom)
+    r = ws_mod.ws_ingest_batch("回滚库", items=[
+        {"content": "整批回滚验证甲。" * 20, "title": "甲"},
+        {"content": "整批回滚验证乙。" * 20, "title": "乙"}])
+    assert r["success"] is False and "batch" in r and "嵌入失败" in r["error"]
+    assert ws_mod.ws_list_entries("回滚库")["total"] == 0
+    d = ws_mod.ws_dir("回滚库")
+    assert not list(d.glob("entries/*/full.md.tmp"))
+
+
+def test_ws_ingest_batch_no_embed(ws_mod):
+    """批量 no_embed：零嵌入调用、条目 vectors=0、FTS 可检索"""
+    r = ws_mod.ws_ingest_batch("无嵌批量库", items=[
+        {"content": "不嵌入批量验证内容。" * 20, "title": "N"}], no_embed=True)
+    assert r["success"] and r["embedded_windows"] == 0
+    assert r["results"][0]["vectors"] == 0
+    s = ws_mod.ws_search("无嵌批量库", "不嵌入批量", mode="fts")
+    assert s["total"] >= 1

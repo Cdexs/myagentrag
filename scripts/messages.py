@@ -297,6 +297,14 @@ MESSAGES = {
         "zh": "仅元数据范围过滤（publish_date/created_at 配 >=/<=/>/<）无法排序检索，请附加主题词（浏览可用 --list）",
         "en": "Range-only filters (publish_date/created_at with >=/<=/>/<) cannot be ranked; add topic words (or use --list to browse)",
     },
+    "dir_not_found": {
+        "zh": "目录不存在: {path}",
+        "en": "Directory not found: {path}",
+    },
+    "url_batch_conflict": {
+        "zh": "--url 与多文件批量入库不可同用（--url 只支持单输入）",
+        "en": "--url cannot be combined with multi-file batch ingest (--url supports a single input)",
+    },
     "ws_name_required": {
         "zh": "该操作需要 --workspace <名>",
         "en": "This operation requires --workspace <name>",

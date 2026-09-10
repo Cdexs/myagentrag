@@ -298,3 +298,38 @@ def test_search_vector_mode_missing_workspace_still_errors(cli_env):
     r = run(cli_env, "--workspace", "不存在XYZ123", "--search", "测试", "--mode", "vector")
     j = jout(r)
     assert j["success"] is False and "不存在XYZ123" in j["error"]
+
+
+def test_batch_ingest_cli(cli_env, tmp_path):
+    """批量入库 CLI：多 --file → batch 契约，条目可检索；单文件仍走旧契约"""
+    (tmp_path / "batcha.md").write_text("# 甲\n\n批量入库甲文件内容验证。" * 10, encoding="utf-8")
+    (tmp_path / "batchb.md").write_text("# 乙\n\n批量入库乙文件内容验证。" * 10, encoding="utf-8")
+    r = run(cli_env, "--file", str(tmp_path / "batcha.md"),
+            "--file", str(tmp_path / "batchb.md"),
+            "--workspace", "CLI批量", "--no-embed")
+    assert r.returncode == 0
+    j = json.loads(r.stdout)
+    assert j["batch"] is True and j["success"] is True
+    assert len(j["results"]) == 2 and all(x["success"] for x in j["results"])
+    r2 = run(cli_env, "--workspace", "CLI批量", "--search", "批量入库", "--mode", "fts", "--quiet")
+    assert json.loads(r2.stdout)["total"] >= 1
+    # 单文件 → 旧契约（无 batch 键，workspace 摘要挂在顶层）
+    r3 = run(cli_env, "--file", str(tmp_path / "batcha.md"),
+             "--workspace", "CLI批量", "--no-embed", "--quiet")
+    j3 = json.loads(r3.stdout)
+    assert j3["workspace"]["entry_id"] and "batch" not in j3
+
+
+def test_batch_ingest_dir_and_partial_failure(cli_env, tmp_path):
+    """--dir 扫描（不支持的扩展名不入列）+ 提取失败文件跳过且 rc=1"""
+    (tmp_path / "d1.md").write_text("目录批量甲验证。" * 10, encoding="utf-8")
+    (tmp_path / "d2.md").write_text("目录批量乙验证。" * 10, encoding="utf-8")
+    (tmp_path / "skip.xyz").write_text("不支持的扩展名", encoding="utf-8")
+    (tmp_path / "bad.pdf").write_text("损坏的 pdf 内容", encoding="utf-8")
+    r = run(cli_env, "--dir", str(tmp_path), "--workspace", "CLI目录", "--no-embed")
+    j = json.loads(r.stdout)
+    assert j["batch"] is True and j["success"] is False and r.returncode == 1
+    ok = {e["file"] for e in j["results"] if e["success"]}
+    assert ok == {str(tmp_path / "d1.md"), str(tmp_path / "d2.md")}
+    assert j["failed"] == [str(tmp_path / "bad.pdf")]
+    assert all("skip.xyz" not in e["file"] for e in j["results"])
