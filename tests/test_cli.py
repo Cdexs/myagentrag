@@ -333,3 +333,29 @@ def test_batch_ingest_dir_and_partial_failure(cli_env, tmp_path):
     assert ok == {str(tmp_path / "d1.md"), str(tmp_path / "d2.md")}
     assert j["failed"] == [str(tmp_path / "bad.pdf")]
     assert all("skip.xyz" not in e["file"] for e in j["results"])
+
+
+def test_batch_ingest_supersedes(cli_env, tmp_path):
+    """OPT-01：批量 results[] 补 supersedes/replaced，与单文件契约对齐"""
+    d = tmp_path / "sdir"
+    d.mkdir()
+    (d / "keep.md").write_text("獬豸保持不变内容锚点。" * 20, encoding="utf-8")
+    (d / "s.md").write_text("貔貅原始内容甲。" * 20, encoding="utf-8")
+    run(cli_env, "--dir", str(d), "--workspace", "CLI取代", "--no-embed", "--quiet")
+    (d / "s.md").write_text("貔貅改后内容乙。" * 20, encoding="utf-8")
+    r = run(cli_env, "--dir", str(d), "--workspace", "CLI取代", "--no-embed", "--quiet")
+    j = json.loads(r.stdout)
+    sres = next(e for e in j["results"] if e["file"].endswith("s.md"))
+    assert sres["success"] and sres["supersedes"] and sres["replaced"] is False
+    kres = next(e for e in j["results"] if e["file"].endswith("keep.md"))
+    assert kres["supersedes"] == []
+
+
+def test_batch_dir_single_file_batch_shape(cli_env, tmp_path):
+    """KB-OPT-42：--dir 恒为 batch 形态（即使只扫到 1 个受支持文件）"""
+    (tmp_path / "only.md").write_text("单文件目录批量验证。" * 10, encoding="utf-8")
+    (tmp_path / "skip.xyz").write_text("x", encoding="utf-8")
+    r = run(cli_env, "--dir", str(tmp_path), "--workspace", "CLI单文件目录",
+            "--no-embed", "--quiet")
+    j = json.loads(r.stdout)
+    assert j["batch"] is True and len(j["results"]) == 1 and j["results"][0]["success"]

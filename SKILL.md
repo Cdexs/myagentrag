@@ -270,7 +270,7 @@ GPU 是否启用取决于 whisper.cpp 二进制编译时包含的后端；CPU �
 - **幂等**：条目 id = 内容 sha256 前 16 位；同内容重灌只更新元数据，不产生重复条目；
 - **来源副本**：本地文件与网页快照默认复制到 `source/<id>/`（音视频默认复制——回放必需），`--no-keep-source` 可关；
 - **音视频时间戳索引**：入库的音视频统一走 whisper SRT 转录，段级时间戳存 `transcript.json`，每个分片带 `start_ms`/`end_ms`（普通提取不受影响：视频仍先试内置字幕）；
-- **批量契约**（多 `--file` 或 `--dir` 时）：输出 `{"batch": true, "results": [每文件 entry 摘要或 {success:false,error}], "failed": [失败文件], "embedded_windows": N}`，rc = 全部成功 0 / 任一失败 1；单文件提取失败跳过不阻塞其余；**合并嵌入失败 → 整批不入库**（结构化错误）；`--url` 不参与批量（与多文件同给时报错）；单文件用法输出契约不变。
+- **批量契约**（多 `--file` 或 `--dir` 时）：输出 `{"batch": true, "results": [每文件 entry 摘要或 {success:false,error}], "failed": [失败文件], "embedded_windows": N}`，rc = 全部成功 0 / 任一失败 1；单文件提取失败跳过不阻塞其余；**合并嵌入失败 → 整批不入库**（结构化错误）；`--url` 不参与批量（与多文件同给时报错）；**`--dir` 恒为 batch 形态**（即使只扫到 1 个受支持文件，调用方只需解析一种契约）；单 `--file` 用法输出契约不变。
 
 ### 检索
 
@@ -286,7 +286,7 @@ GPU 是否启用取决于 whisper.cpp 二进制编译时包含的后端；CPU �
 
 **返回条数（`--limit`，默认 20，1..100）**：单次检索的命中条数上限。默认 20 是覆盖度与上下文预算的平衡（20 条约 5K tokens，而 agent 通常只深读最高分 1-3 条）。以下场景建议显式调大（如 `--limit 50`）：① **枚举/清点类**（"列出所有讲 X 的内容"）；② **多实体对比**（"对比 A/B/C 对 X 的说法"）；③ **宽泛跨库检索**——`--all-workspaces` 时 limit 是**全部库共享的总额度**（7 个库时平均每库不足 3 条，不能据此判断某库没有相关内容）；④ 同节聚合后条数不足所需。命中数可能少于 limit 属正常（同章节碎片聚合合并），不代表检索失败。
 
-查询语法：≥3 字词进 trigram 索引（输入自动转义）；**自然多词默认 OR 召回 + 覆盖率重排**（单词命中也返回，双词命中排前）；`AND`/`OR`/`NOT`/`NEAR(a b, 5)`/`前缀*` 原样透传；`title:`/`author:`/`publisher:`/`publish_date:` 可限定列；**元数据范围过滤**：`publish_date>=2024`、`created_at<2025-01-01` 等（两列支持 `>=`/`<=`/`>`/`<`，TEXT ISO 形态字典序即时间序），与主题词并用时以候选 entry 集限定三路检索（`column_filter: true` + `filtered_entries` 标注；仅过滤无主题词返回结构化错误）；**<3 字中文词**（trigram 物理限制）自动回退 chunks 表 LIKE 并在结果中标注 `like-low-precision`（该路 `score=None` 为低精度匹配，高精度需求请用 ≥3 字词或 `--mode vector`）。
+查询语法：≥3 字词进 trigram 索引（输入自动转义）；**自然多词默认 OR 召回 + 覆盖率重排**（单词命中也返回，双词命中排前）；`AND`/`OR`/`NOT`/`NEAR(a b, 5)`/`前缀*` 原样透传；`title:`/`author:`/`publisher:`/`publish_date:` 可限定列；**元数据范围过滤**：`publish_date>=2024`、`created_at<2025-01-01` 等（两列支持 `>=`/`<=`/`>`/`<`，TEXT ISO 形态字典序即时间序；**值为前缀字典序比较**——`<=2019` 不含 `2019-05-01`，按日期语义请写 `<=2019-12-31`），与主题词并用时以候选 entry 集限定三路检索（`column_filter: true` + `filtered_entries` 标注；仅过滤无主题词返回结构化错误）；**<3 字中文词**（trigram 物理限制）自动回退 chunks 表 LIKE 并在结果中标注 `like-low-precision`（该路 `score=None` 为低精度匹配，高精度需求请用 ≥3 字词或 `--mode vector`）。
 
 **结构感知入库**：docx 标题样式 / EPUB h1-h6 / PDF 内嵌书签自动归一化为标题锚点，裸文本启发式识别"第N章/条款N/Chapter N/编号标题"（老条目 `--reindex` 补建）；出处锚定**源文件结构**——PDF 页码、EPUB 章节、音视频时间戳、文本行号（`source_loc` 字段），full.md 内部坐标不对外暴露。
 

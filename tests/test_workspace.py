@@ -1109,3 +1109,80 @@ def test_ws_ingest_batch_no_embed(ws_mod):
     assert r["results"][0]["vectors"] == 0
     s = ws_mod.ws_search("无嵌批量库", "不嵌入批量", mode="fts")
     assert s["total"] >= 1
+
+
+# ---------- QA 缺陷修复回归（OPT-01/02/03，2026-09-10） ----------
+
+def test_ws_ingest_batch_embed_fail_oserror_structured(ws_mod, monkeypatch):
+    """OPT-02：嵌入阶段 OSError（如伪造引擎 WinError 216）→ 结构化 JSON，不再穿透"""
+    import embeddings
+
+    def boom(texts, model_id=None):
+        raise OSError("[WinError 216] 版本不兼容")
+
+    monkeypatch.setattr(embeddings, "embed_texts", boom)
+    r = ws_mod.ws_ingest_batch("结构化库", items=[
+        {"content": "结构化验证内容。" * 20, "title": "X"}])
+    assert r["success"] is False and r["batch"] is True
+    assert "嵌入失败" in r["error"] and "error_i18n" in r
+    assert ws_mod.ws_list_entries("结构化库")["total"] == 0
+
+
+def test_ws_ingest_embed_fail_oserror_structured(ws_mod, monkeypatch):
+    """OPT-02 对照面：单文件路径 OSError 同样结构化（原仅捕 RuntimeError）"""
+    import embeddings
+
+    def boom(texts, model_id=None):
+        raise OSError("[WinError 216] 版本不兼容")
+
+    monkeypatch.setattr(embeddings, "embed_texts", boom)
+    r = ws_mod.ws_ingest("结构化单文件库", content="结构化单文件验证内容。" * 20, title="S")
+    assert r["success"] is False and "嵌入失败" in r["error"]
+
+
+def test_ws_ingest_batch_rollback_cleans_entry_dirs(ws_mod, monkeypatch):
+    """OPT-03：回滚后 entries/<id>/ 目录整体移除（含 .tmp），不留空目录"""
+    import embeddings
+
+    def boom(texts, model_id=None):
+        raise RuntimeError("嵌入失败")
+
+    monkeypatch.setattr(embeddings, "embed_texts", boom)
+    ws_mod.ws_ingest_batch("清目录库", items=[
+        {"content": "清理验证甲。" * 20, "title": "甲"},
+        {"content": "清理验证乙。" * 20, "title": "乙"}])
+    d = ws_mod.ws_dir("清目录库")
+    assert not list((d / "entries").iterdir())          # 目录整体移除，非仅删 .tmp
+
+
+def test_verify_detects_orphan_and_tmp_residual(ws_mod):
+    """OPT-03②：--verify 检出孤儿条目目录与 full.md.tmp 残留"""
+    ws_mod.ws_ingest("孤儿库", content="孤儿检测验证内容。" * 10, title="V", no_embed=True)
+    d = ws_mod.ws_dir("孤儿库")
+    fake = d / "entries" / "deadbeefdeadbeef"
+    fake.mkdir(parents=True)
+    (fake / "full.md.tmp").write_text("残留", encoding="utf-8")
+    real_eid = ws_mod.ws_list_entries("孤儿库")["entries"][0]["id"]
+    (d / "entries" / real_eid / "full.md.tmp").write_text("残留", encoding="utf-8")
+    v = ws_mod.ws_verify("孤儿库")
+    kinds = {i["issue"] for i in v["issues"]}
+    assert {"orphan_entry_dir", "tmp_residual"} <= kinds
+    assert v["ok"] is False
+
+
+def test_ws_ingest_batch_embed_fail_results_fully_structured(ws_mod, monkeypatch):
+    """OPT-02 附带：嵌入失败返回的 results 全部为结构化 dict（无 None 占位，
+    调用方 _run_batch 逐项回填时不崩）"""
+    import embeddings
+
+    def boom(texts, model_id=None):
+        raise OSError("[WinError 216] 版本不兼容")
+
+    monkeypatch.setattr(embeddings, "embed_texts", boom)
+    r = ws_mod.ws_ingest_batch("全结构化库", items=[
+        {"content": "全结构化验证甲。" * 20, "title": "甲"},
+        {"content": "全结构化验证乙。" * 20, "title": "乙"}])
+    assert r["success"] is False
+    assert len(r["results"]) == 2
+    assert all(isinstance(x, dict) and x.get("success") is False for x in r["results"])
+    assert all("error" in x for x in r["results"])

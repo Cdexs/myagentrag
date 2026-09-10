@@ -317,32 +317,50 @@ def _run_batch(args, files):
 
     ing = None
     if items and args.workspace:
-        ing = workspace.ws_ingest_batch(args.workspace, items=items,
-                                        no_embed=args.no_embed, replace=args.replace)
+        try:
+            ing = workspace.ws_ingest_batch(args.workspace, items=items,
+                                            no_embed=args.no_embed, replace=args.replace)
+        except Exception as e:   # OPT-02：批量入库阶段任何异常都转结构化 JSON（KB-OUT-01）
+            import traceback
+            print(traceback.format_exc(), file=sys.stderr)   # 堆栈走 stderr，stdout 保持纯 JSON
+            failed = [it.get("title") or it.get("source_file") or it.get("source_ref")
+                      or f"item#{k + 1}" for k, it in enumerate(items)]
+            return {"success": False, "batch": True, "workspace": args.workspace,
+                    "error": str(e) or type(e).__name__,
+                    "error_i18n": {"zh": f"批量入库失败: {e}",
+                                   "en": f"Batch ingest failed: {e}"},
+                    "results": results, "failed": failed, "embedded_windows": 0}
         for k, pos in enumerate(item_pos):
             res = ing["results"][k]
             entry = results[pos]
-            if res.get("success"):
-                entry["success"] = True
-                entry["title"] = res.get("title")
-                entry["entry_id"] = res.get("entry_id")
-                entry["chunk_count"] = res.get("chunk_count")
-                entry["vectors"] = res.get("vectors")
-                entry["updated"] = res.get("updated")
-            else:
+            if res is None or not res.get("success"):   # None 防御（ws_ingest_batch 契约保证非 None，双保险）
                 entry["success"] = False
-                entry["error"] = res.get("error")
-                if res.get("error_i18n"):
+                entry["error"] = (res or {}).get("error") or "入库失败（无结构化结果）"
+                if (res or {}).get("error_i18n"):
                     entry["error_i18n"] = res["error_i18n"]
+                continue
+            entry["success"] = True
+            entry["title"] = res.get("title")
+            entry["entry_id"] = res.get("entry_id")
+            entry["chunk_count"] = res.get("chunk_count")
+            entry["vectors"] = res.get("vectors")
+            entry["updated"] = res.get("updated")
+            entry["supersedes"] = res.get("supersedes") or []   # OPT-01：与单文件契约对齐
+            entry["replaced"] = bool(res.get("replaced"))
     else:
         for pos in item_pos:                 # 无 --workspace：提取成功即成功
             results[pos]["success"] = True
 
     failed = [e["file"] for e in results if not e.get("success")]
-    return {"success": bool(results) and not failed, "batch": True,
-            "workspace": args.workspace or None, "results": results,
-            "failed": failed,
-            "embedded_windows": (ing or {}).get("embedded_windows", 0)}
+    out = {"success": bool(results) and not failed, "batch": True,
+           "workspace": args.workspace or None, "results": results,
+           "failed": failed,
+           "embedded_windows": (ing or {}).get("embedded_windows", 0)}
+    if ing is not None and not ing.get("success"):
+        # OPT-02：批量嵌入失败等错误透传顶层 error/error_i18n（KB-OUT-01 契约）
+        out["error"] = ing.get("error") or "批量入库失败"
+        out["error_i18n"] = ing.get("error_i18n") or {"zh": out["error"], "en": out["error"]}
+    return out
 
 
 # ==================== 主函数 ====================
@@ -535,13 +553,19 @@ def main():
     if args.url and len(files) > 1:
         print(json.dumps(messages.err_result("url_batch_conflict"), ensure_ascii=False))
         sys.exit(1)
+    if args.dir and not files:
+        print(json.dumps(messages.err_result("dir_empty", path=args.dir), ensure_ascii=False))
+        sys.exit(1)
+
+    # --dir 恒为 batch 形态（KB-OPT-42：调用方只需解析一种契约，即使只扫到 1 个文件）
+    batch_mode = not args.url and (len(files) > 1 or bool(args.dir))
 
     if not args.url and not files:
         # 无任务输入同样走 JSON 契约（S10：失败路径全部 json.loads 可解析）
         print(json.dumps(messages.err_result("no_input"), ensure_ascii=False))
         sys.exit(1)
 
-    if len(files) > 1:
+    if batch_mode:
         # 批量模式：逐文件提取 + 一次合并嵌入入库（输出恒为 JSON）
         args.file = files
         result = _run_batch(args, files)

@@ -774,8 +774,9 @@ def ws_embed(ws_name):
                 continue
             try:
                 vals = _emb.embed_texts([w[3] for w in wins], model_id=_emb.DEFAULT_MODEL)
-            except RuntimeError as e:
-                return messages.err_result("ws_embed_fail", err=str(e))
+            except Exception as e:   # RuntimeError/OSError 等一律转结构化错误（KB-OUT-01）
+                return messages.err_result("ws_embed_fail",
+                                           err=str(e) or type(e).__name__)
             _store_vectors(con, eid, [(w[0], w[1], w[2]) for w in wins], vals)
             con.commit()
             done += 1
@@ -824,6 +825,8 @@ def _ingest_prepare(ws_name, *, content=None, title=None, source_type=None, sour
     _chk = hashlib.sha256(tmp_full.read_text(encoding="utf-8").encode("utf-8")).hexdigest()[:16]
     if _chk != entry_id:
         tmp_full.unlink(missing_ok=True)
+        entry_dir.rmdir()
+        shutil.rmtree(d / "source" / entry_id, ignore_errors=True)
         return None, messages.err_result("ingest_fullmd_mismatch")
 
     source_copy = None
@@ -868,6 +871,18 @@ def _ingest_prepare(ws_name, *, content=None, title=None, source_type=None, sour
             "author": author, "publisher": publisher, "publish_date": publish_date,
             "title_final": title_final, "srcmap": srcmap, "now": now}
     return prep, None
+
+
+def _ingest_rollback_tmp(prep):
+    """嵌入失败回滚（OPT-03）：清除 full.md.tmp，并移除仅因准备阶段而创建的
+    entries/<id>/（此刻只含 .tmp，rmdir 仅在空时成功）与 source/<id>/ 副本目录——
+    条目从未入库，不留半成品。任何清理失败静默吞掉（不掩盖原始错误）。"""
+    try:
+        prep["tmp_full"].unlink(missing_ok=True)
+        prep["entry_dir"].rmdir()
+    except OSError:
+        pass
+    shutil.rmtree(Path(prep["d"]) / "source" / prep["entry_id"], ignore_errors=True)
 
 
 def _ingest_commit(ws_name, prep, vec_windows, vec_values, replace=False):
@@ -1020,9 +1035,10 @@ def ws_ingest(ws_name, *, content=None, title=None, source_type=None, source_ref
             try:
                 vec_values = _emb.embed_texts([w[3] for w in prep["windows"]],
                                               model_id=_emb.DEFAULT_MODEL)
-            except RuntimeError as e:
-                prep["tmp_full"].unlink(missing_ok=True)
-                return messages.err_result("ingest_embed_fail", err=str(e))
+            except Exception as e:   # RuntimeError/OSError 等一律转结构化错误（KB-OUT-01）
+                _ingest_rollback_tmp(prep)
+                return messages.err_result("ingest_embed_fail",
+                                           err=str(e) or type(e).__name__)
             vec_windows = [(w[0], w[1], w[2]) for w in prep["windows"]]
     return _ingest_commit(ws_name, prep, vec_windows, vec_values, replace=replace)
 
@@ -1065,10 +1081,16 @@ def ws_ingest_batch(ws_name, *, items, no_embed=False, replace=False):
     if not no_embed and flat:
         try:
             vec_values = _emb.embed_texts([w[4] for w in flat], model_id=_emb.DEFAULT_MODEL)
-        except RuntimeError as e:
+        except Exception as e:   # RuntimeError/OSError 等一律转结构化错误（KB-OUT-01，OPT-02）
             for _, p, _, _, _ in spans:
-                p["tmp_full"].unlink(missing_ok=True)   # 整批回滚：不留半成品
-            err = messages.err_result("ingest_embed_fail", err=str(e))
+                _ingest_rollback_tmp(p)   # 整批回滚：不留半成品（OPT-03）
+            err = messages.err_result("ingest_embed_fail",
+                                      err=str(e) or type(e).__name__)
+            # 未提交条目占位补齐为结构化失败项（调用方遍历 results 时不遇到 None）
+            results = [r if r is not None else
+                       {"success": False, "error": err["error"],
+                        "error_i18n": err["error_i18n"]}
+                       for r in results]
             err.update({"batch": True, "workspace": ws_name, "results": results,
                         "failed": failed})
             return err
@@ -2239,6 +2261,22 @@ def ws_verify(name):
                                "detail": f"offset={off3}"})
     finally:
         _close(con)
+    # 孤儿/残留检测（OPT-03②）：entries/ 目录与 DB 对账——无 DB 条目的目录、
+    # 有 DB 条目但残留 full.md.tmp 的目录
+    db_ids = {e[0] for e in entries}
+    entries_root = d / "entries"
+    if entries_root.is_dir():
+        for edir in sorted(entries_root.iterdir()):
+            if not edir.is_dir():
+                continue
+            has_tmp = (edir / "full.md.tmp").exists()
+            if edir.name not in db_ids:
+                issues.append({"entry_id": edir.name, "issue": "orphan_entry_dir",
+                               "detail": "无对应 DB 条目"
+                                         + ("（含 full.md.tmp 残留）" if has_tmp else "")})
+            elif has_tmp:
+                issues.append({"entry_id": edir.name, "issue": "tmp_residual",
+                               "detail": str(edir / "full.md.tmp")})
     for (eid, meta_count, _total) in entries:
         full_file = d / "entries" / eid / "full.md"
         if not full_file.exists():

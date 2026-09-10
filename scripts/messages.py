@@ -301,6 +301,10 @@ MESSAGES = {
         "zh": "目录不存在: {path}",
         "en": "Directory not found: {path}",
     },
+    "dir_empty": {
+        "zh": "目录内无受支持的文件: {path}",
+        "en": "No supported files in directory: {path}",
+    },
     "url_batch_conflict": {
         "zh": "--url 与多文件批量入库不可同用（--url 只支持单输入）",
         "en": "--url cannot be combined with multi-file batch ingest (--url supports a single input)",
