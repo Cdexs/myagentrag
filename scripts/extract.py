@@ -254,6 +254,9 @@ def _maybe_ingest(args, result):
                 print(f"  📥 {ing['message']}", file=sys.stderr)
     else:
         result["workspace_error"] = ing
+        # OPT-05（QA 2026-09-10）：入库失败 = 任务目标未达成，顶层 success 必须翻转，
+        # rc 置 1——与批量路径契约统一；content 仍保留供 agent 阅读使用
+        result["success"] = False
     return result
 
 
@@ -586,19 +589,25 @@ def main():
 
     result = _maybe_ingest(args, result)
 
-    if (args.output == 'json' and result.get("success")
-            and isinstance(result.get("content"), str)
+    if (args.output == 'json' and isinstance(result.get("content"), str)
             and len(result["content"]) > SLICE_THRESHOLD_CHARS):
         # slice protocol：超过阈值的内容分片落盘，stdout 只输出清单——
-        # agent 按清单逐片读取（塞爆上下文的物理上限被提取器锁死）
+        # agent 按清单逐片读取（塞爆上下文的物理上限被提取器锁死）。
+        # 条件不含 success（OPT-05）：入库失败时同样走分片保护，避免大文本直灌 stdout
         title = result.get("title") or result.get("filename") or str(args.file)
-        _ws_info = result.get("workspace")   # 分片覆盖前保留入库信息（N5 深层根因）
+        _ws_info = result.get("workspace")     # 分片覆盖前保留入库信息（N5 深层根因）
+        _ws_err = result.get("workspace_error")  # 入库失败信息随分片保留（OPT-05）
         result = write_slices(title, args.file, result["content"],
                               args_slice=args.slice)
         if _ws_info:
             result["workspace"] = _ws_info
+        if _ws_err:
+            result["workspace_error"] = _ws_err
+        result.setdefault("success", not _ws_err)   # 纯提取分片=成功；入库失败分片=失败
     if args.output == 'json':
         print(json.dumps(result, ensure_ascii=False, indent=2))
+        # OPT-05：rc 契约统一（与批量/workspace-ops 一致）——success=false → rc=1
+        sys.exit(0 if result.get("success") else 1)
     elif args.output == 'srt':
         # SRT 直接输出内容
         if result.get("success"):

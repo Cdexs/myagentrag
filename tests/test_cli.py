@@ -359,3 +359,30 @@ def test_batch_dir_single_file_batch_shape(cli_env, tmp_path):
             "--no-embed", "--quiet")
     j = json.loads(r.stdout)
     assert j["batch"] is True and len(j["results"]) == 1 and j["results"][0]["success"]
+
+
+def test_single_ingest_embed_fail_opt05(cli_env, tmp_path, monkeypatch):
+    """OPT-05：单文件入库嵌入失败 → 顶层 success=false、rc=1（与批量契约统一），
+    content 仍返回供 agent 阅读，错误详情在 workspace_error（双语）"""
+    (tmp_path / "probe.md").write_text("OPT05 嵌入失败契约验证内容。" * 20, encoding="utf-8")
+    env = dict(cli_env)
+    env["MYAGENTRAG_LLAMA_EMBED"] = str(tmp_path / "fake_engine.txt")
+    (tmp_path / "fake_engine.txt").write_text("not an engine", encoding="utf-8")
+    r = run(env, "--file", str(tmp_path / "probe.md"),
+            "--workspace", "OPT05库", "--quiet")
+    assert r.returncode == 1
+    j = json.loads(r.stdout)
+    assert j["success"] is False                       # 顶层翻转（原为 true）
+    assert j["workspace_error"]["success"] is False    # 嵌套详情保留
+    assert "嵌入失败" in j["workspace_error"]["error"]
+    assert "error_i18n" in j["workspace_error"]
+    assert j["content"]                                # 提取产物仍返回
+
+
+def test_extract_failure_rc_one(cli_env, tmp_path):
+    """rc 契约统一（OPT-05 连带声明）：提取失败 → rc=1（原为 0，与批量对齐）"""
+    (tmp_path / "bad.pdf").write_text("损坏的 pdf 内容", encoding="utf-8")
+    r = run(cli_env, "--file", str(tmp_path / "bad.pdf"),
+            "--workspace", "RC契约库", "--no-embed", "--quiet")
+    j = json.loads(r.stdout)
+    assert j["success"] is False and r.returncode == 1

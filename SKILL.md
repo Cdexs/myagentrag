@@ -109,6 +109,8 @@ $Python = if ($env:MYAGENTRAG_PYTHON) { $env:MYAGENTRAG_PYTHON } else { "python"
 - `--lang zh|en`：反馈语言。默认按系统语言自动探测（环境变量 `MYAGENTRAG_LANG` 亦可覆盖）；自有错误文案在 JSON 中同时提供 `error_i18n: {"zh": ..., "en": ...}` 双份，agent 可按界面语言选用（原始异常文本不翻译）；
 - 失败时 JSON 可能包含 `missing`（缺失组件清单）或 `cookieHint`（YouTube 需要登录验证的提示），agent 应原样展示给用户。
 
+**退出码与成功判定契约**：`rc=0` 任务成功；`rc=1` 任务失败（提取或入库失败，一律顶层 `success:false`）；`rc=2` 参数误用。**入库失败**（含嵌入失败/组件缺失）时：顶层 `success=false`、rc=1，错误详情在嵌套 `workspace_error`（含双语 `error_i18n`），`content` 仍会返回——**agent 必须检查顶层 `success` 而非只看有无 content**；`--workspace` 场景下入库失败即任务失败，不要把提取成功当作任务成功。
+
 > YouTube 需要代理时，先设置 `HTTPS_PROXY`。YouTube 受限内容可能需要 cookies；公开字幕通常不需要。
 
 ## 典型场景（agent 操作手册）
