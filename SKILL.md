@@ -193,7 +193,7 @@ $Python = if ($env:MYAGENTRAG_PYTHON) { $env:MYAGENTRAG_PYTHON } else { "python"
 
 提取 YouTube/音视频时脚本的中间文件（yt-dlp 字幕、ffmpeg 转出的 16 kHz 单声道 WAV、whisper SRT）存放于临时目录；每次运行使用 `myag_*` 子目录，正常结束即删除，异常遗留目录超过 72 小时会在后续运行时清理。
 
-临时根目录解析顺序：`MYAGENTRAG_TMPDIR`（显式指定，支持 `~`）→ Python `tempfile.gettempdir()`（Windows 通常为 `%LOCALAPPDATA%\Temp`，macOS 为 `/var/folders/.../T`，Linux/WSL 为 `/tmp`），例如 `export MYAGENTRAG_TMPDIR="$HOME/.cache/myagentrag-tmp"`。不要把 cookies、模型或重要原始文件放入临时目录。
+临时根目录解析顺序：`MYAGENTRAG_TMPDIR`（显式指定，支持 `~`）→ 受管目录 `~/.myagentrag/tmp`（默认，与 bin/models/runtime 同级的自管区域，不散落系统临时目录）→ 系统临时目录（仅当受管目录不可写时兜底），例如 `export MYAGENTRAG_TMPDIR="$HOME/.cache/myagentrag-tmp"`。不要把 cookies、模型或重要原始文件放入临时目录。
 
 ## ffmpeg 与 whisper.cpp
 

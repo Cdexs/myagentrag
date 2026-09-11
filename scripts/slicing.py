@@ -15,13 +15,22 @@ CHUNK_OVERLAP_CHARS = 300    # 相邻片重叠窗口
 
 
 def _default_temp_base_dir():
-    """受管临时根目录：显式环境变量优先，否则系统临时目录"""
+    """受管临时根目录：显式环境变量优先，其次受管目录 tmp/（与 bin/models/runtime
+    同级的自管区域——不散落系统临时目录），系统临时目录仅作最后兜底。"""
     import os
     import tempfile
     configured = os.environ.get("MYAGENTRAG_TMPDIR")
     if configured:
         return Path(configured).expanduser()
-    return Path(tempfile.gettempdir())
+    # 与 deps.MANAGED_HOME / extractors 同一解析（内联，避免 slicing←deps 循环导入）
+    home = Path(os.environ.get("MYAGENTRAG_HOME")
+                or str(Path.home() / ".myagentrag")).expanduser()
+    managed_tmp = home / "tmp"
+    try:
+        managed_tmp.mkdir(parents=True, exist_ok=True)
+        return managed_tmp
+    except OSError:
+        return Path(tempfile.gettempdir())
 
 
 TEMP_BASE_DIR = _default_temp_base_dir()

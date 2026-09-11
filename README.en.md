@@ -80,7 +80,7 @@ Note: Python libraries and components require **no pre-installation** — everyt
 | ---------------------------------------- | --------------------------------------------------------------------------- |
 | `MYAGENTRAG_PYTHON`                 | Python interpreter (defaults to `python` on PATH)                          |
 | `MYAGENTRAG_HOME`                   | Managed component directory (default `~/.myagentrag`)                  |
-| `MYAGENTRAG_TMPDIR`                 | Temp directory (defaults to the system temp dir)                            |
+| `MYAGENTRAG_TMPDIR`                 | Temp directory (defaults to `~/.myagentrag/tmp` — never touches the system temp dir; can point to another disk)                            |
 | `MYAGENTRAG_FFMPEG`                 | Path to the ffmpeg executable                                              |
 | `MYAGENTRAG_WHISPERCPP_CLI`         | Path to the whisper-cli executable                                         |
 | `MYAGENTRAG_WHISPERCPP_DIR`         | Search directory for whisper.cpp executables                               |

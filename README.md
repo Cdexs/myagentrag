@@ -79,7 +79,7 @@ python scripts/extract.py --workspace 我的资料 --play <id> --at 12:33       
 | ---------------------------------------- | ----------------------------------------------------------------------- |
 | `MYAGENTRAG_PYTHON`                 | 指定 Python 解释器（默认 PATH 中的 `python`）                                      |
 | `MYAGENTRAG_HOME`                   | 受管组件目录（默认 `~/.myagentrag`）                                         |
-| `MYAGENTRAG_TMPDIR`                 | 临时目录（默认系统临时目录）                                                          |
+| `MYAGENTRAG_TMPDIR`                 | 临时目录（默认 `~/.myagentrag/tmp`，不占用系统临时目录；可指向其他磁盘） |
 | `MYAGENTRAG_FFMPEG`                 | 指定 ffmpeg 可执行文件                                                         |
 | `MYAGENTRAG_WHISPERCPP_CLI`         | 指定 whisper-cli 可执行文件                                                    |
 | `MYAGENTRAG_WHISPERCPP_DIR`         | whisper.cpp 可执行文件搜索目录                                                   |

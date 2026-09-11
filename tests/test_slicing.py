@@ -77,3 +77,18 @@ def test_make_tmpdir_under_base_and_sweep(tmp_path, monkeypatch):
     fresh.mkdir()
     make_tmpdir("myag_new2_")
     assert fresh.exists()  # 新目录保留
+
+
+def test_temp_base_dir_default_managed_home(monkeypatch, tmp_path):
+    """默认临时根 = 受管目录 tmp/（不再落系统临时目录，OPT 2026-09-11）"""
+    monkeypatch.delenv("MYAGENTRAG_TMPDIR", raising=False)
+    monkeypatch.setenv("MYAGENTRAG_HOME", str(tmp_path / "home"))
+    base = slicing._default_temp_base_dir()
+    assert base == tmp_path / "home" / "tmp"
+    assert base.exists()
+
+
+def test_temp_base_dir_env_override(monkeypatch, tmp_path):
+    """显式 MYAGENTRAG_TMPDIR 仍优先（如指向其他磁盘）"""
+    monkeypatch.setenv("MYAGENTRAG_TMPDIR", str(tmp_path / "custom"))
+    assert slicing._default_temp_base_dir() == tmp_path / "custom"
