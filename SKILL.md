@@ -272,6 +272,7 @@ GPU 是否启用取决于 whisper.cpp 二进制编译时包含的后端；CPU �
 - **幂等**：条目 id = 内容 sha256 前 16 位；同内容重灌只更新元数据，不产生重复条目；
 - **来源副本**：本地文件与网页快照默认复制到 `source/<id>/`（音视频默认复制——回放必需），`--no-keep-source` 可关；
 - **音视频时间戳索引**：入库的音视频统一走 whisper SRT 转录，段级时间戳存 `transcript.json`，每个分片带 `start_ms`/`end_ms`（普通提取不受影响：视频仍先试内置字幕）；
+- **媒体条目的粒度语义**（KB-AUD-06 定案）：媒体条目的 **chunk 粒度由转录文本长度决定**（口语密度约 260 字符/分钟，40K 字符上限 ≈ 2.5 小时音频才产生第 2 片——长音频常为 1 片，属正常）。**定位/回放粒度不依赖 chunk**：检索命中精确到段级时间戳（`timestamp_precision: segment`），语义检索粒度是 800 字符嵌入窗口（独立于 chunk），读取有 `--max-chars` + 命中开窗兜底——`--play --at` 按段落定位回放，无需按时长分片；
 - **批量契约**（多 `--file` 或 `--dir` 时）：输出 `{"batch": true, "results": [每文件 entry 摘要（含 entry_id/title/chunk_count/vectors/updated/**supersedes/replaced**）或 {success:false,error}], "failed": [失败文件], "embedded_windows": N}`，rc = 全部成功 0 / 任一失败 1；单文件提取失败跳过不阻塞其余；**合并嵌入失败 → 整批不入库**（结构化错误）；`--url` 不参与批量（与多文件同给时报错）；**`--dir` 恒为 batch 形态**（即使只扫到 1 个受支持文件，调用方只需解析一种契约）；单 `--file` 用法输出契约不变。
 
 ### 检索
