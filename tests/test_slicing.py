@@ -92,3 +92,37 @@ def test_temp_base_dir_env_override(monkeypatch, tmp_path):
     """显式 MYAGENTRAG_TMPDIR 仍优先（如指向其他磁盘）"""
     monkeypatch.setenv("MYAGENTRAG_TMPDIR", str(tmp_path / "custom"))
     assert slicing._default_temp_base_dir() == tmp_path / "custom"
+
+
+def test_write_slices_sweeps_stale_dirs(tmp_path, monkeypatch):
+    """P9：文档分片路径同样触发 72h 过期清扫（与 make_tmpdir 对称，不再只靠音视频路径顺带清理）"""
+    import os
+    import time
+    monkeypatch.setattr(slicing, "TEMP_BASE_DIR", tmp_path)
+    stale = tmp_path / "myag_slice_deadbeef"
+    stale.mkdir()
+    (stale / "chunk-001.md").write_text("x", encoding="utf-8")
+    old = time.time() - 4 * 24 * 3600          # 4 天前 → 超过 72h
+    os.utime(stale, (old, old))
+    fresh = tmp_path / "myag_slice_fresh"
+    fresh.mkdir()                              # 新目录不受清扫影响
+    manifest = slicing.write_slices("t", "src.md", "x" * 100)
+    assert not stale.exists()                  # 过期目录被清扫（P9 期望 ② = False）
+    assert fresh.exists()
+    assert manifest["total_chunks"] >= 1       # 分片功能本身正常
+
+
+def test_write_slices_sweep_honors_explicit_base(tmp_path, monkeypatch):
+    """P9：显式 temp_base_dir 参数时，清扫指向实际生效根目录"""
+    import os
+    import time
+    monkeypatch.setattr(slicing, "TEMP_BASE_DIR", tmp_path / "global")
+    (tmp_path / "global").mkdir()
+    explicit = tmp_path / "explicit"
+    explicit.mkdir()
+    stale = explicit / "myag_slice_old"
+    stale.mkdir()
+    old = time.time() - 4 * 24 * 3600
+    os.utime(stale, (old, old))
+    slicing.write_slices("t", "src.md", "y" * 100, temp_base_dir=explicit)
+    assert not stale.exists()                  # 清扫的是 explicit 根，而非全局根

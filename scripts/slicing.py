@@ -36,12 +36,14 @@ def _default_temp_base_dir():
 TEMP_BASE_DIR = _default_temp_base_dir()
 
 
-def _sweep_stale_tmpdirs(max_age_hours=72):
-    """清理异常退出遗留的 myag_* 临时目录（超过 max_age_hours 即删）"""
+def _sweep_stale_tmpdirs(max_age_hours=72, base=None):
+    """清理异常退出遗留的 myag_* 临时目录（超过 max_age_hours 即删）；
+    base 缺省用全局 TEMP_BASE_DIR，write_slices 以实际生效的根目录传入。"""
     import datetime
+    root = Path(base) if base is not None else TEMP_BASE_DIR
     now = datetime.datetime.now().timestamp()
     try:
-        for p in TEMP_BASE_DIR.glob("myag_*"):
+        for p in root.glob("myag_*"):
             if p.is_dir() and now - p.stat().st_mtime > max_age_hours * 3600:
                 import shutil
                 shutil.rmtree(p, ignore_errors=True)
@@ -104,9 +106,13 @@ def make_chunks(text, chunk_chars=CHUNK_CHARS, overlap=CHUNK_OVERLAP_CHARS):
 def write_slices(title, source_path, content, args_slice=None, temp_base_dir=None):
     """大文档分片落盘；args_slice 非 None 时只返回该片内容。
 
-    temp_base_dir：受管临时根目录（默认 MYAGENTRAG_TMPDIR / 系统临时目录）。
+    temp_base_dir：受管临时根目录（默认 TEMP_BASE_DIR：MYAGENTRAG_TMPDIR →
+    受管 tmp → 系统临时目录兜底）。
+    分片目录必须保留供 agent 按需读取（不即时清理）；过期清扫在此触发
+    （P9：与 make_tmpdir 对称，纯文档路径不再依赖音视频路径顺带清理）。
     """
     temp_root = Path(temp_base_dir) if temp_base_dir else TEMP_BASE_DIR
+    _sweep_stale_tmpdirs(base=temp_root)
     content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:8]
     chunk_dir = temp_root / ("myag_slice_" + content_hash[:8])
     chunks = make_chunks(content)
