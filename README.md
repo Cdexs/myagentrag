@@ -36,6 +36,20 @@ python scripts/extract.py --dir "D:\论文" --workspace 论文库          # 整
 python scripts/extract.py --url "https://www.bilibili.com/video/BVxxxx" --workspace 论文库
 ```
 
+**入库流程一览**：
+
+```mermaid
+flowchart TD
+    U["👤 用户：把这几份文件收进知识库 X"] --> A["🤖 Agent 调用 extract.py<br/>--file a.pdf --file b.docx --workspace X"]
+    A --> E["📄 逐文件提取<br/>PDF/Word/EPUB 解析 · 字幕拉取 · whisper 转录"]
+    E -->|"单文件失败：跳过并记入 failed"| K2["⚠️ 不阻塞其余文件"]
+    E --> P["🧱 准备阶段（不嵌入）<br/>全文 → 4 万字符分片 → 800 字符嵌入窗口<br/>full.md 临时落盘 · 来源副本"]
+    P --> M["🧠 合并嵌入：全部窗口合并为一次 llama-server 调用"]
+    M -->|"嵌入失败：整批回滚"| RB["❌ 结构化错误返回，不留半成品"]
+    M --> C["💾 逐条提交<br/>chunks + FTS 索引 + 向量 + 标题锚点"]
+    C --> K["📚 知识库 X 可检索<br/>新条目 · 幂等更新 · supersedes 取代链"]
+```
+
 支持的内容源：**YouTube、B站、网页正文、PDF、Word（docx/doc）、Excel、PowerPoint、EPUB、纯文本**，以及 **音频/视频的本地语音转录**（whisper.cpp，无人值守离线转写）。
 
 ### ② 语义检索：换一种说法也能命中
@@ -46,6 +60,23 @@ python scripts/extract.py --url "https://www.bilibili.com/video/BVxxxx" --worksp
 
 ```bash
 python scripts/extract.py --workspace 论文库 --search "模型压缩"
+```
+
+**检索召回与展现流程一览**：
+
+```mermaid
+flowchart TD
+    U["👤 用户：知识库里关于 X 讲了什么？"] --> A["🤖 Agent 解析意图<br/>库名 · 主题词 · 元数据过滤"]
+    A --> S["🔍 Agent 调用 extract.py<br/>--workspace X --search 主题词（默认 fused）"]
+    S --> R1["⌨️ FTS5 关键词路<br/>BM25 + 覆盖率重排"]
+    S --> R2["🧲 向量语义路<br/>查询嵌入 → sqlite-vec KNN（跨语言）"]
+    S --> R3["🏷️ 标题锚点路<br/>章节标题命中"]
+    R1 --> F["⚖️ RRF 融合 + 同节聚合<br/>命中清单：score · snippet · 出处"]
+    R2 --> F
+    R3 --> F
+    F --> D["📖 Agent 精读最高分 1-3 条<br/>--section · --max-chars"]
+    D --> AN["🗣️ 组织回答<br/>结论 + 出处（页码 / 章节 / 时间戳）"]
+    D -.->|"媒体命中"| P["▶️ --play --at 定位回放"]
 ```
 
 每条命中都带：所属条目与章节标题、原文摘要片段（『』高亮）、多路得分明细，以及**精确出处**。

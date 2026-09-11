@@ -36,6 +36,20 @@ python scripts/extract.py --dir "D:\papers" --workspace papers          # whole-
 python scripts/extract.py --url "https://www.bilibili.com/video/BVxxxx" --workspace papers
 ```
 
+**Ingest flow at a glance**:
+
+```mermaid
+flowchart TD
+    U["👤 User: ingest these files into library X"] --> A["🤖 Agent calls extract.py<br/>--file a.pdf --file b.docx --workspace X"]
+    A --> E["📄 Extract per file<br/>PDF/Word/EPUB parsing · subtitle fetching · whisper transcription"]
+    E -->|"single-file failure: skipped into failed"| K2["⚠️ Rest of the batch unaffected"]
+    E --> P["🧱 Prepare phase (no embedding)<br/>full text → 40K-char chunks → 800-char embedding windows<br/>full.md staged · source snapshots"]
+    P --> M["🧠 Merged embedding: all windows in one llama-server call"]
+    M -->|"embedding failure: whole-batch rollback"| RB["❌ Structured error, no residue"]
+    M --> C["💾 Commit per entry<br/>chunks + FTS index + vectors + heading anchors"]
+    C --> K["📚 Library X is searchable<br/>new entries · idempotent updates · supersedes chain"]
+```
+
 Supported sources: **YouTube, Bilibili, web articles, PDF, Word (docx/doc), Excel, PowerPoint, EPUB, plain text**, plus **local speech-to-text transcription of audio/video** (whisper.cpp, offline).
 
 ### ② Semantic search: paraphrases still hit
@@ -46,6 +60,23 @@ The library looks for answers in three ways at once: **keyword full-text search*
 
 ```bash
 python scripts/extract.py --workspace papers --search "model compression"
+```
+
+**Retrieval recall & presentation flow at a glance**:
+
+```mermaid
+flowchart TD
+    U["👤 User: what does the library say about X?"] --> A["🤖 Agent parses intent<br/>library · topic terms · metadata filters"]
+    A --> S["🔍 Agent calls extract.py<br/>--workspace X --search topic (default fused)"]
+    S --> R1["⌨️ FTS5 keyword route<br/>BM25 + coverage re-ranking"]
+    S --> R2["🧲 Semantic vector route<br/>query embedding → sqlite-vec KNN (cross-lingual)"]
+    S --> R3["🏷️ Heading-anchor route<br/>section title hits"]
+    R1 --> F["⚖️ RRF fusion + same-section aggregation<br/>hit list: score · snippet · provenance"]
+    R2 --> F
+    R3 --> F
+    F --> D["📖 Agent deep-reads the top 1-3 hits<br/>--section · --max-chars"]
+    D --> AN["🗣️ Composed answer<br/>conclusion + provenance (page / chapter / timestamp)"]
+    D -.->|"media hit"| P["▶️ --play --at seeked playback"]
 ```
 
 Every hit carries: its entry and section title, a highlighted snippet (『』), multi-route score details, and **precise provenance**.
