@@ -36,6 +36,14 @@ MESSAGES = {
         "zh": "不支持的内容类型: {t}",
         "en": "Unsupported content type: {t}",
     },
+    "web_fetch_failed": {
+        "zh": "网页抓取失败（HTTP {status}）：{url}",
+        "en": "Web fetch failed (HTTP {status}): {url}",
+    },
+    "web_fetch_error": {
+        "zh": "网页抓取异常：{err}",
+        "en": "Web fetch error: {err}",
+    },
     "cannot_extract": {
         "zh": "无法提取 {ext} 文件内容",
         "en": "Cannot extract {ext} file content",

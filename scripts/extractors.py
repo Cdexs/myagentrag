@@ -264,8 +264,16 @@ def extract_web(url):
                 result["title"] = lines[0].lstrip('Title: ').strip()
                 result["content"] = '\n'.join(lines[1:]).strip()
                 result["success"] = True
+        else:
+            # OPT-06（QA 2026-09-11）：非 200 不再静默——结构化错误（含状态码与 URL），
+            # 调用方可区分 404/403/限流/网络不通并给出可操作建议
+            pair = messages.msg_pair("web_fetch_failed", status=r.status_code, url=url)
+            result["error"] = pair[messages.get_lang()]
+            result["error_i18n"] = pair
     except Exception as e:
-        result["error"] = str(e)
+        result["error"] = str(e) or type(e).__name__
+        pair = messages.msg_pair("web_fetch_error", err=result["error"])
+        result["error_i18n"] = pair
     return result
 
 

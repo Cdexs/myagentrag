@@ -326,3 +326,38 @@ def test_pdf_noise_filter():
             "正文继续内容丁戊。")
     out = ex._pdf_noise_filter(page)
     assert "file:///" not in out and "正文继续内容丁戊。" in out and "甲乙丙" in out
+
+
+# ---------- OPT-06：--url 抓取失败结构化（QA 2026-09-11） ----------
+
+def test_extract_web_non200_structured(monkeypatch):
+    """OPT-06：非 200 不再静默——error + error_i18n 双语（含状态码与 URL）"""
+    import sys, types
+    import extractors
+
+    class FakeResp:
+        status_code = 404
+        text = ""
+
+    fake = types.SimpleNamespace(get=lambda url, timeout=60: FakeResp())
+    monkeypatch.setitem(sys.modules, "requests", fake)
+    r = extractors.extract_web("https://example.com/missing")
+    assert r["success"] is False
+    assert "404" in r["error"] and "example.com/missing" in r["error"]
+    assert r["error_i18n"]["en"].startswith("Web fetch failed (HTTP 404)")
+
+
+def test_extract_web_exception_bilingual(monkeypatch):
+    """OPT-06 附带：网络异常路径补 error_i18n 双语（原仅裸 str(e)）"""
+    import sys, types
+    import extractors
+
+    def boom(url, timeout=60):
+        raise ConnectionError("网络不可达")
+
+    fake = types.SimpleNamespace(get=boom)
+    monkeypatch.setitem(sys.modules, "requests", fake)
+    r = extractors.extract_web("https://example.com/x")
+    assert r["success"] is False
+    assert "网络不可达" in r["error"]
+    assert "error_i18n" in r and "Web fetch error" in r["error_i18n"]["en"]

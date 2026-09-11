@@ -14,7 +14,7 @@ compatibility: Windows / macOS / Linux / WSL；引导层任意 Python ≥3.8（�
 | -------------- | ------------------------------------------------------- | ---------------------------------------------------------------------- |
 | **YouTube**    | 视频 URL                                                  | 通过 yt-dlp 提取手动/自动字幕和元数据                                                |
 | **B站**         | 视频 URL                                                  | 提取 CC 字幕和视频信息（免登录 API）                                                 |
-| **网页**         | HTTP/HTTPS 链接                                           | 通过 Jina Reader 提取正文                                                    |
+| **网页**         | HTTP/HTTPS 链接                                           | 通过 Jina Reader（`r.jina.ai`）提取正文——**URL 会被发送至第三方服务**（隐私敏感链接慎用）；内网/回环地址不可抓取；Jina 不可用或限流时 `--url` 功能整体不可用（失败返回结构化错误，含 HTTP 状态码与 URL） |
 | **文本文件**       | `.txt`, `.md`, `.markdown`, `.rst`, `.csv`              | 直接读取                                                                   |
 | **PDF**        | `.pdf`                                                  | pdfplumber 或 PyMuPDF                                                   |
 | **Word**       | `.docx`, `.doc`                                         | python-docx；`.doc` 另需 pandoc                                           |
