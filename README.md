@@ -6,9 +6,11 @@
 ![GitHub tag](https://img.shields.io/github/v/tag/Cdexs/myagentrag?label=version&color=green)
 ![License](https://img.shields.io/npm/l/@cdexs/myagentrag?color=orange)
 
-**MyAgentRAG 是一个专为 AI Agent 设计的本地 RAG 知识库技能（Agent Skill）。**
+**MyAgentRAG —— 专为 AI Agent 设计的本地 RAG 知识库技能（Agent Skill）。**
 
-把它安装到你的 AI Agent（pi 及其他支持技能机制的 Agent）身上，Agent 就获得了一项持久的新能力：**把你散落各处的资料——视频、网页、文档、录音——变成一个可随时提问、答案带出处的个人知识库**。
+把它嵌入 **Claude Code、Codex、OpenCode、pi** 等支持技能机制的 AI Agent，Agent 立刻获得一项持久的新能力：**把你散落各处的资料——视频、网页、文档、录音——变成一个随叫随到、答案带出处的个人专属知识库**。
+
+**知识库与 Agent 各司其职**：MyAgentRAG 负责重活——把 YouTube/B站视频、网页、PDF/Word/Excel/PowerPoint/EPUB 等文档与音视频录音（本地 ASR 高精度转写）提取入库，建好**文本关键词 + 向量语义 + 标题锚点三路聚合检索**（SQLite FTS5 + 本地向量模型，中英文跨语言），并给每条检索结果锚定精确出处（PDF 第几页、EPUB 第几章、视频第几分几秒）；Agent 负责它最擅长的事——理解你的问题、检索定位、精读消化、组织呈现。检索引擎的记忆力 × Agent 的展现与处理能力，合起来就是你的个人专属知识库。
 
 它解决的是所有 Agent 都会遇到的老问题：
 
@@ -16,7 +18,7 @@
 - **上下文装不下**——一本 300 页的 PDF 塞进对话窗口，要么爆掉要么被截断失真；
 - **回答没有出处**——模型"凭记忆"作答，你无法核实它说的是哪份资料的哪一页。
 
-MyAgentRAG 的做法：Agent 把资料**提取并入库**成本地知识库（SQLite 全文索引 + 本地向量模型），之后你用自然语言提问，Agent 从知识库**检索、精读**相关章节再作答——**每个答案都能精确到 PDF 第几页、EPUB 第几章、视频第几分几秒**。全部计算在本地完成，**不调用任何 LLM、数据不出本机**。
+全部计算在本地完成，**不调用任何 LLM、数据不出本机**。
 
 ---
 
@@ -109,7 +111,7 @@ npm install @cdexs/myagentrag
 pi install npm:@cdexs/myagentrag
 ```
 
-安装后技能包位于 `node_modules/@cdexs/myagentrag/`，把它放进 Agent 的技能目录（如 `~/.pi/agent/skills/myagentrag`）即可。
+安装后技能包位于 `node_modules/@cdexs/myagentrag/`，把它放进 Agent 的技能目录（如 `~/.pi/agent/skills/myagentrag`、Claude Code / Codex / OpenCode 的技能目录）即可。
 
 **方式三：从源码安装**
 

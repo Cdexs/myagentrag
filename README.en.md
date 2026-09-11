@@ -6,9 +6,11 @@
 ![GitHub tag](https://img.shields.io/github/v/tag/Cdexs/myagentrag?label=version&color=green)
 ![License](https://img.shields.io/npm/l/@cdexs/myagentrag?color=orange)
 
-**MyAgentRAG is a local RAG knowledge-base skill designed specifically for AI Agents.**
+**MyAgentRAG — a local RAG knowledge-base skill designed specifically for AI Agents.**
 
-Install it into your AI Agent (pi and any other agent that supports the skill mechanism), and the Agent gains a lasting new capability: **turning your scattered materials — videos, web pages, documents, recordings — into a personal knowledge base you can query anytime, with answers that carry precise provenance.**
+Embed it into **Claude Code, Codex, OpenCode, pi** or any other skill-capable AI Agent, and the Agent immediately gains a lasting new capability: **turning your scattered materials — videos, web pages, documents, recordings — into a personal knowledge base that's always on call, with answers that carry precise provenance.**
+
+**The knowledge base and the Agent each do what they're best at**: MyAgentRAG does the heavy lifting — extracting and ingesting YouTube/Bilibili videos, web pages, PDF/Word/Excel/PowerPoint/EPUB documents and audio/video recordings (high-accuracy local ASR transcription), then building **three-route aggregated retrieval: full-text keywords + vector semantics + heading anchors** (SQLite FTS5 + a local embedding model, cross-lingual Chinese/English), with every retrieval result anchored to exact provenance (which PDF page, which EPUB chapter, which minute-and-second of a video). The Agent does what it's best at — understanding your question, locating, deep-reading and presenting. A retrieval engine's memory × an Agent's presentation and processing power — together, your personal knowledge base.
 
 It solves the oldest problems every Agent runs into:
 
@@ -16,7 +18,7 @@ It solves the oldest problems every Agent runs into:
 - **Context doesn't fit** — a 300-page PDF stuffed into a chat window either blows the context or gets truncated beyond recognition;
 - **Answers have no provenance** — the model answers "from memory" and you cannot verify which page of which document it came from.
 
-MyAgentRAG's approach: the Agent **extracts and ingests** your materials into a local knowledge base (SQLite full-text index + a local embedding model). Afterwards you ask in natural language, the Agent **retrieves and deep-reads** the relevant sections, and answers — **with every answer traceable to a PDF page, an EPUB chapter, or a minute-and-second in a video**. All computation happens locally: **no LLM calls, no data leaves your machine**.
+All computation happens locally: **no LLM calls, no data leaves your machine**.
 
 ---
 
@@ -109,7 +111,7 @@ npm install @cdexs/myagentrag
 pi install npm:@cdexs/myagentrag
 ```
 
-The skill lands in `node_modules/@cdexs/myagentrag/`; place it into your Agent's skill directory (e.g. `~/.pi/agent/skills/myagentrag`).
+The skill lands in `node_modules/@cdexs/myagentrag/`; place it into your Agent's skill directory (e.g. `~/.pi/agent/skills/myagentrag`, or the skill directories of Claude Code / Codex / OpenCode).
 
 **Option 3: from source**
 
