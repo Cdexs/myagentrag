@@ -95,6 +95,8 @@ python scripts/extract.py --workspace 我的资料 --play <id> --at 12:33       
 
 提取的内容存入本地知识库做检索与精读：SQLite FTS5+trigram 全文检索（Python 标准库内置，零外部依赖，BM25 排序/snippet 片段预览/布尔与 NEAR 查询）、标题锚点作为第三路参与融合排序、来源文件副本、音视频时间戳索引与定位回放（VLC/PotPlayer/mpv/系统关联按平台探测）、13 项管理操作（创建/列举/删除/改名/统计/校验/重建/压缩等）。
 
+粒度说明：内容按 40,000 字符分片入库（段落边界对齐，相邻分片重叠 300 字符）；嵌入向量粒度为 800 字符窗口（相邻窗口重叠 100 字符，步长 700，一窗口一向量）；音视频条目另按 whisper 段级时间戳索引——定位与回放精度为段落级，与分片粒度无关。
+
 ```bash
 python scripts/extract.py --file document.pdf --workspace 我的资料            # 提取并入库
 python scripts/extract.py --file a.pdf --file b.docx --workspace 我的资料      # 批量入库（合并嵌入）

@@ -96,6 +96,8 @@ Note: Python libraries and components require **no pre-installation** — everyt
 
 Extracted content is stored into a local knowledge base for search and deep reading: SQLite FTS5+trigram full-text search (built into the Python standard library — zero extra dependencies; BM25 ranking, snippet highlights, boolean/NEAR queries), heading anchors as a third route in fusion ranking, source-file snapshots, timestamp indexing with seeked playback for audio/video (VLC/PotPlayer/mpv/system default, probed per platform), and 13 management operations (create/list/delete/rename/stats/verify/reindex/vacuum…).
 
+Granularity: content is stored as 40,000-char chunks (paragraph-aligned, 300-char overlap between neighboring chunks); embedding vectors use 800-char windows (100-char overlap, 700-char step, one vector per window); audio/video entries are additionally indexed by whisper segment-level timestamps — seek/playback precision is paragraph-level, independent of chunking.
+
 ```bash
 python scripts/extract.py --file document.pdf --workspace my-docs            # extract + ingest
 python scripts/extract.py --file a.pdf --file b.docx --workspace my-docs     # batch ingest (merged embeddings)
