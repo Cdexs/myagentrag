@@ -96,15 +96,17 @@ flowchart TD
 
 Agent 引用这些出处作答，你可以逐条核实。
 
-### ④ 视频与录音：检索到片段，一键跳转播放
+### ④ 视频与录音：检索到片段，点击即定位播放
 
 > 你："上次存的那个讲座里，讲'RAG 评估'的是哪一段？放给我看。"
 
-Agent 检索命中后拿到秒级时间戳，调用本机播放器（VLC / PotPlayer / mpv，按平台自动探测）**从第 12 分 33 秒开始播放**，无需你手动拖进度条：
+Agent 检索命中后拿到秒级时间戳，**用内置的 ffplay 从第 12 分 33 秒起播**——不依赖你装没装播放器（ffplay 随组件包一并落盘），也不走系统默认关联：
 
 ```bash
 python scripts/extract.py --workspace 讲座库 --play <entry-id> --at 12:33
 ```
+
+命中结果还带一个可点击的 `locator`：媒体命中给 `myagentrag://play?…` 链接（点击即定位播放），文档命中给 `file:///` 打开原文件的链接 + 页码/章节标注（各阅读器不支持深链，故只承诺"打开原文件"，页码以文字并列给出）。
 
 ### ⑤ 超长文档：几百页的书也能问
 
@@ -157,7 +159,8 @@ git clone https://github.com/Cdexs/myagentrag.git
 - **无需预装任何 Python 库**：引导层只要机器上有 Python ≥3.8（仅标准库）即可；
 - 首次使用时技能会自动安装**专用运行时**（独立 CPython 3.12 + 版本锁定的扩展库，约 150 MB，经你确认后下载），与系统 Python 完全隔离，不污染用户环境；
 - 用到音视频转录时，会再列出 ffmpeg / whisper.cpp / 语音模型的清单（约 1.6–2.4 GB，经确认后下载）；
-- 所有组件都装在 `~/.myagentrag/` 用户目录下，不动系统目录，卸载只需删除该目录。
+- 所有组件都装在 `~/.myagentrag/` 用户目录下，不动系统目录，卸载只需删除该目录；
+- 安装 ffmpeg 组件时**自动注册 `myagentrag://` 播放链接协议**（用户级注册表，仅 skill 自有命名空间——不修改你的系统默认播放器与文件关联；`--unregister-protocol` 可完全移除）。
 
 ### 第三步：开始使用
 
@@ -207,6 +210,7 @@ B站 的 AI 自动字幕、登录墙视频，YouTube 的部分视频需要登录
 | `MYAGENTRAG_HOME` | 受管组件目录（默认 `~/.myagentrag`） |
 | `MYAGENTRAG_TMPDIR` | 临时目录（默认 `~/.myagentrag/tmp`，不占用系统临时目录；可指向其他磁盘） |
 | `MYAGENTRAG_FFMPEG` | 指定 ffmpeg 可执行文件 |
+| `MYAGENTRAG_FFPLAY` | 指定 ffplay 可执行文件（`--play` 内置定位播放；默认随 ffmpeg 发行包落盘） |
 | `MYAGENTRAG_WHISPERCPP_CLI` | 指定 whisper-cli 可执行文件 |
 | `MYAGENTRAG_WHISPERCPP_DIR` | whisper.cpp 可执行文件搜索目录 |
 | `MYAGENTRAG_WHISPERCPP_MODELS_DIR` | ggml 模型目录 |

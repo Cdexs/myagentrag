@@ -68,6 +68,24 @@ def _find_ffmpeg():
     return None
 
 
+def _find_ffplay():
+    """ffplay 定位（--play 定位播放的内置播放器）：环境变量 → PATH → 受管 bin。
+    与 _find_ffmpeg 同一探测顺序。"""
+    configured = os.environ.get("MYAGENTRAG_FFPLAY")
+    if configured:
+        p = Path(configured).expanduser()
+        if p.exists() and p.is_file():
+            return str(p)
+    p = shutil.which("ffplay")
+    if p:
+        return p
+    exe = "ffplay.exe" if os.name == "nt" else "ffplay"
+    managed = MANAGED_BIN / exe
+    if managed.exists() and managed.is_file():
+        return str(managed)
+    return None
+
+
 def _find_whispercpp_cli():
     configured = os.environ.get("MYAGENTRAG_WHISPERCPP_CLI")
     if configured:
@@ -182,8 +200,25 @@ def _ffmpeg_source_url():
         return "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz"
     return None
 
+def _pick_binaries(td, names):
+    """在解包目录中定位包内二进制（rglob 首个命中即收）→ {name: path}。
+
+    gyan essentials 与 johnvansickle static 发行包均为 ffmpeg/ffplay/ffprobe
+    三件套（ffplay 供 --play 定位播放）；evermeet（macOS）为 ffmpeg 单体，
+    缺失的名称不出现在返回值中。"""
+    found = {}
+    for name in names:
+        exe = name + (".exe" if os.name == "nt" else "")
+        for p in Path(td).rglob(exe):
+            if p.is_file() and p.name == exe:
+                found[name] = p
+                break
+    return found
+
+
 def install_ffmpeg():
-    """用户确认后安装 ffmpeg 到受管 bin 目录，返回可执行文件路径"""
+    """用户确认后安装 ffmpeg（附 ffplay，供 --play 定位播放）到受管 bin 目录，
+    返回 ffmpeg 可执行文件路径"""
     exe = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
     dest = MANAGED_BIN / exe
     if dest.exists():
@@ -202,16 +237,19 @@ def install_ffmpeg():
         else:
             with tarfile.open(archive) as tf:
                 tf.extractall(td)
-        found = None
-        for p in Path(td).rglob(exe):
-            if p.is_file() and p.name == Path(exe).stem + (".exe" if os.name == "nt" else ""):
-                found = p
-                break
-        if not found:
+        found = _pick_binaries(td, ["ffmpeg", "ffplay"])
+        if "ffmpeg" not in found:
             raise RuntimeError("下载包中未找到 ffmpeg 可执行文件")
-        shutil.copy2(found, dest)
+        shutil.copy2(found["ffmpeg"], dest)
+        if "ffplay" in found:   # 同一发行包内顺带落盘（零额外下载），--play 定位播放用
+            fexe = "ffplay.exe" if os.name == "nt" else "ffplay"
+            fdest = MANAGED_BIN / fexe
+            shutil.copy2(found["ffplay"], fdest)
+            if os.name != "nt":
+                fdest.chmod(0o755)
     if os.name != "nt":
         dest.chmod(0o755)
+    _register_protocol_quietly()
     return dest
 
 WHISPERCPP_PREBUILT_ASSETS = {

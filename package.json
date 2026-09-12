@@ -1,6 +1,6 @@
 {
   "name": "@cdexs/myagentrag",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Agent skill for a local knowledge base: ingest YouTube/Bilibili videos, web articles, local files (PDF/Word/Excel/PowerPoint/EPUB/text) and audio/video transcripts into SQLite workspaces, with hybrid keyword + semantic + heading-anchor retrieval, structure-aware deep reading and timestamped playback. Extraction and indexing run locally - no LLM calls.",
   "keywords": [
     "agent",
@@ -43,6 +43,7 @@
     "scripts/messages.py",
     "scripts/workspace.py",
     "scripts/runtime.py",
+    "scripts/protocol.py",
     "scripts/embeddings.py",
     "scripts/requirements-libs.txt"
   ],

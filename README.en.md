@@ -96,15 +96,17 @@ This is the biggest difference from "throwing files at a chat model" — **every
 
 The Agent cites these as it answers, and you can verify every claim.
 
-### ④ Video & recordings: search the content, jump to the moment
+### ④ Video & recordings: search the content, click to play at the moment
 
 > You: "In that lecture I saved, which part covers 'RAG evaluation'? Play it for me."
 
-After retrieval, the Agent gets a second-level timestamp and drives your local player (VLC / PotPlayer / mpv, probed per platform) to **start playback at 12:33** — no scrubbing:
+After retrieval, the Agent gets a second-level timestamp and **plays from 12:33 with the built-in ffplay** — no dependency on whether you have a media player installed (ffplay ships with the components), and no detour through system file associations:
 
 ```bash
 python scripts/extract.py --workspace lectures --play <entry-id> --at 12:33
 ```
+
+Hits also carry a clickable `locator`: media hits provide a `myagentrag://play?…` link (click to play at the timestamp), document hits provide a `file:///` link to open the original file plus a page/chapter label (readers don't support deep links, so we only promise "open the file" and state the page as text).
 
 ### ⑤ Very long documents: ask a 300-page book anything
 
@@ -157,7 +159,8 @@ Put the repo into your Agent's skill directory, or run the commands below inside
 - **No Python libraries to pre-install**: the bootstrap layer only needs Python ≥3.8 (standard library);
 - On first use the skill installs its **dedicated runtime** (a standalone CPython 3.12 + version-pinned libraries, ~150 MB, after your confirmation) — fully isolated from the system Python;
 - For transcription it will list ffmpeg / whisper.cpp / speech model requirements (~1.6–2.4 GB, after confirmation);
-- Everything lives under `~/.myagentrag/` — no system directories touched; uninstalling means deleting that folder.
+- Everything lives under `~/.myagentrag/` — no system directories touched; uninstalling means deleting that folder;
+- Installing the ffmpeg component **auto-registers the `myagentrag://` play-link protocol** (user-level registry, skill-owned namespace only — your system default players and file associations are never modified; remove completely with `--unregister-protocol`).
 
 ### Step 3: start using
 
@@ -207,6 +210,7 @@ All components require **no pre-installation** — detected on first use and ins
 | `MYAGENTRAG_HOME` | Managed component directory (default `~/.myagentrag`) |
 | `MYAGENTRAG_TMPDIR` | Temp directory (defaults to `~/.myagentrag/tmp` — never touches the system temp dir; can point to another disk) |
 | `MYAGENTRAG_FFMPEG` | Path to the ffmpeg executable |
+| `MYAGENTRAG_FFPLAY` | Path to the ffplay executable (`--play` built-in seeked playback; shipped with the ffmpeg bundle by default) |
 | `MYAGENTRAG_WHISPERCPP_CLI` | Path to the whisper-cli executable |
 | `MYAGENTRAG_WHISPERCPP_DIR` | Search directory for whisper.cpp executables |
 | `MYAGENTRAG_WHISPERCPP_MODELS_DIR` | GGML model directory |

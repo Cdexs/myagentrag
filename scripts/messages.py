@@ -313,6 +313,26 @@ MESSAGES = {
         "zh": "目录内无受支持的文件: {path}",
         "en": "No supported files in directory: {path}",
     },
+    "play_uri_invalid": {
+        "zh": "myagentrag:// 播放链接不合法: {err}",
+        "en": "Invalid myagentrag:// play link: {err}",
+    },
+    "protocol_registered": {
+        "zh": "myagentrag:// 协议已注册（仅 skill 自有命名空间，不影响系统默认播放器；--unregister-protocol 可移除）",
+        "en": "myagentrag:// protocol registered (skill-owned namespace only; system default players untouched; remove with --unregister-protocol)",
+    },
+    "protocol_unregistered": {
+        "zh": "myagentrag:// 协议已移除",
+        "en": "myagentrag:// protocol removed",
+    },
+    "protocol_unsupported": {
+        "zh": "当前平台暂不支持 myagentrag:// 协议注册: {os}",
+        "en": "myagentrag:// protocol registration is not supported on this platform: {os}",
+    },
+    "protocol_register_failed": {
+        "zh": "myagentrag:// 协议注册失败: {err}",
+        "en": "myagentrag:// protocol registration failed: {err}",
+    },
     "url_batch_conflict": {
         "zh": "--url 与多文件批量入库不可同用（--url 只支持单输入）",
         "en": "--url cannot be combined with multi-file batch ingest (--url supports a single input)",

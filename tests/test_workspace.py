@@ -1186,3 +1186,100 @@ def test_ws_ingest_batch_embed_fail_results_fully_structured(ws_mod, monkeypatch
     assert len(r["results"]) == 2
     assert all(isinstance(x, dict) and x.get("success") is False for x in r["results"])
     assert all("error" in x for x in r["results"])
+
+
+# ---------- v0.1.1：内置 ffplay 定位播放 + locator 点击定位 ----------
+
+def test_play_default_ffplay(ws_mod, tmp_path, monkeypatch):
+    """默认内置 ffplay 定位播放：-ss/-autoexit/-window_title，degraded=false；
+    Windows 走外壳 handoff（cmd /c start）"""
+    import os as _os
+    media = tmp_path / "lecture.mp3"
+    media.write_bytes(b"fake")
+    r = ws_mod.ws_ingest("库FF1", srt_text=SRT, title="F", source_type="audio",
+                         source_file=str(media))
+    launched = {}
+    monkeypatch.setattr(ws_mod, "_player_chain", lambda: ["ffplay"])
+    monkeypatch.setattr(ws_mod, "_locate_player",
+                        lambda k: r"C:\tools\ffplay.exe" if k == "ffplay" else None)
+    monkeypatch.setattr(ws_mod.subprocess, "Popen",
+                        lambda cmd, **kw: launched.update(cmd=cmd, kw=kw))
+    out = ws_mod.ws_play("库FF1", r["entry_id"], "1:00")
+    assert out["success"] is True and out["player"] == "ffplay"
+    assert out["degraded"] is False and out["start_ms"] == 60000
+    cmd = launched["cmd"]
+    if _os.name == "nt":
+        assert cmd[:4] == ["cmd", "/c", "start", ""]     # 外壳 handoff
+        cmd = cmd[4:]
+    assert cmd[0] == r"C:\tools\ffplay.exe"
+    assert cmd[cmd.index("-ss") + 1] == "60"
+    assert "-autoexit" in cmd and "-window_title" in cmd and "-t" not in cmd
+
+
+def test_play_ffplay_duration_and_system_override(ws_mod, tmp_path, monkeypatch):
+    """--duration → -t；--player system 显式覆盖为系统默认关联（降级态保留，逃生口）"""
+    media = tmp_path / "v.mp4"
+    media.write_bytes(b"fake")
+    r = ws_mod.ws_ingest("库FF2", srt_text=SRT, title="F2", source_type="video",
+                         source_file=str(media))
+    eid = r["entry_id"]
+    launched = {}
+    monkeypatch.setattr(ws_mod, "_player_chain", lambda: ["ffplay"])
+    monkeypatch.setattr(ws_mod, "_locate_player",
+                        lambda k: r"C:\tools\ffplay.exe" if k == "ffplay" else None)
+    monkeypatch.setattr(ws_mod.subprocess, "Popen", lambda cmd, **kw: launched.update(cmd=cmd))
+    out = ws_mod.ws_play("库FF2", eid, "10", duration=60)
+    assert out["degraded"] is False
+    cmd = launched["cmd"]
+    assert cmd[cmd.index("-t") + 1] == "60"
+    # 显式 system 覆盖：绕过 ffplay 链，系统默认关联降级（与旧行为一致）
+    monkeypatch.setattr(ws_mod, "_locate_player", lambda key: "default")
+    out2 = ws_mod.ws_play("库FF2", eid, "10", player_key="system")
+    assert out2["player"] == "default" and out2["degraded"] is True and out2["note"]
+
+
+def test_locator_document_hit(ws_mod, tmp_path):
+    """文档命中 locator：file:/// 打开原文件（无 fragment）+ 页码标注 + file_only"""
+    pdf = tmp_path / "报告 2024.pdf"
+    pdf.write_bytes(b"%PDF-fake")
+    seg1 = "第1页文本，讨论主题甲。" * 20
+    text = seg1 + "第2页文本，讨论主题乙。" * 20
+    r = ws_mod.ws_ingest("库LOC1", content=text, title="PDF书", source_type="pdf",
+                         source_ref=str(pdf),
+                         srcmap={"kind": "pdf", "pages": [[0, 1], [len(seg1) + 1, 2]],
+                                 "outline": [[1, "第一章", 1], [2, "第二章", 2]]})
+    assert r["success"]
+    s = ws_mod.ws_search("库LOC1", "主题乙", mode="fts")
+    loc = s["hits"][0]["locator"]
+    assert loc["open"].startswith("file:///") and "#" not in loc["open"]
+    assert "%20" in loc["open"]                      # URL 编码（空格）
+    assert "%3A" not in loc["open"]                    # 盘符冒号保持标准形式 file:///C:/...
+    assert loc["target_label"] == "第 2 页" and loc["open_scope"] == "file_only"
+
+
+def test_locator_absent_when_source_missing(ws_mod, tmp_path):
+    """源文件不存在时不产出 locator（不做无效承诺）"""
+    r = ws_mod.ws_ingest("库LOC2", content="缺源文件验证内容。" * 20, title="X",
+                         source_type="pdf", source_ref=str(tmp_path / "nope.pdf"),
+                         srcmap={"kind": "pdf", "pages": [[0, 1]], "outline": []})
+    assert r["success"]
+    s = ws_mod.ws_search("库LOC2", "缺源文件", mode="fts")
+    assert "locator" not in s["hits"][0]
+
+
+def test_locator_media_hit(ws_mod, tmp_path):
+    """媒体命中 locator：myagentrag://play 链接 + fallback 命令（不启动进程）"""
+    import re as _re
+    media = tmp_path / "讲座.mp3"
+    media.write_bytes(b"fake")
+    r = ws_mod.ws_ingest("库LOC3", srt_text=SRT, title="L", source_type="audio",
+                         source_file=str(media))
+    assert r["success"]
+    s = ws_mod.ws_search("库LOC3", "全文匹配", mode="fts")
+    hit = s["hits"][0]
+    loc = hit["locator"]
+    assert loc["action"] == "play"
+    assert loc["link"].startswith("myagentrag://play?")
+    assert f"entry={hit['entry_id']}" in loc["link"] and "ws=" in loc["link"]
+    assert _re.fullmatch(r"\d+:\d{2}", loc["target_label"])
+    assert "-ss" in loc["fallback_play_cmd"] and "-autoexit" in loc["fallback_play_cmd"]

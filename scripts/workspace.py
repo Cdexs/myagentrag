@@ -34,6 +34,7 @@ from slicing import CHUNK_CHARS, CHUNK_OVERLAP_CHARS
 import messages
 import embeddings
 import deps
+import deps
 
 WORKSPACE_DB = "workspace.db"
 AUDIO_EXTS = {'.mp3', '.wav', '.aac', '.m4a', '.flac', '.ogg', '.wma'}
@@ -1687,6 +1688,54 @@ def _source_loc_for(info, offset):
     return None
 
 
+def _build_locator(h, info):
+    """v0.1.1 点击定位（纯新增字段，异常时静默返回 None 不影响检索）：
+
+    - 文档命中（pdf/epub/line 且 source_ref 指向本机存在的文件）→
+      {open: "file:///…"（无 fragment，不承诺深链）, kind, target_label,
+      open_scope: "file_only"}
+    - 媒体命中（media_file + start_ms）→
+      {action: "play", link: "myagentrag://play?…", target_label: "mm:ss",
+      fallback_play_cmd: [ffplay 命令构造，不启动进程]}
+    """
+    from urllib.parse import quote
+    loc = h.get("source_loc") or {}
+    kind = loc.get("kind")
+    if h.get("media_file") and h.get("start_ms") is not None:
+        at = int(h["start_ms"] // 1000)
+        ws = quote(str(h.get("workspace") or ""), safe="")
+        eid = h.get("entry_id") or ""
+        link = f"myagentrag://play?ws={ws}&entry={eid}&at={at}"
+        exe = deps._find_ffplay() or "ffplay"
+        cmd = [exe, "-ss", str(at), "-autoexit", str(h["media_file"])]
+        if os.name == "nt":
+            cmd = ["cmd", "/c", "start", "", *cmd]
+        return {"action": "play", "link": link,
+                "target_label": (lambda s: (f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}"
+                                            if s // 3600 else f"{s // 60}:{s % 60:02d}"))(at),
+                "fallback_play_cmd": cmd}
+    src = info.get("source_ref")
+    if kind in ("pdf", "epub", "line") and src:
+        p = Path(src)
+        if not (p.exists() and p.is_file()):
+            return None
+        open_url = "file:///" + quote(str(p.resolve()).replace("\\", "/"), safe="/:")
+        if kind == "pdf":
+            label = f"第 {loc['page']} 页"
+        elif kind == "epub":
+            ch = loc.get("chapter")
+            label = f"第 {ch} 章" if str(ch).isdigit() else str(ch or "")
+            if loc.get("title"):
+                label = f"{label} · {loc['title']}" if label else str(loc["title"])
+        else:
+            label = f"第 {loc['n']} 行"
+        if not label:
+            return None
+        return {"open": open_url, "kind": kind, "target_label": label,
+                "open_scope": "file_only"}
+    return None
+
+
 def _polish_one(h, info, idx):
     """单 hit 出口整形：附 heading/section/source_loc/source_ref，抹去 full.md 内部坐标"""
     hs = info["headings"]
@@ -1714,6 +1763,12 @@ def _polish_one(h, info, idx):
                                     else "window" if h.get("win_start") is not None
                                     else "chunk")
     h["source_ref"] = info.get("source_ref")
+    try:
+        locator = _build_locator(h, info)   # v0.1.1 点击定位（纯新增字段，失败不影响命中）
+    except Exception:
+        locator = None
+    if locator:
+        h["locator"] = locator
     for k in ("offset", "win_start", "win_end", "heading_rowid",
               "heading_offset", "hit_offset", "full_path"):
         h.pop(k, None)
@@ -2411,13 +2466,16 @@ _WSL_VLC_PATHS = ("/mnt/c/Program Files/VideoLAN/VLC/vlc.exe",
 
 
 def _player_chain():
+    """播放链（v0.1.1）：ffplay 为默认内置播放器——随 ffmpeg 发行包落盘到受管
+    bin（必能定位播放，无"从头播"降级态）；VLC/PotPlayer/mpv 保留给
+    --player 显式覆盖；system（系统默认关联）为显式降级逃生口。"""
     if _is_wsl():
-        return ["wslview", "vlc-win"]
+        return ["ffplay", "wslview"]
     if os.name == "nt":
-        return ["vlc", "potplayer", "mpv", "default"]
+        return ["ffplay"]
     if sys.platform == "darwin":
-        return ["vlc", "iina", "mpv", "default"]
-    return ["vlc", "mpv", "default"]
+        return ["ffplay", "vlc", "iina", "mpv", "default"]
+    return ["ffplay", "default"]
 
 
 def _probe_candidates():
@@ -2427,6 +2485,8 @@ def _probe_candidates():
 
 
 def _locate_player(key):
+    if key == "ffplay":
+        return deps._find_ffplay()
     if key == "wslview":
         return shutil.which("wslview")
     if key == "vlc-win":
@@ -2474,7 +2534,10 @@ def parse_at(at):
     return int(h or 0) * 3600 + int(mi) * 60 + int(s)
 
 
-def ws_play(ws_name, entry_id, at, duration=None):
+def ws_play(ws_name, entry_id, at, duration=None, player_key=None):
+    """定位播放。默认内置 ffplay（必能定位，degraded 恒 false）；
+    player_key 显式覆盖：vlc / potplayer / mpv / system（系统默认关联，
+    从头播放降级态）。"""
     d = ws_dir(ws_name)
     if d is None:
         return messages.err_result("ws_not_found", name=ws_name)
@@ -2494,9 +2557,13 @@ def ws_play(ws_name, entry_id, at, duration=None):
     if media is None:
         return messages.err_result("play_no_media")
 
+    if player_key:
+        chain = ["default" if player_key == "system" else player_key]
+    else:
+        chain = _player_chain()
     player_key, exe = None, None
     probed = []
-    for key in _player_chain():
+    for key in chain:
         found = _locate_player(key)
         probed.append(key)
         if found:
@@ -2513,7 +2580,17 @@ def ws_play(ws_name, entry_id, at, duration=None):
                 "play_cmd": None, "media_file": str(media), "start_s": start_s}
 
     degraded = False
-    if player_key == "vlc" or player_key == "vlc-win":
+    if player_key == "ffplay":
+        # v0.1.1：内置 ffplay 定位播放；Windows 走外壳 handoff（裸 Popen 的
+        # GUI 子进程在部分环境数秒内被回收），非 Windows 用独立会话
+        cmd = [exe, "-ss", str(start_s), "-autoexit", "-loglevel", "error",
+               "-window_title", f"{media.stem} @ {_ms_to_hms(start_s * 1000)}"]
+        if end_s:
+            cmd += ["-t", str(end_s - start_s)]
+        cmd.append(str(media))
+        if os.name == "nt":
+            cmd = ["cmd", "/c", "start", "", *cmd]
+    elif player_key == "vlc" or player_key == "vlc-win":
         cmd = [exe, str(media), f"--start-time={start_s}"]
         if end_s:
             cmd.append(f"--stop-time={end_s}")
@@ -2537,7 +2614,8 @@ def ws_play(ws_name, entry_id, at, duration=None):
             cmd = ["xdg-open", str(media)]
 
     try:
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=(player_key == "ffplay" and os.name != "nt"))
     except Exception as e:
         return {"success": False, "error": str(e), "play_cmd": cmd, "player": player_key}
     pair = messages.msg_pair("play_launched", player=player_key)

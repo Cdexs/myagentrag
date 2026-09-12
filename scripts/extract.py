@@ -25,6 +25,7 @@ from deps import MissingDependencyError, _dep_detail, _install_dep
 import deps
 import messages
 import workspace
+import protocol
 import runtime
 import embeddings
 
@@ -154,6 +155,8 @@ def _run_workspace_ops(args):
                 or args.list or args.entry or args.remove or args.verify
                 or args.reindex or args.vacuum or args.play
                 or (args.search and not args.all_workspaces))
+    # 注：--play-uri / --register-protocol / --unregister-protocol 不需要 --workspace
+    # （库名来自 URI 或操作与库无关）
     if needs_ws and not W:
         return messages.err_result("ws_name_required")
     if args.create:
@@ -186,8 +189,15 @@ def _run_workspace_ops(args):
         return workspace.ws_reindex(W)
     if args.vacuum:
         return workspace.ws_vacuum(W)
+    if args.play_uri:
+        return protocol.handle_play_uri(args.play_uri)
+    if args.register_protocol:
+        return protocol.register_protocol()
+    if args.unregister_protocol:
+        return protocol.unregister_protocol()
     if args.play:
-        return workspace.ws_play(W, args.play, args.at, duration=args.duration)
+        return workspace.ws_play(W, args.play, args.at, duration=args.duration,
+                                 player_key=args.player)
     return None
 
 
@@ -503,7 +513,15 @@ def main():
     parser.add_argument('--embed', action='store_true', help='为库内零向量条目补建向量（需嵌入链）')
     parser.add_argument('--replace', action='store_true', help='重入库同源（source_ref 相同）时自动删除旧条目')
     parser.add_argument('--vacuum', action='store_true', help='VACUUM 压缩 db')
-    parser.add_argument('--play', metavar='ID', help='定位回放音视频条目（调用外部播放器）')
+    parser.add_argument('--play', metavar='ID', help='定位回放音视频条目（默认内置 ffplay 定位播放）')
+    parser.add_argument('--player', choices=['ffplay', 'vlc', 'potplayer', 'mpv', 'system'],
+                        help='--play 指定播放器（默认 ffplay；system=系统默认关联，从头播放）')
+    parser.add_argument('--play-uri', metavar='URI',
+                        help='执行 myagentrag://play?ws=&entry=&at= 链接（协议处理器入口）')
+    parser.add_argument('--register-protocol', action='store_true',
+                        help='注册 myagentrag:// 协议处理器（用户级，仅 skill 自有命名空间，不影响系统默认播放器）')
+    parser.add_argument('--unregister-protocol', action='store_true',
+                        help='移除 myagentrag:// 协议处理器')
     parser.add_argument('--at', metavar='mm:ss', help='回放起点（mm:ss / hh:mm:ss / 秒数）')
     parser.add_argument('--duration', type=int, metavar='秒', help='回放时长（秒，可选）')
     parser.add_argument('--no-keep-source', action='store_true', help='入库时不保存来源文件副本')
@@ -537,7 +555,8 @@ def main():
     ws_mgmt = any([args.workspace_list, args.create, args.delete_workspace, args.rename,
                    args.stats, args.list, args.search is not None, args.entry, args.section,
                    args.embed, args.remove, args.verify, args.reindex, args.vacuum,
-                   args.play])
+                   args.play, args.play_uri, args.register_protocol,
+                   args.unregister_protocol])
     if ws_mgmt or args.workspace:
         _fts_gate(args)
     if ws_mgmt:
