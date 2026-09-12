@@ -72,19 +72,60 @@ def test_handle_play_uri_reuses_ws_play(monkeypatch):
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows 注册表路径")
 def test_protocol_register_unregister_windows(monkeypatch):
+    from pathlib import Path
     test_key = r"HKCU\Software\Classes\myagentrag-pytest"
     monkeypatch.setattr(protocol, "_REG_KEY", test_key)
     subprocess.run(["reg", "delete", test_key, "/f"], capture_output=True)
     try:
         r = protocol.register_protocol()
         assert r["success"] and r["registered"] is True
-        assert "--play-uri" in r["handler"] and "extract.py" in r["handler"]
+        assert "play.py" in r["handler"]            # 只绑定受管目录内的自定位启动器
+        assert "extract.py" not in r["handler"]     # 注册项不写死源码/技能目录
+        launcher = Path(r["launcher"])
+        assert launcher.is_file()
+        assert (launcher.parent / "skill.json").is_file()
+        assert r["skill_dir"] and r["hint"]
         q = subprocess.run(["reg", "query", test_key + r"\shell\open\command"],
                            capture_output=True, text=True, errors="replace")
-        assert q.returncode == 0 and "--play-uri" in q.stdout
+        assert q.returncode == 0 and "play.py" in q.stdout
         u = protocol.unregister_protocol()
         assert u["success"] and u["unregistered"] is True
         q2 = subprocess.run(["reg", "query", test_key], capture_output=True, text=True, errors="replace")
-        assert q2.returncode != 0      # 自有命名空间已完全移除
+        assert q2.returncode != 0                   # 自有命名空间已完全移除
+        assert not launcher.parent.exists()         # 启动器与记录一并移除
     finally:
         subprocess.run(["reg", "delete", test_key, "/f"], capture_output=True)
+
+
+def test_launcher_env_and_config_resolution(tmp_path):
+    """自定位启动器：MYAGENTRAG_SKILL_DIR 环境变量优先 → skill.json 回退 →
+    均不可用时报错退出（移动技能目录不写死失效的关键路径）"""
+    import json
+    import sys
+    launcher, _ = protocol._write_launcher()
+    skill = tmp_path / "fakeskill"
+    (skill / "scripts").mkdir(parents=True)
+    out = tmp_path / "argv.txt"
+    (skill / "scripts" / "extract.py").write_text(
+        "import sys, pathlib;"
+        "pathlib.Path(r'%s').write_text(' '.join(sys.argv[1:]), encoding='utf-8')" % out,
+        encoding="utf-8")
+    cfg = launcher.parent / "skill.json"
+    # 1) 环境变量优先（即使 skill.json 指向别处）
+    cfg.write_text(json.dumps({"skill_dir": "C:/nonexistent"}), encoding="utf-8")
+    r = subprocess.run([sys.executable, str(launcher), "myagentrag://play?a=1"],
+                       env={**os.environ, "MYAGENTRAG_SKILL_DIR": str(skill)},
+                       capture_output=True, text=True, errors="replace")
+    assert r.returncode == 0 and "a=1" in out.read_text(encoding="utf-8")
+    # 2) 环境变量缺失 → skill.json 回退
+    out.unlink()
+    cfg.write_text(json.dumps({"skill_dir": str(skill)}), encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if k != "MYAGENTRAG_SKILL_DIR"}
+    r = subprocess.run([sys.executable, str(launcher), "myagentrag://play?b=2"],
+                       env=env, capture_output=True, text=True, errors="replace")
+    assert r.returncode == 0 and "b=2" in out.read_text(encoding="utf-8")
+    # 3) 均不可用 → 明确指引 + rc=1（不静默失败）
+    cfg.write_text("{broken", encoding="utf-8")
+    r = subprocess.run([sys.executable, str(launcher), "u"], env=env,
+                       capture_output=True, text=True, errors="replace")
+    assert r.returncode == 1 and "MYAGENTRAG_SKILL_DIR" in r.stderr

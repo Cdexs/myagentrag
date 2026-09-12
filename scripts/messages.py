@@ -333,6 +333,10 @@ MESSAGES = {
         "zh": "myagentrag:// 协议注册失败: {err}",
         "en": "myagentrag:// protocol registration failed: {err}",
     },
+    "protocol_skill_dir_hint": {
+        "zh": "技能目录已记录: {dir}——如移动技能目录，设置 MYAGENTRAG_SKILL_DIR 环境变量或重跑 --register-protocol 即可（注册项本身不写死该路径）",
+        "en": "Skill directory recorded: {dir} — if you move it, set the MYAGENTRAG_SKILL_DIR environment variable or re-run --register-protocol (the registration itself does not hardcode this path)",
+    },
     "url_batch_conflict": {
         "zh": "--url 与多文件批量入库不可同用（--url 只支持单输入）",
         "en": "--url cannot be combined with multi-file batch ingest (--url supports a single input)",

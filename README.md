@@ -211,6 +211,7 @@ B站 的 AI 自动字幕、登录墙视频，YouTube 的部分视频需要登录
 | `MYAGENTRAG_TMPDIR` | 临时目录（默认 `~/.myagentrag/tmp`，不占用系统临时目录；可指向其他磁盘） |
 | `MYAGENTRAG_FFMPEG` | 指定 ffmpeg 可执行文件 |
 | `MYAGENTRAG_FFPLAY` | 指定 ffplay 可执行文件（`--play` 内置定位播放；默认随 ffmpeg 发行包落盘） |
+| `MYAGENTRAG_SKILL_DIR` | 技能根目录（myagentrag:// 链接启动器解析用；移动技能目录后设置即恢复，无需重注册） |
 | `MYAGENTRAG_WHISPERCPP_CLI` | 指定 whisper-cli 可执行文件 |
 | `MYAGENTRAG_WHISPERCPP_DIR` | whisper.cpp 可执行文件搜索目录 |
 | `MYAGENTRAG_WHISPERCPP_MODELS_DIR` | ggml 模型目录 |

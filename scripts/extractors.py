@@ -271,8 +271,10 @@ def extract_web(url):
             result["error"] = pair[messages.get_lang()]
             result["error_i18n"] = pair
     except Exception as e:
-        result["error"] = str(e) or type(e).__name__
-        pair = messages.msg_pair("web_fetch_error", err=result["error"])
+        # OPT-07：error 与 error_i18n[当前语言] 保持一致（项目惯例），原始异常串
+        # 已包含在模板 {err} 中——不损失信息，仅统一形态
+        pair = messages.msg_pair("web_fetch_error", err=str(e) or type(e).__name__)
+        result["error"] = pair[messages.get_lang()]
         result["error_i18n"] = pair
     return result
 

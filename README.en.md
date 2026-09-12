@@ -211,6 +211,7 @@ All components require **no pre-installation** — detected on first use and ins
 | `MYAGENTRAG_TMPDIR` | Temp directory (defaults to `~/.myagentrag/tmp` — never touches the system temp dir; can point to another disk) |
 | `MYAGENTRAG_FFMPEG` | Path to the ffmpeg executable |
 | `MYAGENTRAG_FFPLAY` | Path to the ffplay executable (`--play` built-in seeked playback; shipped with the ffmpeg bundle by default) |
+| `MYAGENTRAG_SKILL_DIR` | Skill root directory (used by the myagentrag:// link launcher; set it after moving the skill directory — no re-registration needed) |
 | `MYAGENTRAG_WHISPERCPP_CLI` | Path to the whisper-cli executable |
 | `MYAGENTRAG_WHISPERCPP_DIR` | Search directory for whisper.cpp executables |
 | `MYAGENTRAG_WHISPERCPP_MODELS_DIR` | GGML model directory |

@@ -320,7 +320,7 @@ GPU 是否启用取决于 whisper.cpp 二进制编译时包含的后端；CPU �
 | 向量补建  | `--workspace <名> --embed`（为零向量条目补建向量，需嵌入链） |
 | 空间回收  | `--workspace <名> --vacuum`                       |
 | 定位回放  | `--workspace <名> --play <entry-id> --at mm:ss [--duration 秒]`（默认内置 ffplay 定位播放；`--player vlc\|potplayer\|mpv\|system` 覆盖） |
-| 协议注册  | `--register-protocol` / `--unregister-protocol`（myagentrag:// 播放链接处理器；仅 skill 自有注册表命名空间，不碰系统默认播放器；安装 ffmpeg 时自动注册） |
+| 协议注册  | `--register-protocol` / `--unregister-protocol`（myagentrag:// 播放链接处理器；注册项只绑定**受管目录内的自定位启动器** `<home>/protocol/play.py`，不写死源码/技能目录；技能目录经 `MYAGENTRAG_SKILL_DIR` 环境变量 → 启动器旁 `skill.json`（注册时记录）运行时解析；安装 ffmpeg 时自动注册） |
 | 协议入口  | `--play-uri "myagentrag://play?ws=<库名>&entry=<id>&at=<秒>"`（点击链接时系统调用；参数白名单校验防注入） |
 
 删除类操作默认只输出 `confirm_required: true` 与将删除的路径——agent 须向用户确认后加 `--yes` 重跑。跨机器迁移 = 直接拷贝 workspace 目录（自包含），无需命令。
@@ -393,3 +393,4 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 | `--search` 报 "workspace 不存在" | 库名拼写错误；`--workspace-list` 列出全部库名核对（`@库名` 前缀会自动剥离）；与"库内无匹配"（success:true + 空结果）严格区分 |
 | `--play` 报找不到播放器 | 安装组件时已随 ffmpeg 落盘 ffplay；旧安装可用 `MYAGENTRAG_FFPLAY` 指向已有 ffplay，或删除受管 `bin/ffmpeg.exe` 后重跑以补齐；亦可 `--player system` 降级 |
 | myagentrag:// 链接点不开 | 协议处理器需注册：`--register-protocol`（安装 ffmpeg 时已自动注册；仅写 skill 自有注册表命名空间，不动系统默认播放器）；移除用 `--unregister-protocol` |
+| 移动技能目录后链接失效 | 注册项只绑定受管目录启动器（不受影响），技能目录运行时解析——设置 `MYAGENTRAG_SKILL_DIR` 指向新技能根目录，或重跑 `--register-protocol` 刷新记录（启动器找不到目录时 stderr 会给出同样指引） |
