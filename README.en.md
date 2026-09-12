@@ -4,7 +4,7 @@
 
 ![Platform](https://img.shields.io/badge/platform-Windows_%7C_macOS_%7C_Linux_%7C_WSL-0078D4)
 ![GitHub tag](https://img.shields.io/github/v/tag/Cdexs/myagentrag?label=version&color=green)
-![License](https://img.shields.io/npm/l/@cdexs/myagentrag?color=orange)
+![License](https://img.shields.io/github/license/Cdexs/myagentrag?color=orange)
 
 **MyAgentRAG — a local RAG knowledge-base skill designed specifically for AI Agents.**
 
@@ -258,4 +258,4 @@ The skill **never auto-creates, collects or uploads cookies**; cookies carry acc
 
 ## License
 
-MIT
+Released under the [MIT License](LICENSE) — Copyright (c) 2026 Sightview.

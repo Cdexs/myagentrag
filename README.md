@@ -4,7 +4,7 @@
 
 ![Platform](https://img.shields.io/badge/platform-Windows_%7C_macOS_%7C_Linux_%7C_WSL-0078D4)
 ![GitHub tag](https://img.shields.io/github/v/tag/Cdexs/myagentrag?label=version&color=green)
-![License](https://img.shields.io/npm/l/@cdexs/myagentrag?color=orange)
+![License](https://img.shields.io/github/license/Cdexs/myagentrag?color=orange)
 
 **MyAgentRAG —— 专为 AI Agent 设计的本地 RAG 知识库技能（Agent Skill）。**
 
@@ -256,6 +256,6 @@ B站 的 AI 自动字幕、登录墙视频，YouTube 的部分视频需要登录
 
 技能**永不自动创建、收集或上传 cookies**；cookies 具有账号会话权限，请勿提交到仓库或共享。
 
-## License
+## 许可证（License）
 
-MIT
+本项目基于 [MIT License](LICENSE) 开源，Copyright (c) 2026 Sightview。
