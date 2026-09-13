@@ -110,3 +110,11 @@ def test_runtime_locator_shape_matches_contract(ws_mod, tmp_path, monkeypatch):
         ws_mod.ws_search("契约库", "契约乙", mode="fts")["hits"][0]["section_ref"]))
     assert read["locator"]["link"].startswith("myagentrag://goto?")
     assert read["locator"]["action"] == "open"
+
+
+def test_contract_requires_deep_read(skill_text):
+    """取数深度：内容型提问必须精读，snippet 只是预览——防"拿预览当正文"
+    （Gavin 侧实例：只用 snippet 预览对 OAHSPE 下了错误的定性结论）"""
+    for key in ("取数深度", "预览窗口", "精读返回的原文", "先精读，后作答",
+                "取数深度自检", "定性结论必须基于精读", "不得只凭 `snippet` 作答"):
+        assert key in skill_text, f"契约缺少取数深度条款: {key}"
