@@ -1306,3 +1306,47 @@ def test_locator_media_no_ffplay_fallback_null(ws_mod, tmp_path, monkeypatch):
     out = ws_mod.ws_play("库LOC4", eid, "3")
     assert out["success"] is False and out["play_cmd"] is None
     assert "--repair-deps" in out["hint"]
+
+
+def test_read_paths_locator(ws_mod, tmp_path, monkeypatch):
+    """v0.1.2：精读输出（--entry/--chunk/--section）同样带 locator（与检索同形）——
+    呈现清单在检索与精读两种入口都能直接渲染"""
+    monkeypatch.setattr(ws_mod.deps, "_find_ffplay", lambda: "/fake/ffplay")
+    pdf = tmp_path / "书.pdf"
+    pdf.write_bytes(b"%PDF-fake")
+    seg1 = "第1页文本，讨论主题甲。" * 20
+    text = seg1 + "第2页文本，讨论主题乙。" * 20
+    r = ws_mod.ws_ingest("库LOC5", content=text, title="PDF书", source_type="pdf",
+                         source_ref=str(pdf),
+                         srcmap={"kind": "pdf", "pages": [[0, 1], [len(seg1) + 1, 2]],
+                                 "outline": [[1, "第一章", 1], [2, "第二章", 2]]})
+    assert r["success"]
+    eid = ws_mod.ws_search("库LOC5", "主题甲", mode="fts")["hits"][0]["entry_id"]
+    # 整篇读取：无页/章标注 → 打开链接不带 target_label（不虚标位置）
+    out = ws_mod.ws_read_entry("库LOC5", eid)
+    loc = out["locator"]
+    assert loc["open"].startswith("file:///") and "target_label" not in loc
+    assert loc["open_scope"] == "file_only"
+    # 分片读取：按分片起点给页标注
+    out2 = ws_mod.ws_read_entry("库LOC5", eid, chunk_no=1)
+    assert out2["locator"]["target_label"].startswith("第 ")
+    # 章节精读：按节起点给出处以页标注（命中在第 2 页的节）
+    s = ws_mod.ws_search("库LOC5", "主题乙", mode="fts")
+    out3 = ws_mod.ws_read_entry("库LOC5", None, section=s["hits"][0]["section_ref"])
+    assert out3["locator"]["open"] == loc["open"]
+    assert out3["locator"]["target_label"] == "第 2 页"
+
+
+def test_read_path_media_locator(ws_mod, tmp_path, monkeypatch):
+    """媒体条目精读同样给定位播放链接（整篇从头、分片按分片起点）"""
+    monkeypatch.setattr(ws_mod.deps, "_find_ffplay", lambda: "/fake/ffplay")
+    media = tmp_path / "讲.mp3"
+    media.write_bytes(b"fake")
+    r = ws_mod.ws_ingest("库LOC6", srt_text=SRT, title="M", source_type="audio",
+                         source_file=str(media))
+    assert r["success"]
+    eid = ws_mod.ws_search("库LOC6", "全文匹配", mode="fts")["hits"][0]["entry_id"]
+    loc = ws_mod.ws_read_entry("库LOC6", eid)["locator"]
+    assert loc["action"] == "play" and loc["link"].startswith("myagentrag://play?")
+    assert f"entry={eid}" in loc["link"] and loc["target_label"] == "0:00"
+    assert "-ss" in loc["fallback_play_cmd"]

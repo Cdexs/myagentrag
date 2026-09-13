@@ -1244,6 +1244,16 @@ def _like_snippet(text, terms, width=32):
     return f"{head}{text[a:pos]}『{text[pos:pos + len(terms[0])]}』{text[pos + len(terms[0]):b]}{tail}"
 
 
+def _media_file_for(ws_name, entry_id):
+    """条目来源副本中的本地音视频文件（回放/定位链接用）；无副本返回 None"""
+    sdir = ws_dir(ws_name) / "source" / entry_id
+    if sdir.exists():
+        for f in sorted(sdir.iterdir()):
+            if f.suffix.lower() in AV_EXTS:
+                return str(f)
+    return None
+
+
 def _row_to_hit(con, ws_name, rowid, score, snip, low_precision=False):
     c = con.execute("SELECT entry_id, chunk_no, file_offset, char_count, start_ms, end_ms"
                     " FROM chunks WHERE rowid=?", (rowid,)).fetchone()
@@ -1253,14 +1263,7 @@ def _row_to_hit(con, ws_name, rowid, score, snip, low_precision=False):
                     " FROM entries WHERE id=?", (c[0],)).fetchone()
     if not e:
         return None
-    media_file = None
-    if e[4] in ("audio", "video"):
-        sdir = ws_dir(ws_name) / "source" / c[0]
-        if sdir.exists():
-            for f in sorted(sdir.iterdir()):
-                if f.suffix.lower() in AV_EXTS:
-                    media_file = str(f)
-                    break
+    media_file = _media_file_for(ws_name, c[0]) if e[4] in ("audio", "video") else None
     hit = {
         "workspace": ws_name, "entry_id": e[0], "title": e[1], "author": e[2],
         "publish_date": e[3], "source_type": e[4], "full_path": e[5],
@@ -1688,7 +1691,7 @@ def _source_loc_for(info, offset):
     return None
 
 
-def _build_locator(h, info):
+def _build_locator(h, info, require_label=True):
     """v0.1.1 点击定位（纯新增字段，异常时静默返回 None 不影响检索）：
 
     - 文档命中（pdf/epub/line 且 source_ref 指向本机存在的文件）→
@@ -1698,6 +1701,9 @@ def _build_locator(h, info):
       {action: "play", link: "myagentrag://play?…", target_label: "mm:ss",
       fallback_play_cmd: [ffplay 命令构造，不启动进程] 或 None（无 ffplay 时
       与 --play 同一判空口径：不给看起来可用、实际不可执行的命令）}
+
+    require_label=False 供读路径（--entry 整篇）使用：无页/章/行标注时省略
+    target_label，仍给出打开链接（检索路径恒有标注，行为不变）。
     """
     from urllib.parse import quote
     loc = h.get("source_loc") or {}
@@ -1723,20 +1729,39 @@ def _build_locator(h, info):
         if not (p.exists() and p.is_file()):
             return None
         open_url = "file:///" + quote(str(p.resolve()).replace("\\", "/"), safe="/:")
-        if kind == "pdf":
+        label = None
+        if kind == "pdf" and "page" in loc:
             label = f"第 {loc['page']} 页"
         elif kind == "epub":
             ch = loc.get("chapter")
             label = f"第 {ch} 章" if str(ch).isdigit() else str(ch or "")
             if loc.get("title"):
                 label = f"{label} · {loc['title']}" if label else str(loc["title"])
-        else:
+        elif kind == "line" and "n" in loc:
             label = f"第 {loc['n']} 行"
-        if not label:
+        if not label and require_label:
             return None
-        return {"open": open_url, "kind": kind, "target_label": label,
-                "open_scope": "file_only"}
+        out = {"open": open_url, "kind": kind, "open_scope": "file_only"}
+        if label:
+            out["target_label"] = label
+        return out
     return None
+
+
+def _build_locator_read(ws_name, entry_id, info, source_loc):
+    """读路径（--entry/--chunk/--section）locator：与检索命中同形。
+    source_loc 决定页/章/行标注与媒体起播点；整篇读取（source_loc=None）按
+    source_type 给无标注的打开链接（不虚标位置）。两种入口的呈现清单因此都能
+    用同一套规则渲染。"""
+    st = info.get("source_type")
+    loc = dict(source_loc or {})
+    if not loc.get("kind") and st:
+        loc["kind"] = "pdf" if st == "pdf" else ("epub" if st == "epub" else "line")
+    h = {"workspace": ws_name, "entry_id": entry_id, "source_loc": loc}
+    if st in ("audio", "video"):
+        h["media_file"] = _media_file_for(ws_name, entry_id)
+        h["start_ms"] = loc.get("start_ms", 0)
+    return _build_locator(h, info, require_label=False)
 
 
 def _polish_one(h, info, idx):
@@ -2030,6 +2055,8 @@ def _read_front(con, d, ws_name, entry_id, max_chars=30000, at=None):
                         "read_chars": len(content),
                         "source_loc": _source_loc_for(info, at if at is not None else 0)},
             "content": content}
+    out["locator"] = _build_locator_read(ws_name, entry_id, info,
+                                         out["section"]["source_loc"])
     if cap:
         out.update(cap)
         out["truncated"] = True
@@ -2095,6 +2122,7 @@ def _read_section(con, d, ws_name, ref, max_chars=30000):
            "source_loc": _source_loc_for(info, at if at is not None else hs[3])}
     out = {"success": True, "workspace": ws_name, "entry": _entry_meta(e),
             "section": sec, "content": content}
+    out["locator"] = _build_locator_read(ws_name, entry_id, info, sec["source_loc"])
     if cap:
         out.update(cap)
         out["truncated"] = True
@@ -2129,7 +2157,10 @@ def ws_read_entry(ws_name, entry_id, chunk_no=None, section=None, max_chars=3000
             if not c:
                 return messages.err_result("ws_entry_not_found", eid=f"{entry_id}#chunk{chunk_no}", ws=ws_name)
             content, cap = _cap_text(c[1], max_chars)   # R2：chunk 40K 也可能超上限
-            out = {"success": True, "workspace": ws_name, "entry": meta,
+            info = _load_exit_info(con, d, entry_id)
+            loc = _build_locator_read(ws_name, entry_id, info,
+                                      _source_loc_for(info, c[2]))
+            out = {"success": True, "workspace": ws_name, "entry": meta, "locator": loc,
                     "chunk": {"chunk_no": c[0], "chars": c[3],
                               "start_ms": c[4], "end_ms": c[5]}, "content": content}
             if cap:
@@ -2139,7 +2170,9 @@ def ws_read_entry(ws_name, entry_id, chunk_no=None, section=None, max_chars=3000
         full_file = d / "entries" / entry_id / "full.md"
         text = full_file.read_text(encoding="utf-8") if full_file.exists() else ""
         text, cap = _cap_text(text, max_chars)   # R2：entry 分支同样受保护
-        out = {"success": True, "workspace": ws_name, "entry": meta, "chunk": None, "content": text}
+        loc = _build_locator_read(ws_name, entry_id, _load_exit_info(con, d, entry_id), None)
+        out = {"success": True, "workspace": ws_name, "entry": meta, "locator": loc,
+               "chunk": None, "content": text}
         if cap:
             out.update(cap)
             out["truncated"] = True

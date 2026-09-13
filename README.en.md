@@ -94,7 +94,7 @@ This is the biggest difference from "throwing files at a chat model" — **every
 | Audio / video | **From m:ss to m:ss** (precise to the spoken segment containing the hit) |
 | Web / text | Which line |
 
-The Agent cites these as it answers, and you can verify every claim.
+The Agent cites these as it answers, and you can verify every claim. On top of that, **every answer ends with a "source links" list** (a hard requirement the skill puts on the Agent): documents come with a clickable link to the original file plus a page/chapter label, audio and video with a "▶ play from mm:ss" link — every source cited in that round of retrieval is listed, one click away. When the client does not render custom-protocol links, a copy-pasteable playback command is given alongside.
 
 ### ④ Video & recordings: search the content, click to play at the moment
 

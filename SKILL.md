@@ -6,7 +6,7 @@ compatibility: Windows / macOS / Linux / WSL；引导层任意 Python ≥3.8（�
 
 # MyAgentRAG — 本地知识库构建与检索工具
 
-**设计原则**：脚本只负责提取与索引，不调用 LLM。入库内容的检索、精读与作答由当前 agent 完成。
+**设计原则**：脚本只负责提取与索引，不调用 LLM。入库内容的检索、精读与作答由当前 agent 完成；**呈现检索/精读结果时必须在回答末尾附「源文链接」清单**（可点击打开/定位播放，硬性契约见「检索」节 ② 的硬性收尾）。
 
 ## 支持的内容源（提取入库的来源）
 
@@ -133,18 +133,36 @@ $Python = if ($env:MYAGENTRAG_PYTHON) { $env:MYAGENTRAG_PYTHON } else { "python"
 "$PYTHON" "$EXTRACTOR" --workspace 我的书架 --search "X" --mode fts       # 纯关键词（不加载向量链）
 ```
 
-命中 JSON 字段（agent 消费指南）：`title/entry_id/source_type/source_ref`（来源文件或 URL）、`score + score_source + score_kind`（多路并列如 `fused+heading`）、`scores: {fts, vector, heading}`（fused 各路 RRF 贡献）、`column_filter`（元数据过滤标注）+ `filtered_entries`（过滤后候选条目数）、`keyword_miss`（FTS 零命中而仅语义召回，提示术语可能与原文不一致，勿据此断言“库中没有相关内容”）、`snippet`（『』高亮）、`chunk_no/chars`（可 `--chunk N` 读分片）、`heading{text,level}`（所在章节）、`section_ref`（不透明精读引用）+ `section_chars`、`same_section_hits`（同节其他命中数）、`source_loc`（源文件出处：`{kind:"pdf",page}` / `{kind:"epub",chapter,title}` / `{kind:"time",start_ms,end_ms}` / `{kind:"line",n}`）、`vector_backend`、**`locator`（点击定位）**：文档命中 `{open:"file:///…", kind, target_label, open_scope:"file_only"}` → 渲染 `[打开原文件](open)（target_label）`；**`open_scope=file_only` 时不得声称链接能跳到目标页/章**（各阅读器不支持深链，只做"打开"承诺）。媒体命中 `{action:"play", link:"myagentrag://play?…", target_label:"mm:ss", fallback_play_cmd}` → 渲染 `[▶ 从 mm:ss 播放](link)`；客户端不渲染非 http(s) URI 时改用 `fallback_play_cmd`（可复制命令）；**`fallback_play_cmd` 为 `null` 时不得向用户给出播放命令**（本机无 ffplay，指引执行 `--repair-deps` 或设置 `MYAGENTRAG_FFPLAY`；链接本身仍有效，协议入口会返回结构化错误）。**空结果的两种形态严格区分**：库名不存在 → rc=1 结构化错误 `ws_not_found`（所有模式一致，含列限定；跨库检索在无任何库时报 `ws_no_workspaces`）；库名正确但无匹配/过滤零候选 → success:true + `workspaces_searched` 列出被检库 + hits 为空。检索零命中时换词或 `--mode vector` 重试（语义路可跨语言召回）。
+命中 JSON 字段（agent 消费指南）：`title/entry_id/source_type/source_ref`（来源文件或 URL）、`score + score_source + score_kind`（多路并列如 `fused+heading`）、`scores: {fts, vector, heading}`（fused 各路 RRF 贡献）、`column_filter`（元数据过滤标注）+ `filtered_entries`（过滤后候选条目数）、`keyword_miss`（FTS 零命中而仅语义召回，提示术语可能与原文不一致，勿据此断言“库中没有相关内容”）、`snippet`（『』高亮）、`chunk_no/chars`（可 `--chunk N` 读分片）、`heading{text,level}`（所在章节）、`section_ref`（不透明精读引用）+ `section_chars`、`same_section_hits`（同节其他命中数）、`source_loc`（源文件出处：`{kind:"pdf",page}` / `{kind:"epub",chapter,title}` / `{kind:"time",start_ms,end_ms}` / `{kind:"line",n}`）、`vector_backend`、**`locator`（点击定位；检索命中与 `--entry/--chunk/--section` 读路径输出同形）**：文档命中 `{open:"file:///…", kind, target_label, open_scope:"file_only"}` → 渲染 `[打开原文件](open)（target_label）`；**`open_scope=file_only` 时不得声称链接能跳到目标页/章**（各阅读器不支持深链，只做"打开"承诺）。媒体命中 `{action:"play", link:"myagentrag://play?…", target_label:"mm:ss", fallback_play_cmd}` → 渲染 `[▶ 从 mm:ss 播放](link)`；客户端不渲染非 http(s) URI 时改用 `fallback_play_cmd`（可复制命令）；**`fallback_play_cmd` 为 `null` 时不得向用户给出播放命令**（本机无 ffplay，指引执行 `--repair-deps` 或设置 `MYAGENTRAG_FFPLAY`；链接本身仍有效，协议入口会返回结构化错误）。**空结果的两种形态严格区分**：库名不存在 → rc=1 结构化错误 `ws_not_found`（所有模式一致，含列限定；跨库检索在无任何库时报 `ws_no_workspaces`）；库名正确但无匹配/过滤零候选 → success:true + `workspaces_searched` 列出被检库 + hits 为空。检索零命中时换词或 `--mode vector` 重试（语义路可跨语言召回）。
 
 性能语义（对 agent 透明）：各路过量召回 3×limit 候选再融合截断；跨库检索只拉起一次嵌入引擎（与库数无关）；查询嵌入带持久化缓存（`~/.myagentrag/cache/query-embeddings.db`，同模型同查询二次检索零嵌入开销；换模型自动失效，可整文件删除重建）。
+
+**② 的硬性收尾：源文链接清单（每次呈现检索/精读结果都必须附）**
+
+这是 agent 输出契约的一部分，与客户端、提问方式无关：**凡向用户呈现检索或精读结果，回答末尾必须附「源文链接」清单**，逐条列出本次引用到的来源（精读过的必列，其余取高分命中；同一 `entry_id` 只列一次，跨库检索按库归组）：
+
+- 文档命中（有 `locator.open`）：`- [打开原文件](file:///…)（第 N 页 / 第 N 章 · 标题 / 第 N 行）`——括号内用 `locator.target_label`（无该字段时省略括号，不虚标位置）；`open_scope=file_only` 时不得声称链接能跳到目标页/章。
+- 媒体命中（`locator.action=play`）：`- [▶ 从 mm:ss 播放](myagentrag://play?…)`（mm:ss 即 `target_label`）；客户端不渲染非 http(s) URI 时并列 `fallback_play_cmd` 的可复制命令；`fallback_play_cmd` 为 `null` 时不给命令，附一句修复提示（`--repair-deps` / `MYAGENTRAG_FFPLAY`）。
+- 无 `locator` 的命中（网页来源、源文件已不可达、入库时 `--no-keep-source`）：列 `标题 + source_ref` 纯文本，**不得伪造可点击链接**。
+- 清单须与正文引用一一对应（正文提到哪个来源，清单里就有哪条）；不得用 `section_ref`/`entry_id` 等内部引用代替用户可读链接。
+- 零命中不产出清单，按上文“空结果两种形态”如实说明并结束。
+
+末尾清单呈现示例（正文：*"据《示例书》第 412 页与讲座录音 5:19 处……"*）：
+
+```markdown
+**源文链接**
+- [打开原文件](file:///C:/资料/示例书.pdf)（第 412 页）— 示例书
+- [▶ 从 5:19 播放](myagentrag://play?ws=%E6%88%91%E7%9A%84%E4%B9%A6%E6%9E%B6&entry=0123456789abcdef&at=319) — 讲座录音
+```
 
 **知识库检索话术对照（常见说法 → agent 动作）**
 
 | 用户说法                                            | 判定    | agent 动作                                                                                                                                                                                               |
 | ----------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | "@我的书架 查一下 XXX" / "**在**'我的书架'**库**里查" / "**用**我的书架库搜" / "**根据**我的资料库回答" / "**使用**XXX库检索" | 指定库（@/在/用/根据/使用 + 库名） | 从提示词解析库名 → `--workspace <名> --search ...`；**@ 前缀可原样传入**（CLI 自动剥离）；库名不确定时先 `--workspace-list` 解析（模糊匹配是 agent 的活） |
-| "在知识库'我的书架'里**查找** XXX"                         | 指定库检索 | `--workspace 我的书架 --search "XXX"`（默认 fused）；给出命中清单（标题/章节/snippet/出处），深问再 `--section` 精读                                                                                                                |
+| "在知识库'我的书架'里**查找** XXX"                         | 指定库检索 | `--workspace 我的书架 --search "XXX"`（默认 fused）；给出命中清单（标题/章节/snippet/出处），深问再 `--section` 精读；**末尾必附源文链接清单**（见②硬性收尾）                                                                                                                |
 | "在知识库里**查一下** XXX"（未指定库）                        | 跨库检索  | `--search "XXX" --all-workspaces`——结果带 `workspace` 字段标注来源库；命中分散在多库时按库归组陈述；**limit 为全部库共享总额度**，宽泛跨库检索建议显式 `--limit 50`                                                                                                                              |
-| "在知识库 XX 中**研究一下**是否 XXX / 有没有讲 XXX / 是否支持 XXX" | 核实型问题 | ① `--search "XXX"`（fused）；② 零命中 → 换近义词/拆词重试，或 `--mode vector`（语义路可跨语言召回，中文问句可召回英文资料）；③ 命中后对最高分 1-3 条 `--section` 精读；④ **回答必须带出处**（条目标题 + `source_loc` 页码/章节/时间戳）；库内确无相关内容时明说"知识库中未见相关内容"，不要用模型记忆替代检索结论 |
+| "在知识库 XX 中**研究一下**是否 XXX / 有没有讲 XXX / 是否支持 XXX" | 核实型问题 | ① `--search "XXX"`（fused）；② 零命中 → 换近义词/拆词重试，或 `--mode vector`（语义路可跨语言召回，中文问句可召回英文资料）；③ 命中后对最高分 1-3 条 `--section` 精读；④ **回答必须带出处**（条目标题 + `source_loc` 页码/章节/时间戳）+ **末尾源文链接清单**（见②硬性收尾）；库内确无相关内容时明说"知识库中未见相关内容"，不要用模型记忆替代检索结论 |
 | "**对比**一下 A、B 两份资料对 XXX 的说法"                    | 多源对比  | 分别 `--search`（或同库检索后按 `entry_id` 分组）→ 各取最优节 `--section` 精读 → 分来源对比陈述，引用各自 `source_loc`；建议 `--limit 50` 保证各来源都有候选                                                                                                                 |
 | "**列出/找全**所有讲 XXX 的内容 / 所有涉及 XXX 的条目"            | 枚举型    | `--search "XXX" --limit 50`（默认 20 是覆盖度权衡；枚举/清点/多实体场景显式调大；条目级全景可配 `--list` 对照）                                                                                                                              |
 | "知识库里**都有什么**/都有哪些资料"                           | 盘点    | `--workspace <名> --list`（条目清单）或 `--stats`（条目/字符/来源分布/db 体积）                                                                                                                                            |
@@ -302,7 +320,7 @@ GPU 是否启用取决于 whisper.cpp 二进制编译时包含的后端；CPU �
 "$PYTHON" "$EXTRACTOR" --workspace 我的资料 --section <section_ref>       # 精读命中所在整节（推荐）
 ```
 
-命中落在首个标题之前（前言/目录区）时 `section_ref` 为 `entry_id#front` 哨兵引用，同样可 `--section` 精读。检索命中附 `section_ref`（不透明引用）与 `section_chars`——agent 将 ref 原样传给 `--section` 即可精读整节。标题稀疏或**无标题**的长文档（扫描书/纯文本/识别失败的 EPUB）会在超长区间生成 20K 步长的**合成子节锚点**（卷首区为 `卷首·续N`）（标题为 `父标题·续N`，不参与标题检索），命中归位与 `--section` 精读粒度回到 20K。**读取默认上限 30,000 字符**（`--max-chars` 对 entry/chunk/section 三读路径统一生效；0=不限），超出截断并标注 `truncated/total_chars/remaining_chars`；超大节按命中位置开窗返回（`section_ref` 内嵌命中偏移），保证内容围绕命中词。媒体命中带 `start_ms/end_ms` 时间戳（精确到命中词所在段落，`timestamp_precision: segment/window/chunk` 标注精度来源；配 `--play --at` 定位回放）。
+命中落在首个标题之前（前言/目录区）时 `section_ref` 为 `entry_id#front` 哨兵引用，同样可 `--section` 精读。**读路径（`--entry`/`--chunk`/`--section`）输出同样带 `locator`**（与检索命中同形：文档给 `file:///` 打开链接 + 页/章/行标注，媒体给 `myagentrag://play` 定位播放链接；整篇 `--entry` 为无 `target_label` 的打开链接，不虚标位置）——检索与精读两种入口的源文链接清单可用同一套规则渲染。检索命中附 `section_ref`（不透明引用）与 `section_chars`——agent 将 ref 原样传给 `--section` 即可精读整节。标题稀疏或**无标题**的长文档（扫描书/纯文本/识别失败的 EPUB）会在超长区间生成 20K 步长的**合成子节锚点**（卷首区为 `卷首·续N`）（标题为 `父标题·续N`，不参与标题检索），命中归位与 `--section` 精读粒度回到 20K。**读取默认上限 30,000 字符**（`--max-chars` 对 entry/chunk/section 三读路径统一生效；0=不限），超出截断并标注 `truncated/total_chars/remaining_chars`；超大节按命中位置开窗返回（`section_ref` 内嵌命中偏移），保证内容围绕命中词。媒体命中带 `start_ms/end_ms` 时间戳（精确到命中词所在段落，`timestamp_precision: segment/window/chunk` 标注精度来源；配 `--play --at` 定位回放）。
 
 ### 管理操作全集
 
