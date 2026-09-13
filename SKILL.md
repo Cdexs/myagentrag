@@ -221,6 +221,7 @@ The three sections must not swap roles:
 
 - **Pre-output self-check** (rewrite if any item fails): ① does every substantive point of the deep-read text appear in the conclusion? ② are eras/numbers/proper nouns preserved verbatim (not replaced by "several"/"a number of")? ③ is any place merging multiple points into one sentence? split it. ④ do paraphrases keep the original conditions and exceptions? ⑤ are the hit list and the conclusion clearly different in detail level? (if both are equally brief, the conclusion was compressed)
 - **Retrieval-depth self-check** (on par with the previous item; rewrite if any fails): ⑥ can every substantive statement in the conclusion be located in the **text returned by deep reading**? (if it can only be located in a `snippet`, deep reading did not happen) ⑦ has **every** source cited in the conclusion been deep-read via `--section`? ⑧ is any `snippet` `…` truncation being cited as if it were complete content?
+- **Source-links self-check** (on par with the two items above; **a reply that fails it is incomplete — rewrite**): ⑨ does the reply **end with** the `**Source links**` list (not buried mid-answer, not omitted because the answer is long)? ⑩ does the list cover **every** source cited in the body and the hit list — **count check: number of link lines == number of distinct cited `entry_id`s** (no source missing, no extra)? ⑪ is every line rendered per the contract (documents → `[Open original file](link)` + `target_label`; media → `[▶ Play from mm:ss](link)`; hits without a `locator` → plain `title + source_ref`, never a fabricated link; `fallback_play_cmd: null` → no command, one fix hint)?
 
 **Example contrast (same hits, two phrasings)**:
 
@@ -249,7 +250,7 @@ Three sources in the library discuss move semantics:
 
 **Source-links list (mandatory at the end of the answer; never omit)**
 
-**Whenever retrieval or deep-read results are presented to the user, the answer must end with a "source links" list** itemising the sources cited (deep-read ones always; otherwise the high-scoring hits; one line per `entry_id`, grouped per workspace in cross-workspace searches):
+**Whenever retrieval or deep-read results are presented to the user, the answer must end with a "source links" list** (gated by self-check items ⑨–⑪ above: a reply whose links are missing, incomplete or mis-rendered is incomplete) itemising the sources cited (deep-read ones always; otherwise the high-scoring hits; one line per `entry_id`, grouped per workspace in cross-workspace searches):
 
 - Document hit (`locator.action=open`): `- [Open original file](myagentrag://goto?…) (page N / chapter N · title / line N)` — use `locator.link` for the link and `locator.target_label` inside the parentheses (omit the parentheses when the field is absent; never invent a location); with `open_scope=file_only` never claim the link jumps to the target page/chapter.
 - Media hit (`locator.action=play`): `- [▶ Play from mm:ss](myagentrag://goto?…)` — use `locator.link` (mm:ss is `target_label`); when the client does not render non-http(s) URIs, add the copy-pasteable `fallback_play_cmd`; when `fallback_play_cmd` is `null`, give no command but one fix hint (`--repair-deps` / `MYAGENTRAG_FFPLAY`).
@@ -519,7 +520,7 @@ user request → extract.py extract & ingest → agent retrieval/deep reading �
 ```
 
 - On extraction or retrieval failure, read the `error` field first — do not retry blindly;
-- **Presenting retrieval/deep-read results must follow the section ② result presentation contract** (uniform hit list + closing source-links list) — a hard output contract that does not vary with client or phrasing;
+- **Presenting retrieval/deep-read results must follow the section ② result presentation contract** (uniform hit list + closing source-links list) — a hard output contract that does not vary with client or phrasing; **a reply without the closing source-links list is incomplete** (enforced by self-check ⑨–⑪, including the link-line == distinct-cited-entry count check);
 - Watch the context budget when deep-reading long content: read in stages with `--section` / `--chunk` / `--max-chars`;
 - Agents with native web tooling may prefer their own web-reading ability for web pages and YouTube; this script is especially suited to Bilibili subtitles, local documents and local audio/video.
 

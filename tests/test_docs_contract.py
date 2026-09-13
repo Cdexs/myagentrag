@@ -145,3 +145,13 @@ def test_heuristic_list_matches_code(skill_text):
     for token in ("第N章", "第N节", "条款N", "Chapter N", "Section N", "1.2.3"):
         assert token in skill_text, f"文档启发式清单缺少实际支持的形态: {token}"
     assert "Chapter N, Clause N, Chapter N" not in skill_text
+
+
+def test_source_links_are_gated_by_self_check(skill_text):
+    """源链接清单必须进强制自检门禁（agent 反馈：它只是一条散落要求，
+    没有自检拦截 → 长回答末尾常被省略）。要求：⑨-⑪ 三项存在且清单段落
+    声明受其门禁。"""
+    assert "Source-links self-check" in skill_text
+    for token in ("⑨", "⑩", "⑪", "count check: number of link lines == number of distinct cited"):
+        assert token in skill_text, f"源链接自检门禁缺少: {token}"
+    assert "gated by self-check items ⑨–⑪" in skill_text
