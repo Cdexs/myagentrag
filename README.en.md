@@ -79,7 +79,7 @@ flowchart TD
     D -.->|"media hit"| P["▶️ --play --at seeked playback"]
 ```
 
-Every hit carries: its entry and section title, a highlighted snippet (『』), multi-route score details, and **precise provenance**.
+Every hit carries: its entry and section title, a highlighted snippet (『』), multi-route score details, and **precise provenance**. The skill also imposes a uniform **presentation contract** on the Agent (a hard requirement): hits are listed one per line in a fixed format (number + **title** + provenance label + quoted snippet), and every answer ends with a "source links" list — so retrieval results look the same whichever Agent you use and however you phrase the question.
 
 ### ③ Trustworthy answers with provenance: down to the page and the second
 
