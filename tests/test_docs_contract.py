@@ -32,6 +32,12 @@ def test_contract_section_exists(skill_text):
     assert "源文链接清单" in skill_text
 
 
+def test_contract_is_single_reply(skill_text):
+    """呈现契约必须写明"一次提问一次答复给全"——命中列表与链接清单都在同一条
+    回答里，不得让用户追问才补链接（防止被读成"多轮"语义）"""
+    assert "同一次回答" in skill_text, "契约需明确链接清单与命中列表同属一条回答"
+
+
 def test_no_rendered_legacy_alias(skill_text):
     """渲染规则与呈现示例不得再使用 myagentrag://play（旧别名只在
     「协议入口/兼容别名」处作为文字说明出现）"""
