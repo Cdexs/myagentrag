@@ -38,6 +38,14 @@ def test_contract_is_single_reply(skill_text):
     assert "同一次回答" in skill_text, "契约需明确链接清单与命中列表同属一条回答"
 
 
+def test_contract_prevents_content_compression(skill_text):
+    """结论段防压缩条款齐备：完整性五类、详略档位、阈值边界声明、输出前自检——
+    契约只约束"形式"不约束"信息量"时，agent 会把多要点压成一句（Gavin 侧实例）"""
+    for key in ("信息完整性", "详略档位", "输出前自检", "不外溢到结论段",
+                "禁止", "上位词替换下位词"):
+        assert key in skill_text, f"契约缺少防压缩条款: {key}"
+
+
 def test_no_rendered_legacy_alias(skill_text):
     """渲染规则与呈现示例不得再使用 myagentrag://play（旧别名只在
     「协议入口/兼容别名」处作为文字说明出现）"""
