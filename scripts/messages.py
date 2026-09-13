@@ -370,8 +370,24 @@ MESSAGES = {
         "en": "no media player found",
     },
     "play_no_player_hint": {
-        "zh": "建议安装 VLC 后重试",
-        "en": "suggest installing VLC, then retry",
+        "zh": "缺 ffplay：执行 --repair-deps 补齐内置组件，或用 MYAGENTRAG_FFPLAY 指向本机已有的 ffplay",
+        "en": "ffplay missing: run --repair-deps to restore the bundled components, or point MYAGENTRAG_FFPLAY at an existing ffplay",
+    },
+    "repair_none_needed": {
+        "zh": "受管组件已齐全，无需修复",
+        "en": "Managed components already complete; nothing to repair",
+    },
+    "repair_done": {
+        "zh": "已补齐受管组件：{names}",
+        "en": "Repaired managed components: {names}",
+    },
+    "repair_failed": {
+        "zh": "受管组件修复失败：{err}",
+        "en": "Managed component repair failed: {err}",
+    },
+    "ffmpeg_component_not_in_archive": {
+        "zh": "  ⚠️ 发行包中未找到 {name}（该平台可能不提供此组件），已跳过",
+        "en": "  ⚠️ {name} not found in the downloaded archive (may not be provided on this platform); skipped",
     },
     "play_no_media": {
         "zh": "该条目没有本地媒体文件副本（入库时可能使用了 --no-keep-source）",

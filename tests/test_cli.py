@@ -386,3 +386,25 @@ def test_extract_failure_rc_one(cli_env, tmp_path):
             "--workspace", "RC契约库", "--no-embed", "--quiet")
     j = json.loads(r.stdout)
     assert j["success"] is False and r.returncode == 1
+
+
+def test_repair_deps_cli_noop(cli_env, tmp_path):
+    """v0.1.2：--repair-deps 组件齐全 → 零下载结构化成功（无需 --workspace，rc=0）"""
+    home = tmp_path / "mhome"
+    bin_dir = home / "bin"
+    bin_dir.mkdir(parents=True)
+    exe = ".exe" if os.name == "nt" else ""
+    (bin_dir / f"ffmpeg{exe}").write_bytes(b"x")
+    (bin_dir / f"ffplay{exe}").write_bytes(b"x")
+    env = dict(cli_env)
+    env["MYAGENTRAG_HOME"] = str(home)
+    env.pop("MYAGENTRAG_FFPLAY", None)
+    env["PATH"] = str(tmp_path / "emptybin")      # 隔离系统 ffplay，锁定受管口径
+    r = run(env, "--repair-deps")
+    j = jout(r)
+    assert j["success"] is True and j["action"] == "repair_deps"
+    assert j["repaired"] == []
+    assert j["components"]["ffmpeg"]["present"] is True
+    assert j["components"]["ffplay"]["present"] is True
+    assert j["ffplay"]["source"] == "managed"
+    assert r.returncode == 0

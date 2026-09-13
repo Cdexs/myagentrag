@@ -2,6 +2,8 @@
 """test_deps — 组件定位 / 缺失检测 / 清单双语（v1.4：pip 组检测已随专用运行时移除）"""
 from pathlib import Path
 
+import pytest
+
 import deps
 import messages
 
@@ -195,3 +197,151 @@ def test_missing_kb_kinds_sqlite_vec_layer(monkeypatch):
                         lambda force=False: (True, {"version": "0.1.9"}))
     assert deps._missing_kb_kinds("Qwen3-Embedding-0.6B") == [
         "llama-embed", "embedding:Qwen3-Embedding-0.6B"]
+
+
+# ---------- v0.1.2：ffmpeg 组件逐组件补齐（老装机升级补落 ffplay） ----------
+
+def _fake_archive(names=("ffmpeg", "ffplay")):
+    """构造与发行包同构的 fake zip 数据（含包名子目录）
+
+    返回 (_http_download 替身, 调用记录)。替身把 zip 写入 dest（install_ffmpeg
+    随后按 .zip 后缀解包），完整走真实解包/挑选/落盘链路。"""
+    import io
+    import zipfile
+    calls = []
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for n in names:
+            exe = n + (".exe" if deps.os.name == "nt" else "")
+            zf.writestr(f"ffmpeg-release-essentials/bin/{exe}", f"fake-{n}")
+    blob = buf.getvalue()
+
+    def fake_download(url, dest, desc=""):
+        calls.append(str(url))
+        Path(dest).write_bytes(blob)
+        return Path(dest)
+
+    return fake_download, calls
+
+
+@pytest.fixture
+def _ffmpeg_env(tmp_path, monkeypatch):
+    """受管 bin 指向临时目录 + 组件口径固定为 ffmpeg/ffplay（跨平台确定性）
+    + 协议注册打桩（不写真实注册表）"""
+    monkeypatch.setattr(deps, "MANAGED_BIN", tmp_path / "bin")
+    (tmp_path / "bin").mkdir(parents=True)
+    monkeypatch.setattr(deps, "_ffmpeg_component_names", lambda: ("ffmpeg", "ffplay"))
+    monkeypatch.setattr(deps, "_ffmpeg_source_url",
+                        lambda: "https://example.invalid/ffmpeg-release-essentials.zip")
+    reg = []
+    monkeypatch.setattr(deps, "_register_protocol_quietly", lambda: reg.append(1))
+    monkeypatch.delenv("MYAGENTRAG_FFPLAY", raising=False)
+    monkeypatch.setattr(deps.shutil, "which", lambda name: None)
+    return {"reg": reg}
+
+
+def test_install_ffmpeg_repairs_missing_ffplay(tmp_path, monkeypatch, _ffmpeg_env):
+    """缺陷 1 回归：ffmpeg 已存在而 ffplay 缺失 → 只补 ffplay，不重拷 ffmpeg"""
+    ff = deps._managed_bin_path("ffmpeg")
+    ff.write_bytes(b"old-ffmpeg")
+    fake_download, calls = _fake_archive()
+    monkeypatch.setattr(deps, "_http_download", fake_download)
+    out = deps.install_ffmpeg()
+    assert out == ff
+    assert ff.read_bytes() == b"old-ffmpeg"                     # 已有组件不覆盖
+    assert deps._managed_bin_path("ffplay").read_text() == "fake-ffplay"
+    assert calls                                                # 缺组件触发一次下载
+    assert _ffmpeg_env["reg"] == [1]                            # 安装尾注册协议（不抛 NameError）
+
+
+def test_install_ffmpeg_idempotent_when_complete(tmp_path, monkeypatch, _ffmpeg_env):
+    """幂等：组件齐全 → 零下载直接返回"""
+    for n in ("ffmpeg", "ffplay"):
+        deps._managed_bin_path(n).write_bytes(b"x")
+
+    def boom(*a, **kw):
+        raise AssertionError("组件齐全时不应触发下载")
+
+    monkeypatch.setattr(deps, "_http_download", boom)
+    assert deps.install_ffmpeg() == deps._managed_bin_path("ffmpeg")
+    assert _ffmpeg_env["reg"] == []                             # 无需修复时不触碰协议注册
+
+
+def test_install_ffmpeg_component_absent_from_archive(tmp_path, monkeypatch, _ffmpeg_env, capsys):
+    """发行包不含某组件（如 macOS evermeet 无 ffplay）：跳过并告警，不失败"""
+    deps._managed_bin_path("ffmpeg").write_bytes(b"x")
+    fake_download, _ = _fake_archive(names=("ffmpeg",))
+    monkeypatch.setattr(deps, "_http_download", fake_download)
+    assert deps.install_ffmpeg() == deps._managed_bin_path("ffmpeg")
+    assert not deps._managed_bin_path("ffplay").exists()
+    assert "ffplay" in capsys.readouterr().err
+
+
+def test_ffmpeg_component_names_platform(monkeypatch):
+    """平台口径：darwin 单体包只期望 ffmpeg；Windows/Linux 期望 ffmpeg+ffplay"""
+    monkeypatch.setattr(deps.sys, "platform", "darwin")
+    assert deps._ffmpeg_component_names() == ("ffmpeg",)
+    monkeypatch.setattr(deps.sys, "platform", "win32")
+    assert deps._ffmpeg_component_names() == ("ffmpeg", "ffplay")
+
+
+def test_install_dep_ffmpeg_wired(monkeypatch):
+    """接线回归：_install_dep('ffmpeg') 必须调到 install_ffmpeg（此前为未知组件）"""
+    monkeypatch.setattr(deps, "install_ffmpeg", lambda: "FAKE_FFMPEG")
+    assert deps._install_dep("ffmpeg") == "FAKE_FFMPEG"
+
+
+def test_register_protocol_quietly_never_raises(monkeypatch, capsys):
+    """安装尾协议注册：注册失败/异常都只告警，不影响安装结果"""
+    import protocol
+    monkeypatch.setattr(protocol, "register_protocol",
+                        lambda: {"success": False, "error": "reg 挂了"})
+    deps._register_protocol_quietly()
+    assert "reg 挂了" in capsys.readouterr().err
+
+    def boom():
+        raise RuntimeError("protocol import 炸")
+
+    monkeypatch.setattr(protocol, "register_protocol", boom)
+    deps._register_protocol_quietly()                            # 不抛
+    assert "protocol import 炸" in capsys.readouterr().err
+
+    monkeypatch.setattr(protocol, "register_protocol",
+                        lambda: {"success": True, "message": "已注册"})
+    deps._register_protocol_quietly()
+    assert "已注册" in capsys.readouterr().err
+
+
+def test_repair_deps_reports_components(tmp_path, monkeypatch, _ffmpeg_env):
+    """--repair-deps：补齐后 repaired 如实列出新组件，ffplay 标注来源"""
+    def fake_install():
+        for n in ("ffmpeg", "ffplay"):
+            deps._managed_bin_path(n).write_bytes(b"x")
+        return deps._managed_bin_path("ffmpeg")
+
+    monkeypatch.setattr(deps, "install_ffmpeg", fake_install)
+    r = deps.repair_deps()
+    assert r["success"] is True and r["action"] == "repair_deps"
+    assert r["repaired"] == ["ffmpeg", "ffplay"]
+    assert all(s["present"] for s in r["components"].values())
+    assert r["ffplay"]["available"] is True and r["ffplay"]["source"] == "managed"
+    assert "ffmpeg" in r["message"]
+
+
+def test_repair_deps_none_needed_and_failure(tmp_path, monkeypatch, _ffmpeg_env):
+    """全齐 → 零修复；安装抛错 → 结构化失败 + 指引（不裸抛）"""
+    for n in ("ffmpeg", "ffplay"):
+        deps._managed_bin_path(n).write_bytes(b"x")
+    monkeypatch.setattr(deps, "install_ffmpeg",
+                        lambda: deps._managed_bin_path("ffmpeg"))
+    r = deps.repair_deps()
+    assert r["success"] is True and r["repaired"] == []
+
+    def boom():
+        raise RuntimeError("网络不可达")
+
+    monkeypatch.setattr(deps, "install_ffmpeg", boom)
+    monkeypatch.setattr(deps, "_ffplay_source", lambda: None)
+    r2 = deps.repair_deps()
+    assert r2["success"] is False and "网络不可达" in r2["error"]
+    assert r2["hint"] and "repair-deps" in r2["hint"]

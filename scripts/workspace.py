@@ -1696,7 +1696,8 @@ def _build_locator(h, info):
       open_scope: "file_only"}
     - 媒体命中（media_file + start_ms）→
       {action: "play", link: "myagentrag://play?…", target_label: "mm:ss",
-      fallback_play_cmd: [ffplay 命令构造，不启动进程]}
+      fallback_play_cmd: [ffplay 命令构造，不启动进程] 或 None（无 ffplay 时
+      与 --play 同一判空口径：不给看起来可用、实际不可执行的命令）}
     """
     from urllib.parse import quote
     loc = h.get("source_loc") or {}
@@ -1706,14 +1707,16 @@ def _build_locator(h, info):
         ws = quote(str(h.get("workspace") or ""), safe="")
         eid = h.get("entry_id") or ""
         link = f"myagentrag://play?ws={ws}&entry={eid}&at={at}"
-        exe = deps._find_ffplay() or "ffplay"
-        cmd = [exe, "-ss", str(at), "-autoexit", str(h["media_file"])]
-        if os.name == "nt":
-            cmd = ["cmd", "/c", "start", "", *cmd]
+        exe = deps._find_ffplay()
+        fallback = None
+        if exe:
+            fallback = [exe, "-ss", str(at), "-autoexit", str(h["media_file"])]
+            if os.name == "nt":
+                fallback = ["cmd", "/c", "start", "", *fallback]
         return {"action": "play", "link": link,
                 "target_label": (lambda s: (f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}"
                                             if s // 3600 else f"{s // 60}:{s % 60:02d}"))(at),
-                "fallback_play_cmd": cmd}
+                "fallback_play_cmd": fallback}
     src = info.get("source_ref")
     if kind in ("pdf", "epub", "line") and src:
         p = Path(src)

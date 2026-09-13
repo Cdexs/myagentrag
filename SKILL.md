@@ -133,7 +133,7 @@ $Python = if ($env:MYAGENTRAG_PYTHON) { $env:MYAGENTRAG_PYTHON } else { "python"
 "$PYTHON" "$EXTRACTOR" --workspace 我的书架 --search "X" --mode fts       # 纯关键词（不加载向量链）
 ```
 
-命中 JSON 字段（agent 消费指南）：`title/entry_id/source_type/source_ref`（来源文件或 URL）、`score + score_source + score_kind`（多路并列如 `fused+heading`）、`scores: {fts, vector, heading}`（fused 各路 RRF 贡献）、`column_filter`（元数据过滤标注）+ `filtered_entries`（过滤后候选条目数）、`keyword_miss`（FTS 零命中而仅语义召回，提示术语可能与原文不一致，勿据此断言“库中没有相关内容”）、`snippet`（『』高亮）、`chunk_no/chars`（可 `--chunk N` 读分片）、`heading{text,level}`（所在章节）、`section_ref`（不透明精读引用）+ `section_chars`、`same_section_hits`（同节其他命中数）、`source_loc`（源文件出处：`{kind:"pdf",page}` / `{kind:"epub",chapter,title}` / `{kind:"time",start_ms,end_ms}` / `{kind:"line",n}`）、`vector_backend`、**`locator`（点击定位）**：文档命中 `{open:"file:///…", kind, target_label, open_scope:"file_only"}` → 渲染 `[打开原文件](open)（target_label）`；**`open_scope=file_only` 时不得声称链接能跳到目标页/章**（各阅读器不支持深链，只做"打开"承诺）。媒体命中 `{action:"play", link:"myagentrag://play?…", target_label:"mm:ss", fallback_play_cmd}` → 渲染 `[▶ 从 mm:ss 播放](link)`；客户端不渲染非 http(s) URI 时改用 `fallback_play_cmd`（可复制命令）。**空结果的两种形态严格区分**：库名不存在 → rc=1 结构化错误 `ws_not_found`（所有模式一致，含列限定；跨库检索在无任何库时报 `ws_no_workspaces`）；库名正确但无匹配/过滤零候选 → success:true + `workspaces_searched` 列出被检库 + hits 为空。检索零命中时换词或 `--mode vector` 重试（语义路可跨语言召回）。
+命中 JSON 字段（agent 消费指南）：`title/entry_id/source_type/source_ref`（来源文件或 URL）、`score + score_source + score_kind`（多路并列如 `fused+heading`）、`scores: {fts, vector, heading}`（fused 各路 RRF 贡献）、`column_filter`（元数据过滤标注）+ `filtered_entries`（过滤后候选条目数）、`keyword_miss`（FTS 零命中而仅语义召回，提示术语可能与原文不一致，勿据此断言“库中没有相关内容”）、`snippet`（『』高亮）、`chunk_no/chars`（可 `--chunk N` 读分片）、`heading{text,level}`（所在章节）、`section_ref`（不透明精读引用）+ `section_chars`、`same_section_hits`（同节其他命中数）、`source_loc`（源文件出处：`{kind:"pdf",page}` / `{kind:"epub",chapter,title}` / `{kind:"time",start_ms,end_ms}` / `{kind:"line",n}`）、`vector_backend`、**`locator`（点击定位）**：文档命中 `{open:"file:///…", kind, target_label, open_scope:"file_only"}` → 渲染 `[打开原文件](open)（target_label）`；**`open_scope=file_only` 时不得声称链接能跳到目标页/章**（各阅读器不支持深链，只做"打开"承诺）。媒体命中 `{action:"play", link:"myagentrag://play?…", target_label:"mm:ss", fallback_play_cmd}` → 渲染 `[▶ 从 mm:ss 播放](link)`；客户端不渲染非 http(s) URI 时改用 `fallback_play_cmd`（可复制命令）；**`fallback_play_cmd` 为 `null` 时不得向用户给出播放命令**（本机无 ffplay，指引执行 `--repair-deps` 或设置 `MYAGENTRAG_FFPLAY`；链接本身仍有效，协议入口会返回结构化错误）。**空结果的两种形态严格区分**：库名不存在 → rc=1 结构化错误 `ws_not_found`（所有模式一致，含列限定；跨库检索在无任何库时报 `ws_no_workspaces`）；库名正确但无匹配/过滤零候选 → success:true + `workspaces_searched` 列出被检库 + hits 为空。检索零命中时换词或 `--mode vector` 重试（语义路可跨语言召回）。
 
 性能语义（对 agent 透明）：各路过量召回 3×limit 候选再融合截断；跨库检索只拉起一次嵌入引擎（与库数无关）；查询嵌入带持久化缓存（`~/.myagentrag/cache/query-embeddings.db`，同模型同查询二次检索零嵌入开销；换模型自动失效，可整文件删除重建）。
 
@@ -322,6 +322,7 @@ GPU 是否启用取决于 whisper.cpp 二进制编译时包含的后端；CPU �
 | 定位回放  | `--workspace <名> --play <entry-id> --at mm:ss [--duration 秒]`（默认内置 ffplay 定位播放；`--player vlc\|potplayer\|mpv\|system` 覆盖） |
 | 协议注册  | `--register-protocol` / `--unregister-protocol`（myagentrag:// 播放链接处理器；注册项只绑定**受管目录内的自定位启动器** `<home>/protocol/play.py`，不写死源码/技能目录；技能目录经 `MYAGENTRAG_SKILL_DIR` 环境变量 → 启动器旁 `skill.json`（注册时记录）运行时解析；安装 ffmpeg 时自动注册） |
 | 协议入口  | `--play-uri "myagentrag://play?ws=<库名>&entry=<id>&at=<秒>"`（点击链接时系统调用；参数白名单校验防注入） |
+| 组件修复  | `--repair-deps`（幂等补齐受管 ffmpeg 组件 `ffmpeg`/`ffplay`，缺谁补谁、全齐零下载；老装机升级后 ffplay 缺失或 `--play` 报找不到播放器时使用） |
 
 删除类操作默认只输出 `confirm_required: true` 与将删除的路径——agent 须向用户确认后加 `--yes` 重跑。跨机器迁移 = 直接拷贝 workspace 目录（自包含），无需命令。
 
@@ -335,7 +336,7 @@ GPU 是否启用取决于 whisper.cpp 二进制编译时包含的后端；CPU �
 - **默认内置 ffplay 定位播放**（随 ffmpeg 发行包一并落盘，`-ss` 精确起播、`-autoexit` 播完自退、`-t` 限定时长）：`player: "ffplay"` 且 `degraded: false`——不存在"从头播"降级态；
 - `--player vlc|potplayer|mpv|system` 显式覆盖（`system` = 系统默认关联，只能从头播、结果标注 `degraded: true`）；macOS 无包内 ffplay 时链为 ffplay → VLC/IINA/mpv；
 - 播放进程经外壳 handoff 启动（Windows `cmd /c start` / 非 Windows 独立会话），不受调用方进程退出影响；
-- **检测不到可用播放器时输出结构化 JSON**（`candidates`/`hint`/`play_cmd: null`）交由 agent 处理，技能不弹界面。
+- **检测不到可用播放器时输出结构化 JSON**（`candidates`/`hint`/`play_cmd: null`）交由 agent 处理，技能不弹界面；命中 `locator.fallback_play_cmd` 同一口径为 `null`（不给不可执行命令），修复：`--repair-deps`。
 
 ### 环境要求（由专用运行时保证）
 
@@ -391,6 +392,7 @@ cookies 具有账号会话权限，不能提交到技能仓库、复制到其他
 | B站无字幕                          | 该视频没有 CC 字幕，API 返回 `success:false`，属正常                                                   |
 | `--mode vector` 恒 0 命中 | 先查该库入库时是否用了 `--no-embed`（`--list` 的 `vectors` 字段为 0 即是）；补建：`--embed` 或重入库不加减嵌入 |
 | `--search` 报 "workspace 不存在" | 库名拼写错误；`--workspace-list` 列出全部库名核对（`@库名` 前缀会自动剥离）；与"库内无匹配"（success:true + 空结果）严格区分 |
-| `--play` 报找不到播放器 | 安装组件时已随 ffmpeg 落盘 ffplay；旧安装可用 `MYAGENTRAG_FFPLAY` 指向已有 ffplay，或删除受管 `bin/ffmpeg.exe` 后重跑以补齐；亦可 `--player system` 降级 |
+| `--play` 报找不到播放器 | 执行 `--repair-deps` 补齐内置 ffplay（幂等，已齐全则零下载）；或用 `MYAGENTRAG_FFPLAY` 指向已有 ffplay；亦可 `--player system` 降级 |
+| 升级后播放链缺 ffplay（0.1.0→0.1.2） | 老装机受管 `bin/` 内可能只有 `ffmpeg` 而无 `ffplay`：执行 `--repair-deps` 一次补齐（不覆盖已有组件） |
 | myagentrag:// 链接点不开 | 协议处理器需注册：`--register-protocol`（安装 ffmpeg 时已自动注册；仅写 skill 自有注册表命名空间，不动系统默认播放器）；移除用 `--unregister-protocol` |
 | 移动技能目录后链接失效 | 注册项只绑定受管目录启动器（不受影响），技能目录运行时解析——设置 `MYAGENTRAG_SKILL_DIR` 指向新技能根目录，或重跑 `--register-protocol` 刷新记录（启动器找不到目录时 stderr 会给出同样指引） |

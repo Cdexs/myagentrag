@@ -202,6 +202,8 @@ Bilibili's AI subtitles and login-walled videos, and some YouTube videos, need a
 
 All components require **no pre-installation** — detected on first use and installed after confirmation; extension libraries ship with the dedicated runtime, versions test-locked, never touching the user's system Python.
 
+After upgrading from an older release, if ffplay is reported missing (a 0.1.0 install may have shipped ffmpeg only), run `--repair-deps` once to idempotently restore the bundled components (only what is missing is fetched; when complete it downloads nothing and leaves existing files untouched).
+
 ## Environment Variables
 
 | Variable | Purpose |

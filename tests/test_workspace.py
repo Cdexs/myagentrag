@@ -1267,9 +1267,10 @@ def test_locator_absent_when_source_missing(ws_mod, tmp_path):
     assert "locator" not in s["hits"][0]
 
 
-def test_locator_media_hit(ws_mod, tmp_path):
+def test_locator_media_hit(ws_mod, tmp_path, monkeypatch):
     """媒体命中 locator：myagentrag://play 链接 + fallback 命令（不启动进程）"""
     import re as _re
+    monkeypatch.setattr(ws_mod.deps, "_find_ffplay", lambda: "/fake/ffplay")
     media = tmp_path / "讲座.mp3"
     media.write_bytes(b"fake")
     r = ws_mod.ws_ingest("库LOC3", srt_text=SRT, title="L", source_type="audio",
@@ -1283,3 +1284,25 @@ def test_locator_media_hit(ws_mod, tmp_path):
     assert f"entry={hit['entry_id']}" in loc["link"] and "ws=" in loc["link"]
     assert _re.fullmatch(r"\d+:\d{2}", loc["target_label"])
     assert "-ss" in loc["fallback_play_cmd"] and "-autoexit" in loc["fallback_play_cmd"]
+    assert loc["fallback_play_cmd"][-1].endswith("讲座.mp3")
+
+
+def test_locator_media_no_ffplay_fallback_null(ws_mod, tmp_path, monkeypatch):
+    """缺陷 2 回归：无 ffplay 时 fallback_play_cmd 为 null（与 --play 判空口径一致），
+    绝不给出“看起来可用、实际不可执行”的命令"""
+    monkeypatch.setattr(ws_mod.deps, "_find_ffplay", lambda: None)
+    monkeypatch.setattr(ws_mod, "_locate_player", lambda key: None)   # 受限条件：链上无任何播放器
+    media = tmp_path / "讲座2.mp3"
+    media.write_bytes(b"fake")
+    r = ws_mod.ws_ingest("库LOC4", srt_text=SRT, title="L2", source_type="audio",
+                         source_file=str(media))
+    assert r["success"]
+    s = ws_mod.ws_search("库LOC4", "全文匹配", mode="fts")
+    loc = s["hits"][0]["locator"]
+    assert loc["fallback_play_cmd"] is None
+    assert loc["link"].startswith("myagentrag://play?")   # 协议入口链接仍有效
+    # 同一受限条件下 --play 必须报不可用（两入口判定一致）
+    eid = s["hits"][0]["entry_id"]
+    out = ws_mod.ws_play("库LOC4", eid, "3")
+    assert out["success"] is False and out["play_cmd"] is None
+    assert "--repair-deps" in out["hint"]

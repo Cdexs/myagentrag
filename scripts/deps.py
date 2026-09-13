@@ -86,6 +86,39 @@ def _find_ffplay():
     return None
 
 
+def _ffmpeg_component_names():
+    """受管 bin 期望的 ffmpeg 发行包组件：ffmpeg + ffplay（--play 定位播放用）。
+    macOS evermeet 为 ffmpeg 单体包（无 ffplay），故 darwin 只期望 ffmpeg。"""
+    return ("ffmpeg",) if sys.platform == "darwin" else ("ffmpeg", "ffplay")
+
+
+def _managed_bin_path(name):
+    return MANAGED_BIN / (name + (".exe" if os.name == "nt" else ""))
+
+
+def ffmpeg_components_state():
+    """受管 bin 内各期望组件的就绪状态 {name: {present, path}}（v0.1.2 逐组件口径）"""
+    state = {}
+    for name in _ffmpeg_component_names():
+        p = _managed_bin_path(name)
+        present = p.exists() and p.is_file()
+        state[name] = {"present": present, "path": str(p) if present else None}
+    return state
+
+
+def _ffplay_source():
+    """ffplay 实际来源分层（env / PATH / 受管 bin）；不可用返回 None。
+    与 _find_ffplay 同一探测顺序，供 --repair-deps 结果如实标注。"""
+    configured = os.environ.get("MYAGENTRAG_FFPLAY")
+    if configured and Path(configured).expanduser().is_file():
+        return "env"
+    if shutil.which("ffplay"):
+        return "path"
+    if _managed_bin_path("ffplay").is_file():
+        return "managed"
+    return None
+
+
 def _find_whispercpp_cli():
     configured = os.environ.get("MYAGENTRAG_WHISPERCPP_CLI")
     if configured:
@@ -217,18 +250,22 @@ def _pick_binaries(td, names):
 
 
 def install_ffmpeg():
-    """用户确认后安装 ffmpeg（附 ffplay，供 --play 定位播放）到受管 bin 目录，
-    返回 ffmpeg 可执行文件路径"""
-    exe = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
-    dest = MANAGED_BIN / exe
-    if dest.exists():
+    """用户确认后安装/补齐 ffmpeg 发行包组件（ffmpeg 必装；ffplay 供 --play
+    定位播放）到受管 bin 目录，返回 ffmpeg 可执行文件路径。
+
+    v0.1.2 逐组件幂等：旧守卫"ffmpeg 存在即整体返回"使 0.1.0 老装机永远补不上
+    ffplay——改为按缺失组件列表判定，缺谁补谁（全齐则零下载直接返回）。"""
+    import messages
+    dest = _managed_bin_path("ffmpeg")
+    need = [n for n, s in ffmpeg_components_state().items() if not s["present"]]
+    if not need:
         return dest
     url = _ffmpeg_source_url()
     if not url:
         raise RuntimeError("不支持的架构，请用系统包管理器安装 ffmpeg (apt/dnf/pacman/brew)")
     MANAGED_BIN.mkdir(parents=True, exist_ok=True)
-    import zipfile
     import tarfile
+    import zipfile
     with tempfile.TemporaryDirectory(prefix="myag_ffmpeg_dl_") as td:
         archive = _http_download(url, Path(td) / url.split("/")[-1].split("?")[0], "ffmpeg")
         if archive.suffix == ".zip":
@@ -237,20 +274,70 @@ def install_ffmpeg():
         else:
             with tarfile.open(archive) as tf:
                 tf.extractall(td)
-        found = _pick_binaries(td, ["ffmpeg", "ffplay"])
-        if "ffmpeg" not in found:
+        found = _pick_binaries(td, need)
+        if "ffmpeg" in need and "ffmpeg" not in found:
             raise RuntimeError("下载包中未找到 ffmpeg 可执行文件")
-        shutil.copy2(found["ffmpeg"], dest)
-        if "ffplay" in found:   # 同一发行包内顺带落盘（零额外下载），--play 定位播放用
-            fexe = "ffplay.exe" if os.name == "nt" else "ffplay"
-            fdest = MANAGED_BIN / fexe
-            shutil.copy2(found["ffplay"], fdest)
+        for name in need:
+            if name not in found:
+                # 该发行包不含此组件（如 macOS evermeet 单体无 ffplay）：跳过而非
+                # 失败——ffplay 缺失由播放链兜底，如实告知避免静默
+                messages.warn("ffmpeg_component_not_in_archive", name=name)
+                continue
+            target = _managed_bin_path(name)
+            shutil.copy2(found[name], target)
             if os.name != "nt":
-                fdest.chmod(0o755)
-    if os.name != "nt":
-        dest.chmod(0o755)
+                target.chmod(0o755)
     _register_protocol_quietly()
     return dest
+
+
+def _register_protocol_quietly():
+    """安装尾自动注册 myagentrag:// 协议：失败不影响安装结果，仅 stderr 告知。"""
+    import messages
+    try:
+        import protocol
+        r = protocol.register_protocol()
+    except Exception as e:
+        print(messages.msg("protocol_register_failed", err=e), file=sys.stderr)
+        return
+    if r.get("success"):
+        print(r["message"], file=sys.stderr)
+    else:
+        print(r.get("error") or messages.msg("protocol_register_failed", err=""), file=sys.stderr)
+
+
+def repair_deps():
+    """受管组件幂等补齐（--repair-deps）：当前覆盖播放链 ffmpeg 发行包组件
+    （ffmpeg / ffplay）。
+
+    逐组件检查受管 bin，缺谁补谁（全齐零下载）；返回结构化结果：
+    repaired 为本次新补齐组件，components 为最终状态，ffplay 标注播放可用性
+    与实际来源（env / path / managed）。"""
+    import messages
+    before = ffmpeg_components_state()
+    err = None
+    try:
+        install_ffmpeg()
+    except Exception as e:
+        err = str(e) or type(e).__name__
+    after = ffmpeg_components_state()
+    repaired = [n for n, s in after.items() if s["present"] and not before[n]["present"]]
+    src = _ffplay_source()
+    out = {"success": err is None, "action": "repair_deps",
+           "managed_bin": str(MANAGED_BIN), "components": after,
+           "repaired": repaired,
+           "ffplay": {"available": src is not None,
+                      "path": _find_ffplay(), "source": src}}
+    if err is not None:
+        out["error"], out["error_i18n"] = messages.err_field("repair_failed", err=err)
+        if src is None:
+            out["hint"], out["hint_i18n"] = messages.err_field("play_no_player_hint")
+    else:
+        key = "repair_done" if repaired else "repair_none_needed"
+        pair = messages.msg_pair(key, names=", ".join(repaired))
+        out["message"], out["message_i18n"] = pair[messages.get_lang()], pair
+    return out
+
 
 WHISPERCPP_PREBUILT_ASSETS = {
     ("nt", "AMD64"): "whisper-bin-x64.zip",
@@ -528,6 +615,8 @@ def _install_dep(kind):
         return install_sqlite_vec()
     if kind.startswith("embedding:"):
         return install_embedding_model(kind.split(":", 1)[1])
+    if kind == "ffmpeg":
+        return install_ffmpeg()
     if kind == "whisper-cli":
         return install_whispercli()
     if kind.startswith("model:"):

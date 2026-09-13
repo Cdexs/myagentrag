@@ -67,3 +67,22 @@ def test_warn_goes_to_stderr(capsys):
     messages.warn("warn_no_lib", lib="openpyxl")
     err = capsys.readouterr().err
     assert "未安装 openpyxl" in err
+
+
+def test_play_no_player_hint_matches_ffplay_arch():
+    """v0.1.2 缺陷 3 回归：提示指向 --repair-deps / MYAGENTRAG_FFPLAY，不再误导装 VLC"""
+    messages.set_lang("zh")
+    hint = messages.msg("play_no_player_hint")
+    assert "VLC" not in hint and "--repair-deps" in hint and "MYAGENTRAG_FFPLAY" in hint
+    messages.set_lang("en")
+    hint_en = messages.msg("play_no_player_hint")
+    assert "VLC" not in hint_en and "--repair-deps" in hint_en
+
+
+def test_repair_keys_bilingual():
+    """repair 文案键双语齐备（zh/en 均存在且可格式化）"""
+    for key, kw in (("repair_none_needed", {}), ("repair_done", {"names": "ffplay"}),
+                    ("repair_failed", {"err": "x"}),
+                    ("ffmpeg_component_not_in_archive", {"name": "ffplay"})):
+        pair = messages.msg_pair(key, **kw)
+        assert pair["zh"] and pair["en"] and pair["zh"] != key and pair["en"] != key

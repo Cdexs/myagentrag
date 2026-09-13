@@ -522,6 +522,8 @@ def main():
                         help='注册 myagentrag:// 协议处理器（用户级，仅 skill 自有命名空间，不影响系统默认播放器）')
     parser.add_argument('--unregister-protocol', action='store_true',
                         help='移除 myagentrag:// 协议处理器')
+    parser.add_argument('--repair-deps', action='store_true',
+                        help='幂等补齐受管 ffmpeg 组件（ffmpeg/ffplay，缺谁补谁；老装机升级后 ffplay 缺失时使用）')
     parser.add_argument('--at', metavar='mm:ss', help='回放起点（mm:ss / hh:mm:ss / 秒数）')
     parser.add_argument('--duration', type=int, metavar='秒', help='回放时长（秒，可选）')
     parser.add_argument('--no-keep-source', action='store_true', help='入库时不保存来源文件副本')
@@ -540,6 +542,12 @@ def main():
 
     # 专用运行时闸门（v1.4 §8B）：缺失则引导安装，就绪则透明 re-exec（v1.4 决策 3：不回退用户环境）
     _runtime_gate(args)
+
+    # 受管组件幂等补齐（v0.1.2）：不依赖 workspace / 嵌入链，直接执行后退出
+    if args.repair_deps:
+        result = deps.repair_deps()
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        sys.exit(0 if result.get("success") else 1)
 
     # 知识库依赖链闸门（v1.5 §8C.11）：嵌入引擎/向量模型缺失 → 全链确认安装
     needs_embed = bool(
