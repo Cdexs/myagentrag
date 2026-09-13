@@ -166,7 +166,7 @@ $Python = if ($env:MYAGENTRAG_PYTHON) { $env:MYAGENTRAG_PYTHON } else { "python"
 **凡向用户呈现检索或精读结果，回答末尾必须附「源文链接」清单**，逐条列出本次引用到的来源（精读过的必列，其余取高分命中；同一 `entry_id` 只列一次，跨库检索按库归组）：
 
 - 文档命中（`locator.action=open`）：`- [打开原文件](myagentrag://goto?…)（第 N 页 / 第 N 章 · 标题 / 第 N 行）`——链接用 `locator.link`，括号内用 `locator.target_label`（无该字段时省略括号，不虚标位置）；`open_scope=file_only` 时不得声称链接能跳到目标页/章。
-- 媒体命中（`locator.action=play`）：`- [▶ 从 mm:ss 播放](myagentrag://play?…)`（mm:ss 即 `target_label`）；客户端不渲染非 http(s) URI 时并列 `fallback_play_cmd` 的可复制命令；`fallback_play_cmd` 为 `null` 时不给命令，附一句修复提示（`--repair-deps` / `MYAGENTRAG_FFPLAY`）。
+- 媒体命中（`locator.action=play`）：`- [▶ 从 mm:ss 播放](myagentrag://goto?…)`——链接用 `locator.link`（mm:ss 即 `target_label`）；客户端不渲染非 http(s) URI 时并列 `fallback_play_cmd` 的可复制命令；`fallback_play_cmd` 为 `null` 时不给命令，附一句修复提示（`--repair-deps` / `MYAGENTRAG_FFPLAY`）。
 - 无 `locator` 的命中（网页来源、源文件已不可达、入库时 `--no-keep-source`）：列 `标题 + source_ref` 纯文本，**不得伪造可点击链接**。
 - 清单须与正文引用一一对应（正文提到哪个来源，清单里就有哪条）；不得用 `section_ref`/`entry_id` 等内部引用代替用户可读链接。
 - 精读输出（`--entry/--chunk/--section`）同样带 `locator`，规则与检索命中一致；零命中不产出清单。
@@ -185,7 +185,7 @@ $Python = if ($env:MYAGENTRAG_PYTHON) { $env:MYAGENTRAG_PYTHON } else { "python"
 
 **源文链接**
 - [打开原文件](myagentrag://goto?ws=%E6%88%91%E7%9A%84%E4%B9%A6%E6%9E%B6&entry=826ab4aa12ebf20b)（第 3 章 · 移动语义）— Rust 所有权模型
-- [▶ 从 12:33 播放](myagentrag://play?ws=%E6%88%91%E7%9A%84%E4%B9%A6%E6%9E%B6&entry=0123456789abcdef&at=753) — 讲座录音：内存管理
+- [▶ 从 12:33 播放](myagentrag://goto?ws=%E6%88%91%E7%9A%84%E4%B9%A6%E6%9E%B6&entry=0123456789abcdef&at=753) — 讲座录音：内存管理
 - [打开原文件](myagentrag://goto?ws=%E6%88%91%E7%9A%84%E4%B9%A6%E6%9E%B6&entry=0c9280141973a80c)（第 88 行）— 语言设计笔记
 ```
 
@@ -354,7 +354,7 @@ GPU 是否启用取决于 whisper.cpp 二进制编译时包含的后端；CPU �
 "$PYTHON" "$EXTRACTOR" --workspace 我的资料 --section <section_ref>       # 精读命中所在整节（推荐）
 ```
 
-命中落在首个标题之前（前言/目录区）时 `section_ref` 为 `entry_id#front` 哨兵引用，同样可 `--section` 精读。**读路径（`--entry`/`--chunk`/`--section`）输出同样带 `locator`**（与检索命中同形：文档给 `file:///` 打开链接 + 页/章/行标注，媒体给 `myagentrag://play` 定位播放链接；整篇 `--entry` 为无 `target_label` 的打开链接，不虚标位置）——检索与精读两种入口的源文链接清单可用同一套规则渲染。检索命中附 `section_ref`（不透明引用）与 `section_chars`——agent 将 ref 原样传给 `--section` 即可精读整节。标题稀疏或**无标题**的长文档（扫描书/纯文本/识别失败的 EPUB）会在超长区间生成 20K 步长的**合成子节锚点**（卷首区为 `卷首·续N`）（标题为 `父标题·续N`，不参与标题检索），命中归位与 `--section` 精读粒度回到 20K。**读取默认上限 30,000 字符**（`--max-chars` 对 entry/chunk/section 三读路径统一生效；0=不限），超出截断并标注 `truncated/total_chars/remaining_chars`；超大节按命中位置开窗返回（`section_ref` 内嵌命中偏移），保证内容围绕命中词。媒体命中带 `start_ms/end_ms` 时间戳（精确到命中词所在段落，`timestamp_precision: segment/window/chunk` 标注精度来源；配 `--play --at` 定位回放）。
+命中落在首个标题之前（前言/目录区）时 `section_ref` 为 `entry_id#front` 哨兵引用，同样可 `--section` 精读。**读路径（`--entry`/`--chunk`/`--section`）输出同样带 `locator`**（与检索命中同形：`{link, action, target_label, …}`，文档 `action=open` 给页/章/行标注，媒体 `action=play` 给 mm:ss；整篇 `--entry` 为无 `target_label` 的打开链接，不虚标位置）——检索与精读两种入口的源文链接清单可用同一套规则渲染。检索命中附 `section_ref`（不透明引用）与 `section_chars`——agent 将 ref 原样传给 `--section` 即可精读整节。标题稀疏或**无标题**的长文档（扫描书/纯文本/识别失败的 EPUB）会在超长区间生成 20K 步长的**合成子节锚点**（卷首区为 `卷首·续N`）（标题为 `父标题·续N`，不参与标题检索），命中归位与 `--section` 精读粒度回到 20K。**读取默认上限 30,000 字符**（`--max-chars` 对 entry/chunk/section 三读路径统一生效；0=不限），超出截断并标注 `truncated/total_chars/remaining_chars`；超大节按命中位置开窗返回（`section_ref` 内嵌命中偏移），保证内容围绕命中词。媒体命中带 `start_ms/end_ms` 时间戳（精确到命中词所在段落，`timestamp_precision: segment/window/chunk` 标注精度来源；配 `--play --at` 定位回放）。
 
 ### 管理操作全集
 
