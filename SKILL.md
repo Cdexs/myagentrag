@@ -1,543 +1,543 @@
 ---
 name: myagentrag
-description: 本地知识库构建与检索工具：把 YouTube/B站视频字幕、网页正文、本地文件（PDF/Word/Excel/PowerPoint/EPUB/文本）与音视频语音转录提取并入库到本地知识库 workspace，支持关键词+语义+标题锚点三路混合检索（FTS5+Qwen3 向量）、按源文件结构（页码/章节/时间戳）定位精读与回放。提取与索引纯本地完成，不调用 LLM；检索结果的阅读与作答由当前 agent 完成。
-compatibility: Windows / macOS / Linux / WSL；引导层任意 Python ≥3.8（仅标准库），首次使用自动安装专用运行时（含 SQLite ≥3.34）；音视频转录另需 ffmpeg、whisper.cpp 及 ggml 模型
+description: Local knowledge-base (RAG) build & retrieval tool: ingest YouTube/Bilibili subtitles, web articles, local files (PDF/Word/Excel/PowerPoint/EPUB/text) and audio/video transcripts into local knowledge-base workspaces; hybrid keyword + semantic + heading-anchor retrieval (FTS5 + Qwen3 embeddings); structure-aware deep reading and timestamped playback. Extraction and indexing run fully locally with no LLM calls; reading and answering from retrieval results is done by the calling agent. Also matches Chinese-language requests such as 知识库 / 入库 / 检索 / 精读 / 定位回放 / 字幕 / 知识库检索.
+compatibility: Windows / macOS / Linux / WSL; bootstrap layer requires any Python ≥3.8 (standard library only); first use auto-installs the dedicated runtime (SQLite ≥3.34 included); audio/video transcription additionally needs ffmpeg, whisper.cpp and a GGML model
 ---
 
-# MyAgentRAG — 本地知识库构建与检索工具
+# MyAgentRAG — Local Knowledge-Base Build & Retrieval Tool
 
-**设计原则**：脚本只负责提取与索引，不调用 LLM。入库内容的检索、精读与作答由当前 agent 完成；**呈现检索/精读结果必须遵守统一的呈现契约**（命中列表格式 + 末尾源文链接清单，见「检索」节 ② 的结果呈现契约）。
+**Design principle**: the scripts only extract and index — they never call an LLM. Searching, deep-reading and answering from ingested content is done by the calling agent; **presenting retrieval/deep-read results must follow the unified presentation contract** (hit-list format + closing source-links list; see section ② "Result presentation contract" under "Retrieval").
 
-## 支持的内容源（提取入库的来源）
+## Supported Content Sources (what can be ingested)
 
-| 类型             | 支持格式                                                    | 说明                                                                     |
+| Type | Formats | Notes |
 | -------------- | ------------------------------------------------------- | ---------------------------------------------------------------------- |
-| **YouTube**    | 视频 URL                                                  | 通过 yt-dlp 提取手动/自动字幕和元数据                                                |
-| **B站**         | 视频 URL                                                  | 提取 CC 字幕和视频信息（免登录 API）                                                 |
-| **网页**         | HTTP/HTTPS 链接                                           | 通过 Jina Reader（`r.jina.ai`）提取正文——**URL 会被发送至第三方服务**（隐私敏感链接慎用）；内网/回环地址不可抓取；Jina 不可用或限流时 `--url` 功能整体不可用（失败返回结构化错误，含 HTTP 状态码与 URL） |
-| **文本文件**       | `.txt`, `.md`, `.markdown`, `.rst`, `.csv`              | 直接读取                                                                   |
-| **PDF**        | `.pdf`                                                  | pdfplumber 或 PyMuPDF                                                   |
-| **Word**       | `.docx`, `.doc`                                         | python-docx；`.doc` 另需 pandoc                                           |
-| **EPUB**       | `.epub`                                                 | ebooklib                                                               |
-| **Excel**      | `.xlsx`, `.xlsm`                                        | openpyxl（每个工作表一段，行以 " \| " 连接）                                         |
-| **PowerPoint** | `.pptx`                                                 | python-pptx（每张幻灯片一段，结构化输出：`## 幻灯片 N` + `#` 标题 + `###` 副标题/正文/表格/演讲者备注） |
-| **音频**         | `.mp3`, `.wav`, `.aac`, `.m4a`, `.flac`, `.ogg`, `.wma` | ffmpeg 转 PCM 后用 whisper.cpp 转录                                         |
-| **视频**         | `.mp4`, `.avi`, `.mkv`, `.mov`, `.wmv`, `.flv`, `.webm` | 先提取内置字幕，无字幕则提取音频转录                                                     |
+| **YouTube** | Video URL | Manual/auto captions and metadata via yt-dlp |
+| **Bilibili** | Video URL | CC subtitles and video info via the login-free API |
+| **Web page** | HTTP/HTTPS link | Body text via Jina Reader (`r.jina.ai`) — **the URL is sent to a third-party service** (avoid privacy-sensitive links); intranet/loopback addresses are refused; if Jina is unavailable or rate-limited the `--url` feature is entirely unavailable (structured error including HTTP status and URL) |
+| **Text files** | `.txt`, `.md`, `.markdown`, `.rst`, `.csv` | Read directly |
+| **PDF** | `.pdf` | pdfplumber or PyMuPDF |
+| **Word** | `.docx`, `.doc` | python-docx; `.doc` additionally needs pandoc |
+| **EPUB** | `.epub` | ebooklib |
+| **Excel** | `.xlsx`, `.xlsm` | openpyxl (one segment per worksheet, rows joined with " \| ") |
+| **PowerPoint** | `.pptx` | python-pptx (one segment per slide, structured: `## Slide N` + `#` title + `###` subtitle/body/table/speaker notes) |
+| **Audio** | `.mp3`, `.wav`, `.aac`, `.m4a`, `.flac`, `.ogg`, `.wma` | Transcode to PCM with ffmpeg, then transcribe with whisper.cpp |
+| **Video** | `.mp4`, `.avi`, `.mkv`, `.mov`, `.wmv`, `.flv`, `.webm` | Embedded subtitles first; if none, extract audio and transcribe |
 
-## 安装依赖（专用运行时，与系统 Python 彻底解耦）
+## Installing Dependencies (dedicated runtime, fully decoupled from system Python)
 
-技能使用**专用 Python 运行时**（独立 CPython 3.12 + 锁定版本的扩展库），安装到 `~/.myagentrag/runtime/`，与用户系统的 Python 环境完全隔离——不向用户环境安装任何库，也不依赖其安装了什么版本。
+The skill uses a **dedicated Python runtime** (standalone CPython 3.12 + pinned extension libraries) installed under `~/.myagentrag/runtime/`, completely isolated from the user's system Python — it installs nothing into the user environment and does not care which version that environment has.
 
-- **首次使用自动引导安装**：检测到专用运行时缺失时，列出名称/来源/预计大小（约 150 MB 下载），经用户确认后自动下载安装（agent 征得同意后可加 `--download-deps` 非交互执行），完成后自动继续原任务；
-- **引导层要求极低**：任意 Python ≥3.8（仅标准库）即可启动技能；扩展库（requests / yt-dlp / pdfplumber / PyMuPDF / python-docx / ebooklib / openpyxl / python-pptx）全部随专用运行时预装并锁定版本——技能测试通过的版本矩阵即用户实际运行的矩阵；
-- Python 本体来自 python-build-standalone 独立构建（SHA256SUMS 校验）；下载源可用 `MYAGENTRAG_PYTHON_MIRROR` 覆盖，pip 镜像可用 `MYAGENTRAG_PIP_INDEX_URL`（国内网络建议配置）；
-- 重置/升级：删除 `~/.myagentrag/runtime/` 目录后重跑即可（用户知识库数据在 `workspaces/`，组件在 `bin/`、`models/`，均不受影响）；
-- 音视频功能还需要 `ffmpeg`（首次使用按同一确认机制自动安装）；`.doc` 老格式需要 `pandoc`（不自动下载）。
+- **First use auto-installs it**: when the dedicated runtime is missing, the skill lists name/source/estimated size (≈150 MB download) and installs it after the user confirms (an agent that already has consent may pass `--download-deps` to run non-interactively), then automatically continues the original task;
+- **Very low bootstrap requirements**: any Python ≥3.8 (standard library only) can launch the skill; extension libraries (requests / yt-dlp / pdfplumber / PyMuPDF / python-docx / ebooklib / openpyxl / python-pptx) all ship pre-installed and pinned inside the dedicated runtime — the version matrix that passed the skill's tests is exactly what the user runs;
+- The Python build comes from standalone python-build-standalone distributions (SHA256SUMS verified); the download source can be overridden with `MYAGENTRAG_PYTHON_MIRROR` and the pip mirror with `MYAGENTRAG_PIP_INDEX_URL` (recommended for networks in China);
+- Reset/upgrade: delete `~/.myagentrag/runtime/` and re-run (knowledge-base data lives in `workspaces/`, components in `bin/`, `models/` — all unaffected);
+- Audio/video features additionally need `ffmpeg` (auto-installed on first use through the same confirmation flow); the legacy `.doc` format needs `pandoc` (not auto-downloaded).
 
-入口优先使用 `MYAGENTRAG_PYTHON` 作为引导解释器，未设置时使用 PATH 中的 `python`——它只负责启动技能并切换到专用运行时，不需要安装任何第三方库。
+The entry point prefers `MYAGENTRAG_PYTHON` as the bootstrap interpreter and falls back to `python` on PATH — it only launches the skill and switches to the dedicated runtime; it needs no third-party libraries.
 
-## 运行机制
+## How It Works
 
-模块结构（`extract.py` 只保留 CLI 入口与调度）：
-
-```
-scripts/extract.py      CLI 入口与调度
-scripts/slicing.py      大文档分片协议（slice protocol）
-scripts/extractors.py   内容提取器（YouTube/B站/网页/文档格式）
-scripts/transcribe.py   whisper.cpp 转录（GPU 后端识别上报）
-scripts/deps.py         组件定位、缺失检测与确认安装（专用运行时/ffmpeg/whisper/模型）
-scripts/runtime.py      专用 Python 运行时（独立 CPython + 锁定扩展库，与系统 Python 解耦）
-scripts/messages.py     zh/en 双语反馈（--lang 覆盖 / locale 自动探测）
-scripts/workspace.py    知识库 workspace（FTS5 检索 / 时间戳索引 / 定位回放）
-tests/                  自动化测试（test_<模块>.py）
-```
-
-提取流程：
+Module layout (`extract.py` keeps only the CLI entry point and dispatch):
 
 ```
-extract.py 被调用（--url 或 --file）
-  ├─ ① 类型检测：youtube / bilibili / web / 本地文件（按后缀）
-  ├─ ② 分发
-  │    ├─ youtube  → yt-dlp 拉字幕（失败且疑似登录墙 → 输出 cookieHint）
-  │    ├─ bilibili → 免登录 API 拉 CC 字幕
+scripts/extract.py      CLI entry point and dispatch
+scripts/slicing.py      large-document slice protocol
+scripts/extractors.py   content extractors (YouTube/Bilibili/web/document formats)
+scripts/transcribe.py   whisper.cpp transcription (reports the GPU backend in use)
+scripts/deps.py         component discovery, missing-dependency detection and confirmed install (runtime/ffmpeg/whisper/model)
+scripts/runtime.py      dedicated Python runtime (standalone CPython + pinned libraries, decoupled from system Python)
+scripts/messages.py     zh/en bilingual feedback (--lang override / locale auto-detect)
+scripts/workspace.py    knowledge-base workspace (FTS5 retrieval / timestamp index / seeked playback)
+tests/                  automated tests (test_<module>.py)
+```
+
+Extraction flow:
+
+```
+extract.py invoked (--url or --file)
+  ├─ ① type detection: youtube / bilibili / web / local file (by extension)
+  ├─ ② dispatch
+  │    ├─ youtube  → yt-dlp fetches captions (on failure and suspected login wall → cookieHint)
+  │    ├─ bilibili → login-free API fetches CC subtitles
   │    ├─ web      → Jina Reader
-  │    └─ 本地文件 → 按 MIME 分派（文本直读/PDF/Word/EPUB 解析）
-  ├─ ③ 音视频：先查 ffmpeg/whisper-cli/ggml 模型
-  │     ├─ 全部就绪 → ffmpeg 转 WAV → whisper-cli 转录 → SRT/文本
-  │     └─ 有缺失  → 列出清单（名称/用途/来源/大小）→ 用户确认
-  │                    ├─ 同意 → 下载安装（仅装到 ~/.myagentrag）→ 自动重跑原任务
-  │                    └─ 拒绝/非交互 → 返回 JSON 缺失清单，不下载
-  └─ ④ 输出 JSON（成功：title/author/transcript/content；失败：error/missing/cookieHint）
+  │    └─ local file → dispatch by MIME (read text / parse PDF / Word / EPUB)
+  ├─ ③ audio/video: check ffmpeg / whisper-cli / ggml model first
+  │     ├─ all present → ffmpeg converts to WAV → whisper-cli transcribes → SRT/text
+  │     └─ something missing → list items (name/purpose/source/size) → user confirmation
+  │                    ├─ accepted → download & install (into ~/.myagentrag only) → automatically re-run the original task
+  │                    └─ declined / non-interactive → return the missing-items JSON, download nothing
+  └─ ④ emit JSON (success: title/author/transcript/content; failure: error/missing/cookieHint)
 ```
 
-关键规则：
+Key rules:
 
-- 脚本永不调用 LLM：提取与索引全部纯本地完成；
-- 组件只在缺失时、经确认后才下载，且只装进 `~/.myagentrag`，不动系统目录；
-- 每次运行的中间文件用 `myag_*` 临时目录，正常退出即清理；
-- 无网络/组件缺失时返回结构化 JSON 错误，agent 可据此决定重试或向用户说明。
+- The scripts never call an LLM: extraction and indexing are fully local;
+- Components are downloaded only when missing and only after confirmation, and only into `~/.myagentrag` — never into system directories;
+- Intermediate files of each run live in `myag_*` temp directories and are cleaned up on normal exit;
+- With no network / missing components the tool returns a structured JSON error so the agent can decide whether to retry or explain to the user.
 
-## 使用方法
+## Usage
 
-统一入口：
+Single entry point:
 
 ```bash
 PYTHON="${MYAGENTRAG_PYTHON:-python}"
-EXTRACTOR="<技能目录>/scripts/extract.py"
-"$PYTHON" "$EXTRACTOR" --file "document.pdf" --workspace 我的资料        # 提取并入库
-"$PYTHON" "$EXTRACTOR" --workspace 我的资料 --search "检索词"             # 三路混合检索
-"$PYTHON" "$EXTRACTOR" --workspace 我的资料 --entry <entry-id>            # 定位精读
-"$PYTHON" "$EXTRACTOR" --workspace 我的资料 --play <entry-id> --at 12:33  # 音视频定位回放
+EXTRACTOR="<skill-dir>/scripts/extract.py"
+"$PYTHON" "$EXTRACTOR" --file "document.pdf" --workspace my-docs        # extract and ingest
+"$PYTHON" "$EXTRACTOR" --workspace my-docs --search "query terms"       # hybrid retrieval
+"$PYTHON" "$EXTRACTOR" --workspace my-docs --entry <entry-id>           # deep read one entry
+"$PYTHON" "$EXTRACTOR" --workspace my-docs --play <entry-id> --at 12:33 # seeked audio/video playback
 ```
 
-Windows PowerShell 调用：
+From Windows PowerShell:
 
 ```powershell
 $Python = if ($env:MYAGENTRAG_PYTHON) { $env:MYAGENTRAG_PYTHON } else { "python" }
-& $Python "<技能目录>/scripts/extract.py" --file "document.pdf" --workspace 我的资料
+& $Python "<skill-dir>/scripts/extract.py" --file "document.pdf" --workspace my-docs
 ```
 
-输出格式：
+Output formats:
 
-- `--output json`（默认）：完整 JSON（含 title/author/transcript/content/success）
-- `--output text`：标题+正文纯文本
-- `--output srt`：SRT 字幕（仅音视频转录）
+- `--output json` (default): full JSON (with title/author/transcript/content/success)
+- `--output text`: title + plain-text body
+- `--output srt`: SRT subtitles (audio/video transcription only)
 
-附加参数与字段：
+Extra flags and fields:
 
-- `--download-deps`：缺组件时跳过交互确认直接下载安装（用于 agent 在征得用户同意后代为确认后重跑）；
-- `--lang zh|en`：反馈语言。默认按系统语言自动探测（环境变量 `MYAGENTRAG_LANG` 亦可覆盖）；自有错误文案在 JSON 中同时提供 `error_i18n: {"zh": ..., "en": ...}` 双份，agent 可按界面语言选用（原始异常文本不翻译）；
-- 失败时 JSON 可能包含 `missing`（缺失组件清单）或 `cookieHint`（YouTube 需要登录验证的提示），agent 应原样展示给用户。
+- `--download-deps`: skip the interactive confirmation and download missing components directly (for an agent that re-runs after obtaining user consent);
+- `--lang zh|en`: feedback language. Defaults to auto-detected system locale (the `MYAGENTRAG_LANG` environment variable also overrides it); built-in messages are provided in JSON as `error_i18n: {"zh": ..., "en": ...}` so the agent can pick the language of its UI (raw exception text is not translated);
+- On failure the JSON may include `missing` (list of missing components) or `cookieHint` (YouTube requires a login check) — show these to the user verbatim.
 
-**退出码与成功判定契约**：`rc=0` 任务成功；`rc=1` 任务失败（提取或入库失败，一律顶层 `success:false`）；`rc=2` 参数误用。**入库失败**（含嵌入失败/组件缺失）时：顶层 `success=false`、rc=1，错误详情在嵌套 `workspace_error`（含双语 `error_i18n`），`content` 仍会返回——**agent 必须检查顶层 `success` 而非只看有无 content**；`--workspace` 场景下入库失败即任务失败，不要把提取成功当作任务成功。
+**Exit-code and success contract**: `rc=0` task succeeded; `rc=1` task failed (extraction or ingestion failed — always with top-level `success:false`); `rc=2` argument misuse. **Failed ingestion** (embedding failure / missing components) reports top-level `success=false`, rc=1, details under the nested `workspace_error` (with bilingual `error_i18n`), and still returns `content` — **the agent must check top-level `success`, not merely whether content exists**; with `--workspace`, failed ingestion means the task failed — do not treat a successful extraction as a successful task.
 
-> YouTube 需要代理时，先设置 `HTTPS_PROXY`。YouTube 受限内容可能需要 cookies；公开字幕通常不需要。
+> Set `HTTPS_PROXY` first when YouTube needs a proxy. Restricted YouTube content may need cookies; public captions normally do not.
 
-## 典型场景（agent 操作手册）
+## Typical Scenarios (agent playbook)
 
-按用户意图选择路径；同一命令对交互终端弹 y/N 确认、对 agent 输出结构化缺失清单（征得用户同意后加 `--download-deps` 重跑）。
+Pick the path by user intent; the same command shows a y/N prompt on an interactive terminal and emits a structured missing-items list to an agent (re-run with `--download-deps` after obtaining the user's consent).
 
-**① "把这本书/这份资料存进知识库"（提取并入库）**
+**① "Store this book/document into the knowledge base" (extract and ingest)**
 
 ```bash
-"$PYTHON" "$EXTRACTOR" --file "book.epub" --workspace 我的书架
+"$PYTHON" "$EXTRACTOR" --file "book.epub" --workspace my-books
 ```
 
-入库结果含 entry_id/chunk_count/vectors（向量窗口数）。首次使用知识库会一次性引导安装嵌入链（llama.cpp 引擎 ~34MB + Qwen3 模型 ~610MB + sqlite-vec ~0.3MB）：交互终端直接 y/N；agent 先向用户展示清单征得同意，再以 `--download-deps` 重跑。库不存在隐式创建；同名内容幂等只更新。**同源重入库**（source_ref 相同）内容变更时会产生新条目，响应 `workspace.supersedes` 列出旧条目 id 并在 stderr 警告——确认后 `--remove <旧id>` 清理，或入库时加 `--replace` 自动替换。
+The ingest result contains entry_id/chunk_count/vectors (number of vector windows). The first knowledge-base use walks you through installing the embedding chain (llama.cpp engine ~34MB + Qwen3 model ~610MB + sqlite-vec ~0.3MB): interactive terminals prompt y/N directly; an agent first shows the list to the user for consent, then re-runs with `--download-deps`. A missing workspace is created implicitly; re-ingesting identical content is idempotent and only updates. **Re-ingesting the same source** (same source_ref) with changed content creates a new entry; the response lists the old entry id under `workspace.supersedes` with a stderr warning — after confirming, clean it up with `--remove <old-id>`, or pass `--replace` at ingest time to replace automatically.
 
-**② "我之前存过的那份资料里关于 X 讲了什么"（检索→精读闭环，推荐主路径）**
+**② "What did that document I saved earlier say about X" (retrieval → deep reading loop; the recommended main path)**
 
-固定三步，**第 2 步不得省略**：① `--search` 取候选 → ② 对**将呈现的命中** `--section` 精读 → ③ 按呈现契约输出。**检索 = 找位置；精读 = 取内容**，二者缺一不可（内容型提问只凭 `snippet` 作答属违规）。
+Fixed three steps, **step 2 is mandatory**: ① `--search` to get candidates → ② `--section` deep-read the hits **you are going to present** → ③ output per the presentation contract. **Retrieval finds the location; deep reading gets the content** — both are required (answering a content-type question from `snippet` alone is a violation).
 
 ```bash
-"$PYTHON" "$EXTRACTOR" --workspace "@我的书架" --search "X 关键词"       # 用户以 @库名 指定：@ 原样传入即可
-"$PYTHON" "$EXTRACTOR" --workspace 我的书架 --search "X 关键词"            # 等价写法（agent 已解析库名时）
-"$PYTHON" "$EXTRACTOR" --workspace 我的书架 --search "X" --mode fts       # 纯关键词（不加载向量链）
+"$PYTHON" "$EXTRACTOR" --workspace "@my-books" --search "X keywords"   # user names the workspace with @: pass @ through as-is
+"$PYTHON" "$EXTRACTOR" --workspace my-books --search "X keywords"      # equivalent form (agent already resolved the name)
+"$PYTHON" "$EXTRACTOR" --workspace my-books --search "X" --mode fts    # keyword only (no vector chain)
 ```
 
-命中 JSON 字段（agent 消费指南）：`title/entry_id/source_type/source_ref`（来源文件或 URL）、`score + score_source + score_kind`（多路并列如 `fused+heading`）、`scores: {fts, vector, heading}`（fused 各路 RRF 贡献）、`column_filter`（元数据过滤标注）+ `filtered_entries`（过滤后候选条目数）、`candidates_total`（**截断前**融合候选总数）+ `truncated_by_limit`（是否被 --limit 截断）+ `hint`/`hint_i18n`（仅截断时出现，给补救建议）、`keyword_miss`（FTS 零命中而仅语义召回，提示术语可能与原文不一致，勿据此断言“库中没有相关内容”）、`snippet`（『』高亮；**检索返回的预览窗口，内容不完整——精读请用 `--section`**）、`chunk_no/chars`（可 `--chunk N` 读分片）、`heading{text,level}`（所在章节）、`section_ref`（不透明精读引用）+ `section_chars`、`same_section_hits`（同节其他命中数）、`source_loc`（源文件出处：`{kind:"pdf",page}` / `{kind:"epub",chapter,title}` / `{kind:"time",start_ms,end_ms}` / `{kind:"line",n}`）、`vector_backend`、**`locator`（点击定位；检索命中与 `--entry/--chunk/--section` 读路径输出同形，v0.1.2 统一协议入口）**：一律以 `{link:"myagentrag://goto?ws=…&entry=…[&at=…]", action}` 为可点击出口——`action=open`（文档命中，附 `kind`/`open_scope:"file_only"`/过渡字段 `open`）→ 渲染 `[打开原文件](link)（target_label）`；**`open_scope=file_only` 时不得声称链接能跳到目标页/章**（各阅读器不支持深链，只做"打开"承诺）。`action=play`（媒体命中，附 `target_label:"mm:ss"`/`fallback_play_cmd`）→ 渲染 `[▶ 从 mm:ss 播放](link)`；链接由技能自有协议处理器接管（`goto`：媒体定位播放、文档打开原文件），**不依赖客户端对 `file://` 的策略**；`open`（file:///）为过渡字段（旧版渲染兼容，下个大版本移除）。客户端不渲染非 http(s) URI 时改用 `fallback_play_cmd`（可复制命令）；**`fallback_play_cmd` 为 `null` 时不得向用户给出播放命令**（本机无 ffplay，指引执行 `--repair-deps` 或设置 `MYAGENTRAG_FFPLAY`；链接本身仍有效，协议入口会返回结构化错误）。**空结果的两种形态严格区分**：库名不存在 → rc=1 结构化错误 `ws_not_found`（所有模式一致，含列限定；跨库检索在无任何库时报 `ws_no_workspaces`）；库名正确但无匹配/过滤零候选 → success:true + `workspaces_searched` 列出被检库 + hits 为空。检索零命中时换词或 `--mode vector` 重试（语义路可跨语言召回）。
+Hit JSON fields (agent consumption guide): `title/entry_id/source_type/source_ref` (source file or URL), `score + score_source + score_kind` (multi-route overlaps such as `fused+heading`), `scores: {fts, vector, heading}` (per-route RRF contribution in fused mode), `column_filter` (metadata-filter marker) + `filtered_entries` (candidate entry count after filtering), `candidates_total` (**pre-truncation** fused candidate count) + `truncated_by_limit` (whether `--limit` cut the pool) + `hint`/`hint_i18n` (present only when truncated, with a remedy), `keyword_miss` (no FTS hits, semantic route only — wording may differ from the source; do not conclude "the library has nothing about it"), `snippet` (『』 highlight; **a preview window returned by retrieval, incomplete — deep-read with `--section`**), `chunk_no/chars` (read a chunk with `--chunk N`), `heading{text,level}` (containing section), `section_ref` (opaque deep-read reference) + `section_chars`, `same_section_hits` (other hits in the same section), `source_loc` (source position: `{kind:"pdf",page}` / `{kind:"epub",chapter,title}` / `{kind:"time",start_ms,end_ms}` / `{kind:"line",n}`), `vector_backend`, **`locator` (clickable locator; retrieval hits and the `--entry/--chunk/--section` read paths share one shape, unified protocol entry as of v0.1.2)**: always expose `{link:"myagentrag://goto?ws=…&entry=…[&at=…]", action}` as the clickable target — `action=open` (document hit, with `kind`/`open_scope:"file_only"`/transition field `open`) → render `[Open original file](link) (target_label)`; **when `open_scope=file_only`, never claim the link jumps to the target page/chapter** (readers do not support deep links; promise "opens the file" only). `action=play` (media hit, with `target_label:"mm:ss"`/`fallback_play_cmd`) → render `[▶ Play from mm:ss](link)`; the link is handled by the skill's own protocol handler (`goto`: seeked playback for media, open-original-file for documents) and **does not depend on the client's `file://` policy**; `open` (file:///) is a transition field (kept for old renderers, removed in the next major version). When the client does not render non-http(s) URIs, use `fallback_play_cmd` (a copy-pasteable command); **when `fallback_play_cmd` is `null`, do not give the user any playback command** (no ffplay on this machine — point to `--repair-deps` or `MYAGENTRAG_FFPLAY`; the link itself still works and the protocol entry returns a structured error). **The two shapes of an empty result must be distinguished**: unknown workspace name → rc=1 structured error `ws_not_found` (identical in every mode, including column filters; a cross-workspace search with no workspaces at all reports `ws_no_workspaces`); a valid workspace with no matches / zero candidates after filtering → success:true + `workspaces_searched` listing the searched workspaces + empty hits. On zero hits, retry with different wording or `--mode vector` (the semantic route recalls cross-language content).
 
-性能语义（对 agent 透明）：各路过量召回 3×limit 候选再融合截断；跨库检索只拉起一次嵌入引擎（与库数无关）；查询嵌入带持久化缓存（`~/.myagentrag/cache/query-embeddings.db`，同模型同查询二次检索零嵌入开销；换模型自动失效，可整文件删除重建）。
+Performance semantics (transparent to the agent): each route over-recalls 3×limit candidates before fusion and truncation; a cross-workspace search starts the embedding engine only once (independent of workspace count); query embeddings are persistently cached (`~/.myagentrag/cache/query-embeddings.db` — a repeated search with the same model and query costs no embedding at all; switching models invalidates it automatically, and the file can simply be deleted to rebuild).
 
-**② 的结果呈现契约（命中列表格式 + 源文链接清单；每次呈现检索/精读结果都必须遵守）**
+**② Result presentation contract (hit-list format + source-links list; mandatory for every retrieval/deep-read presentation)**
 
-与客户端、提问方式无关，结构固定：**检索类回答 = 检索概况 → 命中列表 → 源文链接清单**；**精读类回答（用户问某章节/条目的内容）= 内容或结论 → 源文链接清单**（无命中列表）。提问类问题先给结论，再附列表与清单；结论的行内引用用同一套标注。
+Punctuation in rendered links follows the language of the reply. Independent of client and phrasing, the structure is fixed: **retrieval-type answer = retrieval summary → hit list → source-links list**; **deep-read-type answer (the user asks about one chapter/entry) = content or conclusion → source-links list** (no hit list). Question-type requests get the conclusion first, then the list and the links; inline citations in the conclusion use the same labels.
 
-**均指同一次回答内的版式：一次提问一次答复就要给全——命中列表与可点击的源文链接清单都在这一条回答里呈现，不得先给半截结果、再等用户追问才补链接**（agent 内部可以检索→精读调用多次，但由 agent 一次组织完整答复，用户只看到一条回答）。
+**All of this refers to a single reply: one question, one answer that delivers everything — the hit list and the clickable source-links list both appear in that one reply. Never deliver half the result and wait for the user to ask again for the links** (the agent may call retrieval → deep reading several times internally, but it assembles one complete answer; the user sees a single reply).
 
-1. **检索概况**（一行）：`在「库名」中命中 N 条`（N=列表实际展开的条目数；CLI 返回多于展示时按下方“条数”规则补「另有…」）；跨库为 `跨 N 个库命中 M 条` 并随后按库分组。不写检索模式等实现细节。
-2. **命中列表**（逐条统一格式，条目间不混排其他内容）：
+1. **Retrieval summary** (one line): `N hits in "workspace-name"` (N = number of entries actually expanded in the list; when the CLI returned more than shown, append "N more not shown" per the "count" rule below); cross-workspace: `M hits across N workspaces`, followed by per-workspace grouping. Do not mention retrieval modes or other implementation details.
+2. **Hit list** (one uniform format per item; nothing else interleaved between items):
 
    ```markdown
-   N. **条目标题** — 出处标注
-      > 命中片段
+   N. **entry title** — provenance label
+      > hit snippet
    ```
 
-   出处标注用 `source_loc` 的自然语言：`第 12 页` / `第 3 章 · 章节标题` / `第 88 行` / `12:33–12:47`（媒体用 `start_ms–end_ms`）；片段用 `snippet`（**检索返回的预览窗口，可能已被 `…` 截断，非完整内容；结论段的内容必须来自精读**）——**保留『』高亮**、1–2 行为限、超长以 `…` 截断，**不得改写、拼接或虚构**；条目按返回顺序（即相关性排序）排列；同一 `entry_id` 的多条命中合并到它首次出现的位置（标注取最高分那条，引用块内最多并列 2 段片段），其余条目相对顺序不变；无出处标注的条目（网页等）标注来源类型或域名。
-3. **源文链接清单**（同一条回答末尾必附，规则见下）；精读类回答无第 1、2 段，直接「内容/结论 → 清单」。
+   The provenance label is the natural-language form of `source_loc`: `page 12` / `chapter 3 · chapter title` / `line 88` / `12:33–12:47` (media uses `start_ms–end_ms`); the snippet comes from `snippet` (**a preview window returned by retrieval, possibly truncated with `…`, not the full content; the conclusion section must come from deep reading**) — **keep the 『』 highlights**, limit to 1–2 lines, truncate long text with `…`, and **never rewrite, splice or invent**; items follow the returned order (i.e. relevance order); multiple hits sharing one `entry_id` merge into its first occurrence (keep the highest-scoring item's label, at most 2 quoted snippets in the block) while the relative order of other items is unchanged; items without a provenance label (web pages etc.) get the source type or domain instead.
+3. **Source-links list** (mandatory at the end of the same reply; rules below); a deep-read-type answer skips items 1–2 and goes straight to "content/conclusion → list".
 
-其余硬性规则：
+Other hard rules:
 
-- **不向用户展示内部字段**：`score/scores/rrf/chunk_no/section_ref/entry_id/offset/vector_backend` 等一律不出现在回答文本里（`myagentrag://` 链接内部的参数由链接承担，不摘出来写给人看）。
-- **条数**：默认最多逐条展开 **10 条**，更多时末尾补一句「另有 N 条未展示（收窄关键词可减少干扰）」；用户明确要「全部/找全/列出所有」时全列（配合 `--limit 50`）。
-- **跨库**：先给分组标题 `**库名**（N 条）`，组内仍按相关性排序；回答需说明每条的来源库时用分组标题即可，不逐条重复库名。
-- **盘点（`--list`/`--stats`）同规则**：逐条编号、标题加粗、不展示内部字段；无检索命中概念，故不附源文链接清单。
-- **零命中**：不产出列表与清单，按上文“空结果两种形态”如实说明，并给一句下一步建议（换词 / `--mode vector` / 确认库名）。
-- 正文引用、命中列表、源文链接清单三处的来源标注必须一一对应（都写「标题 — 第 N 页」就都写「第 N 页」，不得一处页一处章）。
+- **Never show internal fields to the user**: `score/scores/rrf/chunk_no/section_ref/entry_id/offset/vector_backend` etc. must not appear in the answer text (parameters inside `myagentrag://` links are carried by the link itself — do not extract them for human reading).
+- **Count**: expand at most **10** items by default; with more, append "N more not shown (narrowing the keywords reduces noise)"; when the user explicitly asks for "all / everything / list them all", list them all (with `--limit 50`).
+- **Cross-workspace**: start with a group heading `**workspace-name** (N hits)` and keep relevance ordering inside each group; to state which workspace an item came from, the group heading is enough — do not repeat the workspace name per item.
+- **Inventory (`--list`/`--stats`) follows the same rules**: numbered items, bold titles, no internal fields; there is no retrieval-hit concept, so no source-links list.
+- **Zero hits**: produce neither list nor links — explain honestly per "the two shapes of an empty result" above and add one next-step suggestion (different wording / `--mode vector` / verify the workspace name).
+- The provenance labels in the body citations, the hit list and the source-links list must correspond one-to-one (if one says "title — page N", the others say "page N" too; never page in one place and chapter in another).
 
-**取数深度：命中列表用 `snippet`，结论段必须来自精读（防“拿预览当正文”）**
+**Retrieval depth: hit lists use `snippet`, the conclusion section must come from deep reading (never pass a preview off as content)**
 
-命中列表与结论段的数据来源不同，**不得混用**：
+The hit list and the conclusion section draw on different sources and **must not be mixed up**:
 
-| 段 | 数据来源 | 说明 |
+| Section | Data source | Notes |
 | --- | --- | --- |
-| 命中列表 | `snippet` | 检索返回的**预览窗口**（可能已被 `…` 截断），只用于让用户判断“是哪一条” |
-| 结论 / 内容段 | **`--section` 精读返回的原文** | **必须**来自精读；**不得**以 `snippet` 作为内容来源 |
+| Hit list | `snippet` | A **preview window** returned by retrieval (possibly truncated with `…`); it only tells the user "which item this is" |
+| Conclusion / content section | **The original text returned by `--section` deep reading** | **Must** come from deep reading; `snippet` must **not** serve as the content source |
 
-> `snippet` 是**索引预览，不是内容本体**——用 `snippet` 充当结论段内容 = 拿目录当正文；`…` 表示内容被截断，**截断处之后的原文必须靠精读获取**。
+> `snippet` is an **index preview, not the content itself** — using `snippet` as the conclusion section is passing off a table of contents as the book; `…` means the content was truncated, and **whatever follows the cut must be obtained by deep reading**.
 
-- **内容型提问：先精读，后作答（硬要求）**：用户问“讲了什么 / 说了哪些 / 具体内容是什么 / 详细说说”时——① 对**每一处**将写进结论段的命中，先 `--section <section_ref>` 精读；② 命中跨多个来源（多 `entry_id` / 多章节）时**逐一精读**，不得只读第一条再外推其余；③ 精读仍不足（命中落在超大合成节、或原文本身即片段）时，**如实说明“该处仅能取到片段”**，不得用 `snippet` 冒充全文；④ 精读成本用 `--max-chars` 分段控制（超大节按命中位置开窗），**不得以“节省上下文”为由跳过精读**。
-- **候选截断先补救**：`truncated_by_limit: true`（或带 `hint`）说明还有候选**根本没返回**——内容型/枚举型提问须先按 `hint` 加 `--limit 50`（跨库时更要注意共享额度）重跑，再按新结果精读作答；**不得就着被截断的候选集下结论**。
-- **精读边界（避免无边界精读）**：**结论段实际引用的来源必须逐一精读**；未被引用的高分候选不必精读——跨库/大范围检索先按相关性收窄到要呈现的命中，再逐一精读。
-- **定性结论必须基于精读**：对某来源下“有 / 没有某类内容”的判断（如“该来源只是预言传统、无具体预言”），必须基于精读文本，并在句中指向具体页/章/时间戳；**禁止**用 `snippet` 预览推出定性结论。
+- **Content-type questions: deep-read first, then answer (hard requirement)**: when the user asks "what does it say / what did it mention / what is the specific content / tell me in detail" — ① `--section <section_ref>` deep-read **every** hit you are going to write into the conclusion; ② when hits span multiple sources (multiple `entry_id`s / chapters) **deep-read each one** — never read the first and extrapolate to the rest; ③ if deep reading still falls short (the hit lands in an oversized synthetic section, or the original text itself is a fragment), **say honestly "only a fragment is available here"** — never pass `snippet` off as the full text; ④ control deep-reading cost by chunked reads with `--max-chars` (oversized sections open a window around the hit), and **never skip deep reading on the excuse of "saving context"**.
+- **Fix candidate truncation first**: `truncated_by_limit: true` (or a `hint`) means candidates were **never returned at all** — for content/enumeration questions, re-run with `--limit 50` as the `hint` suggests (mind the shared quota in cross-workspace mode) and then deep-read the new results; **never draw conclusions from a truncated candidate set**.
+- **Deep-reading boundary (avoid unbounded deep reading)**: **every source actually cited in the conclusion must be deep-read**; high-scoring candidates you do not cite need not be — for cross-workspace/wide searches, first narrow to the hits you will present, then deep-read them one by one.
+- **Qualitative conclusions must rest on deep reading**: any "this source does / does not contain X" judgement (e.g. "this source is only prophetic tradition with no concrete prophecy") must rest on deep-read text and point to a specific page/chapter/timestamp in the sentence; **never** derive a qualitative conclusion from a `snippet` preview.
 
-**示例：同一命中，`snippet`（预览）与精读（内容）的差别**
+**Example: the same hit — `snippet` (preview) vs deep reading (content)**
 
 ```markdown
---search 返回的 snippet（只作命中列表用）：
-  > ……知们将向你预言『即将发生』的事情；你将望……
+snippet returned by --search (hit list only):
+  > ……prophets will foretell『things soon to come』unto thee; thou shalt behold……
 
-对同一命中 --section 精读后（结论段只能用这一段）：
-  > 数学家们预言了即将崛起的伟大城市和国家；预言了这个和那个将会走向战争；他们的伟大城市
-  > 将会沦为废墟，被陨落的星云所覆盖……数学家们预言了 kosmon 的到来，废墟之城将被发现……
-  > 同处上帝说：到那时，人类将背叛至高主耶和华，杀害他的信徒，更偏爱石头和金属制成的偶像……
+after --section deep reading of the same hit (the conclusion section may only use this):
+  > The mathematicians prophesied great cities and nations about to rise; they foretold that this and that would go to war;
+  > their great cities would become ruins, covered by falling nebula…… the mathematicians foretold the coming of kosmon,
+  > the ruined cities would be discovered, their history read in the hand of the Great Jehovih……
+  > And God said: in that time men will betray the Most High, slay his believers, and prefer idols of stone and metal……
 
-> 若结论段只能给出上面那段被 `…` 截断的片段，说明未精读——**先精读，再作答**。
+> If the conclusion section can only give the truncated `…` fragment above, deep reading has not happened — **deep-read first, then answer**.
 ```
 
-**结论 / 内容段的展现要求（防压缩失真）**
+**Presentation requirements for the conclusion / content section (anti-compression)**
 
-三段职责不得混用：
+The three sections must not swap roles:
 
-| 段 | 职责 | 篇幅 |
+| Section | Role | Length |
 | --- | --- | --- |
-| 检索概况 | 只报数量与范围 | 一行 |
-| 命中列表 | **索引，不是内容** | 默认 ≤10 条；每条引用 ≤2 行 |
-| 结论 / 内容段 | **唯一承载实质内容的段落** | **无上限**，由问法与命中体量决定 |
+| Retrieval summary | Report counts and scope only | One line |
+| Hit list | **An index, not content** | ≤10 items by default; ≤2 lines quoted per item |
+| Conclusion / content section | **The only section carrying substantive content** | **No limit** — driven by the question and the volume of hits |
 
-⚠️ 本契约中所有「1–2 行」「最多 N 条」的表述**只约束命中列表，不外溢到结论段**。
+⚠️ Every "1–2 lines" and "at most N items" in this contract **constrains the hit list only and does not spill over into the conclusion section**.
 
-- **信息完整性（硬要求）**：结论/内容段必须覆盖本次**精读取得的原文**中的全部实质要点（数据来源是精读文本，不是 `snippet` 预览），以下五类信息逐项可追溯——① 时间（年代/日期/区间）；② 数量（件数/比例/序数）；③ 专名（人名/地名/组织/事件名）；④ 因果与条件（"如果…就…"/"因为…所以…"）；⑤ 例外与限定（"并非所有…""不见得全都…"）。**禁止**用"等/多个/若干/一系列/一些"替代可数信息；**禁止**把两个及以上独立要点并成一句。
-- **引用优先（适用于回答全文）**：首选直接引用原文（保留『』与原文措辞）；转述须保留上述五类信息、不得合并不同要点、不得省略限定条件；**禁止**上位词替换下位词（"切尔诺贝利"→"核事故"、"雷格兰多河"→"边境河流"）。「片段不得改写/拼接/虚构」同样约束结论段的转述，不只约束列表片段。
-- **详略档位**（按用户意图选择；判不准时取更详——详可删，略不可补）：
+- **Information completeness (hard requirement)**: the conclusion/content section must cover every substantive point in the **original text obtained by deep reading** (the data source is the deep-read text, not `snippet` previews), with the following five classes of information individually traceable — ① time (era/date/range); ② quantities (counts/ratios/ordinals); ③ proper nouns (people/places/organizations/events); ④ causes and conditions ("if…then…" / "because…therefore…"); ⑤ exceptions and qualifications ("not all…", "not necessarily every…"). **Never** replace countable facts with vague quantifiers ("etc.", "several", "a number of", "a series of", "some"); **never** merge two or more independent points into one sentence.
+- **Quote first (applies to the whole answer)**: prefer direct quotation of the original (keep 『』 and the original wording); a paraphrase must retain the five classes above, must not merge distinct points and must not drop qualifications; **never** replace a specific term with a broader one ("Chernobyl" → "a nuclear accident", "Reglando River" → "a border river"). "Snippets must not be rewritten/spliced/invented" also constrains paraphrasing in the conclusion section, not just list snippets.
+- **Detail levels** (choose by user intent; when unsure, err on the detailed side — detail can be trimmed, brevity cannot be filled in):
 
-  | 用户意图 | 典型问法 | 结论 / 内容段 |
+  | User intent | Typical phrasing | Conclusion / content section |
   | --- | --- | --- |
-  | 定位型 | "有没有讲 X" / "哪里提到 X" | 简述：每要点一句 + 出处 |
-  | **内容型** | **"讲了什么" / "说了哪些" / "具体内容是什么"** | **展开**：按原文结构逐条列出，保留细节与原文引用；**取候选时须显式 `--limit 50`（不得用默认 20）** |
-  | 枚举型 | "列出所有…" / "找全…" | 展开且不省略（配合 `--limit 50`） |
-  | 对比型 | "A 和 B 的说法" | 分来源展开，逐项对应 |
+  | Locating | "is there anything about X" / "where is X mentioned" | Brief: one sentence per point + provenance |
+  | **Content-type** | **"what does it say" / "what did it mention" / "what is the specific content"** | **Expand**: list item by item following the original structure, keeping details and quotations; **fetch candidates with an explicit `--limit 50` (never the default 20)** |
+  | Enumerating | "list everything about…" / "find all…" | Expand without omission (with `--limit 50`) |
+  | Comparing | "what A and B say about X" | Expand per source, point by point |
 
-- **输出前自检**（任一不过则重写）：① 精读文本中的每个实质要点，是否都在结论段出现？② 年代/数字/专名是否原样保留（未被"多个/若干"替换）？③ 是否存在把多个要点合并成一句的地方？若有，拆开。④ 转述处是否保留了原文的条件与例外？⑤ 命中列表与结论段的详略是否明显不同？（若两者一样简，说明结论段被压缩了）
-- **取数深度自检**（与上条并列，任一不过则重写）：⑥ 结论段的每一条实质内容，是否都能在**精读返回的文本**中定位到？（只能定位到 `snippet` 即为未精读）⑦ 结论段涉及的**每一个**来源，是否都调用过 `--section`？⑧ 是否存在把 `snippet` 的 `…` 截断处当作完整内容直接引用的情况？
+- **Pre-output self-check** (rewrite if any item fails): ① does every substantive point of the deep-read text appear in the conclusion? ② are eras/numbers/proper nouns preserved verbatim (not replaced by "several"/"a number of")? ③ is any place merging multiple points into one sentence? split it. ④ do paraphrases keep the original conditions and exceptions? ⑤ are the hit list and the conclusion clearly different in detail level? (if both are equally brief, the conclusion was compressed)
+- **Retrieval-depth self-check** (on par with the previous item; rewrite if any fails): ⑥ can every substantive statement in the conclusion be located in the **text returned by deep reading**? (if it can only be located in a `snippet`, deep reading did not happen) ⑦ has **every** source cited in the conclusion been deep-read via `--section`? ⑧ is any `snippet` `…` truncation being cited as if it were complete content?
 
-**示例对照（同一份命中，两种问法）**：
-
-```markdown
-问：「库里有没有讲 move 语义的？」（定位型 → 简述 + 列表 + 清单）
-
-在「我的书架」中命中 3 条：
-1. **Rust 所有权模型** — 第 3 章 · 移动语义
-   > ……变量离开作用域时发生『move』，所有权随之转移……
-（其余命中与源文链接清单略，同上一节示例）
-
-问：「库里关于 move 语义讲了什么？」（内容型 → 展开）
-
-库中三处来源对 move 语义的说法如下：
-
-**一、Rust 所有权模型（第 3 章 · 移动语义）**
-- 『move』是所有权转移而非内存拷贝：变量离开作用域时所有权随之转移；
-- 转移后原变量不可再使用，编译器在编译期报错；
-- 与 borrow 的区别：借用不转移所有权，作用域结束后归还原持有者。
-
-**二、讲座录音：内存管理（12:33–12:47）**
-- 主讲人明确区分：这里的 move 语义与 C++ 的右值引用不是一回事……
-
-（其余来源按同一粒度展开；末尾仍必附源文链接清单）
-```
-
-**源文链接清单（回答末尾必附，不可省略）**
-
-**凡向用户呈现检索或精读结果，回答末尾必须附「源文链接」清单**，逐条列出本次引用到的来源（精读过的必列，其余取高分命中；同一 `entry_id` 只列一次，跨库检索按库归组）：
-
-- 文档命中（`locator.action=open`）：`- [打开原文件](myagentrag://goto?…)（第 N 页 / 第 N 章 · 标题 / 第 N 行）`——链接用 `locator.link`，括号内用 `locator.target_label`（无该字段时省略括号，不虚标位置）；`open_scope=file_only` 时不得声称链接能跳到目标页/章。
-- 媒体命中（`locator.action=play`）：`- [▶ 从 mm:ss 播放](myagentrag://goto?…)`——链接用 `locator.link`（mm:ss 即 `target_label`）；客户端不渲染非 http(s) URI 时并列 `fallback_play_cmd` 的可复制命令；`fallback_play_cmd` 为 `null` 时不给命令，附一句修复提示（`--repair-deps` / `MYAGENTRAG_FFPLAY`）。
-- 无 `locator` 的命中（网页来源、源文件已不可达、入库时 `--no-keep-source`）：列 `标题 + source_ref` 纯文本，**不得伪造可点击链接**。
-- 清单须与正文引用一一对应（正文提到哪个来源，清单里就有哪条）；不得用 `section_ref`/`entry_id` 等内部引用代替用户可读链接。
-- 精读输出（`--entry/--chunk/--section`）同样带 `locator`，规则与检索命中一致；零命中不产出清单。
-
-完整呈现示例（用户问：“知识库里讲 move 语义的是哪几处？”）：
+**Example contrast (same hits, two phrasings)**:
 
 ```markdown
-在「我的书架」中命中 3 条：
+Q: "Is there anything in the library about move semantics?" (locating → brief + list + links)
 
-1. **Rust 所有权模型** — 第 3 章 · 移动语义
-   > ……变量离开作用域时发生『move』，所有权随之转移……
-2. **讲座录音：内存管理** — 12:33–12:47
-   > ……这里说的『move』语义和 C++ 的右值引用不是一回事……
-3. **语言设计笔记** — 第 88 行
-   > ……『move』在函数传参时隐式发生……
+3 hits in "my-books":
+1. **Rust Ownership Model** — chapter 3 · Move Semantics
+   > ……when a variable leaves its scope a 『move』 occurs and ownership is transferred……
+(the remaining hits and the source-links list omitted — same as the example above)
 
-**源文链接**
-- [打开原文件](myagentrag://goto?ws=%E6%88%91%E7%9A%84%E4%B9%A6%E6%9E%B6&entry=826ab4aa12ebf20b)（第 3 章 · 移动语义）— Rust 所有权模型
-- [▶ 从 12:33 播放](myagentrag://goto?ws=%E6%88%91%E7%9A%84%E4%B9%A6%E6%9E%B6&entry=0123456789abcdef&at=753) — 讲座录音：内存管理
-- [打开原文件](myagentrag://goto?ws=%E6%88%91%E7%9A%84%E4%B9%A6%E6%9E%B6&entry=0c9280141973a80c)（第 88 行）— 语言设计笔记
+Q: "What does the library say about move semantics?" (content-type → expand)
+
+Three sources in the library discuss move semantics:
+
+**1. Rust Ownership Model (chapter 3 · Move Semantics)**
+- 『move』 is an ownership transfer, not a memory copy: ownership moves when the variable leaves its scope;
+- after the move the original variable can no longer be used; the compiler errors at compile time;
+- versus borrow: borrowing does not transfer ownership and returns it when the scope ends.
+
+**2. Lecture recording: Memory Management (12:33–12:47)**
+- the speaker explicitly distinguishes it: move semantics here are not the same thing as C++ rvalue references……
+
+(remaining sources expand at the same granularity; the source-links list is still mandatory at the end)
 ```
 
-**知识库检索话术对照（常见说法 → agent 动作）**
+**Source-links list (mandatory at the end of the answer; never omit)**
 
-| 用户说法                                            | 判定    | agent 动作                                                                                                                                                                                               |
+**Whenever retrieval or deep-read results are presented to the user, the answer must end with a "source links" list** itemising the sources cited (deep-read ones always; otherwise the high-scoring hits; one line per `entry_id`, grouped per workspace in cross-workspace searches):
+
+- Document hit (`locator.action=open`): `- [Open original file](myagentrag://goto?…) (page N / chapter N · title / line N)` — use `locator.link` for the link and `locator.target_label` inside the parentheses (omit the parentheses when the field is absent; never invent a location); with `open_scope=file_only` never claim the link jumps to the target page/chapter.
+- Media hit (`locator.action=play`): `- [▶ Play from mm:ss](myagentrag://goto?…)` — use `locator.link` (mm:ss is `target_label`); when the client does not render non-http(s) URIs, add the copy-pasteable `fallback_play_cmd`; when `fallback_play_cmd` is `null`, give no command but one fix hint (`--repair-deps` / `MYAGENTRAG_FFPLAY`).
+- Hits without a `locator` (web sources, source file no longer reachable, ingested with `--no-keep-source`): list `title + source_ref` as plain text — **never fabricate a clickable link**.
+- The list must correspond one-to-one with the body citations (every source mentioned in the body has an entry); never substitute internal references such as `section_ref`/`entry_id` for a user-readable link.
+- Deep-read outputs (`--entry/--chunk/--section`) also carry `locator`, with the same rules as retrieval hits; on zero hits no list is produced.
+
+Full presentation example (user asks: "where does the library discuss move semantics?"):
+
+```markdown
+3 hits in "my-books":
+
+1. **Rust Ownership Model** — chapter 3 · Move Semantics
+   > ……when a variable leaves its scope a 『move』 occurs and ownership is transferred……
+2. **Lecture recording: Memory Management** — 12:33–12:47
+   > ……the 『move』 semantics here are not the same thing as C++ rvalue references……
+3. **Language design notes** — line 88
+   > ……a 『move』 happens implicitly when passing arguments……
+
+**Source links**
+- [Open original file](myagentrag://goto?ws=%E6%88%91%E7%9A%84%E4%B9%A6%E6%9E%B6&entry=826ab4aa12ebf20b) (chapter 3 · Move Semantics) — Rust Ownership Model
+- [▶ Play from 12:33](myagentrag://goto?ws=%E6%88%91%E7%9A%84%E4%B9%A6%E6%9E%B6&entry=0123456789abcdef&at=753) — Lecture recording: Memory Management
+- [Open original file](myagentrag://goto?ws=%E6%88%91%E7%9A%84%E4%B9%A6%E6%9E%B6&entry=0c9280141973a80c) (line 88) — Language design notes
+```
+
+**Phrasebook: how user wording maps to agent actions** (Chinese phrasings are kept verbatim as literal triggers)
+
+| User says | Intent | Agent action |
 | ----------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| "@我的书架 查一下 XXX" / "**在**'我的书架'**库**里查" / "**用**我的书架库搜" / "**根据**我的资料库回答" / "**使用**XXX库检索" | 指定库（@/在/用/根据/使用 + 库名） | 从提示词解析库名 → `--workspace <名> --search ...`；**@ 前缀可原样传入**（CLI 自动剥离）；库名不确定时先 `--workspace-list` 解析（模糊匹配是 agent 的活） |
-| "库中关于 X **讲了什么 / 说了哪些 / 具体内容是什么**" | **内容型** | ① `--search "X" --limit 50` 取候选（**不得用默认 20**；`truncated_by_limit: true` 时再调大）；② 对**每一处**将呈现的命中 `--section` 精读（**不得只凭 `snippet` 作答**）；③ 按「详略档位 · 内容型」**展开**输出 + 末尾源文链接清单 |
-| "在知识库'我的书架'里**查找** XXX"                         | 指定库检索 | `--workspace 我的书架 --search "XXX"`（默认 fused）；**按②的结果呈现契约输出**（命中列表统一格式 + 末尾源文链接清单），深问再 `--section` 精读                                                                                                                |
-| "在知识库里**查一下** XXX"（未指定库）                        | 跨库检索  | `--search "XXX" --all-workspaces`——结果带 `workspace` 字段标注来源库；命中分散在多库时按库归组陈述；**limit 为全部库共享总额度**，宽泛跨库检索建议显式 `--limit 50`                                                                                                                              |
-| "在知识库 XX 中**研究一下**是否 XXX / 有没有讲 XXX / 是否支持 XXX" | 核实型问题 | ① `--search "XXX"`（fused）；② 零命中 → 换近义词/拆词重试，或 `--mode vector`（语义路可跨语言召回，中文问句可召回英文资料）；③ 命中后对最高分 1-3 条 `--section` 精读；④ **回答必须带出处**（条目标题 + `source_loc` 页码/章节/时间戳）并**按②的结果呈现契约输出**（命中列表 + 末尾源文链接清单）；库内确无相关内容时明说"知识库中未见相关内容"，不要用模型记忆替代检索结论 |
-| "**对比**一下 A、B 两份资料对 XXX 的说法"                    | 多源对比  | 分别 `--search`（或同库检索后按 `entry_id` 分组）→ 各取最优节 `--section` 精读 → 分来源对比陈述，引用各自 `source_loc`；建议 `--limit 50` 保证各来源都有候选                                                                                                                 |
-| "**列出/找全**所有讲 XXX 的内容 / 所有涉及 XXX 的条目"            | 枚举型    | `--search "XXX" --limit 50`（默认 20 是覆盖度权衡；枚举/清点/多实体场景显式调大；条目级全景可配 `--list` 对照）                                                                                                                              |
-| "知识库里**都有什么**/都有哪些资料"                           | 盘点    | `--workspace <名> --list`（条目清单）或 `--stats`（条目/字符/来源分布/db 体积）                                                                                                                                            |
-| "把这几份文件都**收进**知识库"                              | 批量入库  | 多 `--file a.pdf --file b.docx` 或 `--dir 目录` 一次批量入库（**全部窗口合并为一次嵌入调用**）；幂等无重复；单文件提取失败跳过不阻塞其余；契约见「摄入」节批量契约                                                                                              |
-| "**搜一下**标题里有 XX 的条目" | 元数据过滤 | `--search 'title:XX'`（列限定 `title:/author:/publisher:/publish_date:`，可与正文词组合作 `title:XX AND 关键词`；**列值需 ≥3 字**（trigram 物理限制）；范围过滤 `publish_date>=2024`（`created_at` 同理，支持 >=/<=/>/<）；过滤以候选 entry 集限定**三路检索全部参与**，结果标注 `column_filter: true` + `filtered_entries`；**仅过滤无主题词**不可排序检索（结构化报错，浏览用 `--list`）） |
+| "@my-books look up XXX" / "**in** the 'my-books' **library**, find XXX" / "**search** with my my-books library" / "**based on** my document library, answer …" / "**use** library XXX to retrieve" (Chinese: "@我的书架 查一下 XXX" / "在'我的书架'库里查" / "用我的书架库搜" / "根据我的资料库回答" / "使用 XXX 库检索") | Named workspace (@ / in / with / based on / using + name) | Parse the workspace name from the prompt → `--workspace <name> --search ...`; **the @ prefix may be passed through as-is** (the CLI strips it); when unsure of the name, resolve it first with `--workspace-list` (fuzzy matching is the agent's job) |
+| "what does the library say about X" / "what did it mention" / "what is the specific content" (Chinese: "库中关于 X **讲了什么 / 说了哪些 / 具体内容是什么**") | **Content-type** | ① `--search "X" --limit 50` for candidates (**never the default 20**; raise it further when `truncated_by_limit: true`); ② `--section` deep-read **every** hit to be presented (**never answer from `snippet` alone**); ③ output per "detail levels · content-type" — **expanded** — plus the closing source-links list |
+| "**find** XXX in the 'my-books' knowledge base" (Chinese: "在知识库'我的书架'里**查找** XXX") | Named-workspace retrieval | `--workspace my-books --search "XXX"` (fused by default); **output per the section ② presentation contract** (uniform hit list + closing source-links list); deep-read with `--section` for follow-up questions |
+| "**look up** XXX in the knowledge base" (no workspace given; Chinese: "在知识库里**查一下** XXX") | Cross-workspace retrieval | `--search "XXX" --all-workspaces` — results carry a `workspace` field; when hits spread across workspaces, group them per workspace; **limit is the shared quota across all workspaces** — use an explicit `--limit 50` for wide cross-workspace searches |
+| "**research** whether XXX … in knowledge base XX" / "does it cover XXX" / "does it support XXX" (Chinese: "在知识库 XX 中**研究一下**是否 XXX / 有没有讲 XXX / 是否支持 XXX") | Verification question | ① `--search "XXX"` (fused); ② zero hits → retry with synonyms/split terms, or `--mode vector` (the semantic route recalls cross-language content — English sources can be recalled from a Chinese question); ③ deep-read the top 1–3 hits with `--section`; ④ **the answer must carry provenance** (entry title + `source_loc` page/chapter/timestamp) and **follow the section ② presentation contract** (hit list + closing source-links list); when the library genuinely has nothing, say so plainly ("the knowledge base contains nothing on this") — never substitute model memory for retrieval findings |
+| "**compare** what A and B say about XXX" | Multi-source comparison | `--search` for each (or search one library and group by `entry_id`) → deep-read the best section of each with `--section` → compare per source, citing each `source_loc`; `--limit 50` is recommended so every source has candidates |
+| "**list / find all** content about XXX / every entry touching XXX" | Enumeration | `--search "XXX" --limit 50` (the default 20 is a coverage trade-off; raise it explicitly for enumeration/inventory/multi-entity cases; pair with `--list` for an entry-level overview) |
+| "what does the knowledge base **contain** / what materials are in it" | Inventory | `--workspace <name> --list` (entry list) or `--stats` (entries/characters/source distribution/db size) |
+| "**collect** these files into the knowledge base" | Batch ingest | Multiple `--file a.pdf --file b.docx` or one `--dir <directory>` batch ingest (**all windows merged into a single embedding call**); idempotent, no duplicates; a failing file is skipped without blocking the rest; contract in the "Ingestion" section's batch contract |
+| "**search for** entries whose title contains XX" | Metadata filter | `--search 'title:XX'` (column prefixes `title:/author:/publisher:/publish_date:` combinable with body terms as `title:XX AND keywords`; **column values need ≥3 characters** (trigram limitation); range filters `publish_date>=2024` (`created_at` likewise, supporting >=/<=/>/<); the filter narrows the candidate entry set and **all three retrieval routes participate**; results carry `column_filter: true` + `filtered_entries`; a **filter with no topic terms** cannot be retrieved in ranked order (structured error — use `--list` to browse)) |
 
-核实型问题的工作示例（"查一下知识库里讲 move 语义的内容"）：
-
-```bash
-"$PYTHON" "$EXTRACTOR" --workspace 我的书架 --search "move 语义"                  # ① 三路融合检索
-"$PYTHON" "$EXTRACTOR" --workspace 我的书架 --search "move 语义" --mode vector    # ② 零命中时语义路重试
-"$PYTHON" "$EXTRACTOR" --workspace 我的书架 --section "<最优命中的 section_ref>"   # ③ 精读整节后作答
-```
-
-`section_chars` 超大时改用 `--entry <id> --chunk N` 按分片读；媒体条目命中带 `start_ms/end_ms`，可直接 `--play --at` 定位佐证。
-
-**③ "第 14 条具体讲了什么"（结构锚点定位精读）**
-
-用 `--search "条款14"`（标题路直接命中章节标题），把返回的 `section_ref` 原样传入：
+Worked example for a verification question ("find what the library says about move semantics"):
 
 ```bash
-"$PYTHON" "$EXTRACTOR" --workspace 我的书架 --section "<section_ref>"     # 精读整节
+"$PYTHON" "$EXTRACTOR" --workspace my-books --search "move semantics"                  # ① three-route fused retrieval
+"$PYTHON" "$EXTRACTOR" --workspace my-books --search "move semantics" --mode vector    # ② semantic retry on zero hits
+"$PYTHON" "$EXTRACTOR" --workspace my-books --section "<section_ref of the best hit>"   # ③ deep-read the whole section, then answer
 ```
 
-结构锚点自动来自 docx 标题样式 / EPUB h1-h6 / PDF 书签 / "第N章、条款N、Chapter N、编号标题"启发式；`--reindex` 可为老条目补建。老条目 `source_loc` 可能为 null（无源位置账本），重新入库即得完整锚点。
+When `section_chars` is very large, switch to `--entry <id> --chunk N` and read chunk by chunk; media hits carry `start_ms/end_ms` and can be verified directly with `--play --at`.
 
-**④ "上次那个视频里讲 Y 的片段在哪"（检索 + 定位回放）**
+**③ "What exactly does clause 14 say" (structure-anchor deep read)**
+
+Use `--search "clause 14"` (the heading route hits section titles directly) and pass the returned `section_ref` through unchanged:
 
 ```bash
-"$PYTHON" "$EXTRACTOR" --workspace 我的书架 --search "Y 主题"              # 媒体命中带 start_ms/end_ms
-"$PYTHON" "$EXTRACTOR" --workspace 我的书架 --play <entry-id> --at 12:33 [--duration 60]
+"$PYTHON" "$EXTRACTOR" --workspace my-books --section "<section_ref>"     # deep-read the whole section
 ```
 
-检测不到播放器时返回结构化 JSON（candidates/hint），agent 向用户说明或代装播放器，不弹界面。
+Structure anchors come automatically from docx heading styles / EPUB h1-h6 / PDF bookmarks / heuristics for "Chapter N, Clause N, Chapter N, numbered headings"; `--reindex` rebuilds them for older entries. Older entries may have `source_loc: null` (no source-position ledger) — re-ingest to get complete anchors.
 
-**⑤ 多库与跨库**
+**④ "Where in that video is the part about Y" (retrieval + seeked playback)**
 
 ```bash
-"$PYTHON" "$EXTRACTOR" --search "关键词" --all-workspaces                  # 跨全部库检索
-"$PYTHON" "$EXTRACTOR" --workspace-list / --workspace <名> --stats / --list  # 管理盘点
+"$PYTHON" "$EXTRACTOR" --workspace my-books --search "Y topic"             # media hits carry start_ms/end_ms
+"$PYTHON" "$EXTRACTOR" --workspace my-books --play <entry-id> --at 12:33 [--duration 60]
 ```
 
-**⑥ agent 调用约定（普适）**：解析 JSON 输出；参数误用（argparse 层）同样返回 JSON（rc=2）；合并 `2>&1` 时 stderr 进度行会破坏 JSON——stdout 是唯一 JSON 通道，或加 `--quiet` 抑制进度；`error` 优先于盲目重试；`missing` 清单须先征得用户同意再加 `--download-deps` 重跑；删除类操作（`--remove`/`--delete-workspace`）返回 `confirm_required` 时必须向用户确认后加 `--yes`；双语 `error_i18n` 按界面语言选用。
+When no player is available the tool returns structured JSON (candidates/hint) and the agent explains it to the user or installs a player on their behalf — nothing pops up on screen.
 
-## 临时目录
+**⑤ Multiple workspaces and cross-workspace search**
 
-提取 YouTube/音视频时脚本的中间文件（yt-dlp 字幕、ffmpeg 转出的 16 kHz 单声道 WAV、whisper SRT）存放于临时目录；每次运行使用 `myag_*` 子目录，正常结束即删除，异常遗留目录超过 72 小时会在后续运行时清理。
+```bash
+"$PYTHON" "$EXTRACTOR" --search "keywords" --all-workspaces                 # search every workspace
+"$PYTHON" "$EXTRACTOR" --workspace-list / --workspace <name> --stats / --list  # management and inventory
+```
 
-临时根目录解析顺序：`MYAGENTRAG_TMPDIR`（显式指定，支持 `~`）→ 受管目录 `~/.myagentrag/tmp`（默认，与 bin/models/runtime 同级的自管区域，不散落系统临时目录）→ 系统临时目录（仅当受管目录不可写时兜底），例如 `export MYAGENTRAG_TMPDIR="$HOME/.cache/myagentrag-tmp"`。不要把 cookies、模型或重要原始文件放入临时目录。
+**⑥ Agent invocation conventions (general)**: parse the JSON output; argument misuse (at the argparse layer) also returns JSON (rc=2); when merging `2>&1`, stderr progress lines break the JSON — stdout is the only JSON channel, or pass `--quiet` to suppress progress; act on `error` rather than retrying blindly; the `missing` list requires the user's consent before re-running with `--download-deps`; when a destructive operation (`--remove`/`--delete-workspace`) returns `confirm_required`, confirm with the user and re-run with `--yes`; pick bilingual `error_i18n` text by UI language.
 
-## ffmpeg 与 whisper.cpp
+## Temporary Directory
 
-**初始安装不下载任何组件；实际使用时运行时检测。** 所有自动下载的组件都只装在用户目录（`~/.myagentrag`），不写系统目录。
+Intermediate files from YouTube/audio/video extraction (yt-dlp subtitles, the 16 kHz mono WAV written by ffmpeg, whisper SRT) live in a temporary directory; each run uses a `myag_*` subdirectory that is deleted on normal exit, and leftovers older than 72 hours are swept by later runs.
 
-### 检测顺序（每次转录前自动执行）
+Temp-root resolution order: `MYAGENTRAG_TMPDIR` (explicit, supports `~`) → the managed directory `~/.myagentrag/tmp` (default — a self-managed area next to bin/models/runtime, so nothing is scattered into the system temp directory) → the system temp directory (fallback only when the managed directory is not writable), e.g. `export MYAGENTRAG_TMPDIR="$HOME/.cache/myagentrag-tmp"`. Never place cookies, models or important original files into the temp directory.
 
-- ffmpeg：`MYAGENTRAG_FFMPEG` → PATH → 已下载到受管目录的副本。
-- ffplay（`--play` 定位播放的内置播放器）：`MYAGENTRAG_FFPLAY` → PATH → 受管目录（随 ffmpeg 发行包一并落盘；macOS evermeet 单体包不含 ffplay）。
-- whisper-cli：`MYAGENTRAG_WHISPERCPP_CLI` → PATH → `MYAGENTRAG_WHISPERCPP_DIR` → 受管目录。
-- ggml 模型：`MYAGENTRAG_WHISPERCPP_MODELS_DIR` → 受管模型目录。模型文件名为 `ggml-large-v3-turbo.bin` 或 `ggml-large-v3-turbo-q5_0.bin`。
-- 受管目录：`MYAGENTRAG_HOME`（默认 `~/.myagentrag`，下设 `bin/` 与 `models/`）。已有自定义安装的用户可用上述环境变量指向任意位置。
+## ffmpeg and whisper.cpp
 
-### 缺失时：提示并经确认后下载
+**The initial install downloads no components; runtime detection happens on actual use.** Every auto-downloaded component goes only into the user directory (`~/.myagentrag`) — never into system directories.
 
-音频/视频任务检测到缺失组件时，脚本会列出每项的**名称、用途、来源与预计大小**，等用户确认后才下载安装，完成后自动继续原任务：
+### Detection order (runs automatically before each transcription)
 
-- 交互终端：直接 `y/N` 确认；
-- agent/脚本调用：先向用户展示清单并征得同意，再重新运行并加 `--download-deps`；用户未同意时脚本只报告缺失清单，不下载。
+- ffmpeg: `MYAGENTRAG_FFMPEG` → PATH → the copy downloaded into the managed directory.
+- ffplay (the built-in player used by `--play` seeked playback): `MYAGENTRAG_FFPLAY` → PATH → the managed directory (shipped alongside the ffmpeg bundle; the macOS evermeet single-binary package contains no ffplay).
+- whisper-cli: `MYAGENTRAG_WHISPERCPP_CLI` → PATH → `MYAGENTRAG_WHISPERCPP_DIR` → the managed directory.
+- GGML model: `MYAGENTRAG_WHISPERCPP_MODELS_DIR` → the managed models directory. Model file names are `ggml-large-v3-turbo.bin` or `ggml-large-v3-turbo-q5_0.bin`.
+- Managed directory: `MYAGENTRAG_HOME` (default `~/.myagentrag`, containing `bin/` and `models/`). Users with an existing custom install can point the environment variables above at any location.
 
-下载来源与安装位置：
+### When missing: prompt, then download after confirmation
 
-- ffmpeg：Windows 用 gyan.dev zip、macOS 用 evermeet.cx、Linux x86_64/arm64 用 johnvansickle 静态包；安装到 `MYAGENTRAG_HOME`（默认 `~/.myagentrag/bin`）。
-- whisper-cli：按硬件自动选版本安装：
-  ①macOS/Linux 有 Homebrew 时 `brew install whisper-cpp`（macOS Metal 默认启用）；
-  ②Windows：检测到 **NVIDIA GPU** 时优先下载官方 **cublas 预编译版**（自带 CUDA 运行库，无需 CUDA Toolkit，约 270MB）；否则下载官方 CPU 预编译 zip，并按 GPU 厂商给出升级指引（AMD/Intel：装 Vulkan SDK 后删受管二进制重跑即可源码构建 Vulkan 版）；
-  ③源码构建兜底（需 git/cmake/编译器），构建时自动按硬件选后端：NVIDIA + CUDA Toolkit → CUDA；AMD + ROCm → HIP（自动检测 gfx 架构）；有 Vulkan SDK → Vulkan（A 卡核显如 Radeon 780M、Intel 核显的唯一官方 GPU 路径）；都没有则 CPU（并明确告知）。也可用 `MYAGENTRAG_WHISPERCPP_CMAKE_FLAGS` 追加自定义 CMake 参数；需要换后端时删除 `~/.myagentrag/whisper.cpp` 构建目录及受管 bin 中的二进制后重试。
-- ggml 模型：从 HuggingFace `ggerganov/whisper.cpp` 下载（large-v3-turbo 约 1.6GB，q5_0 约 560MB），存到上述模型目录首个可用位置。
+When an audio/video task detects missing components, the script lists each item's **name, purpose, source and estimated size**, waits for the user's confirmation, installs, and then automatically continues the original task:
 
-### 默认下载版本矩阵（whisper-cli）
+- Interactive terminal: confirm directly with `y/N`;
+- Agent/script invocation: show the list to the user for consent, then re-run with `--download-deps`; without consent the script only reports the missing list and downloads nothing.
 
-按"预编译优先、GPU 编译作为显式升级路径"原则，各环境首次自动安装的版本：
+Download sources and install locations:
 
-| 用户环境                    | 首次自动安装的版本                          | GPU 加速？                                         |
+- ffmpeg: gyan.dev zip on Windows, evermeet.cx on macOS, johnvansickle static builds on Linux x86_64/arm64; installed into `MYAGENTRAG_HOME` (default `~/.myagentrag/bin`).
+- whisper-cli: the build is chosen automatically per hardware:
+  ① `brew install whisper-cpp` on macOS/Linux when Homebrew is available (Metal enabled by default on macOS);
+  ② Windows: with an **NVIDIA GPU** the official **prebuilt cublas** build is preferred (bundles the CUDA runtime — no CUDA Toolkit needed, ~270 MB); otherwise the official prebuilt CPU zip is downloaded together with upgrade guidance per GPU vendor (AMD/Intel: install the Vulkan SDK, delete the managed binaries and re-run to build a Vulkan version from source);
+  ③ source build as the fallback (needs git/cmake/compiler); the backend is chosen automatically at build time: NVIDIA + CUDA Toolkit → CUDA; AMD + ROCm → HIP (gfx architecture auto-detected); Vulkan SDK present → Vulkan (the only official GPU path for AMD integrated GPUs such as the Radeon 780M, and for Intel iGPUs); otherwise CPU (stated explicitly). Custom CMake flags can be appended via `MYAGENTRAG_WHISPERCPP_CMAKE_FLAGS`; to switch backends, delete the `~/.myagentrag/whisper.cpp` build directory and the managed binaries, then retry.
+- GGML model: downloaded from HuggingFace `ggerganov/whisper.cpp` (large-v3-turbo ≈1.6 GB, q5_0 ≈560 MB) into the first usable model directory above.
+
+### Default download version matrix (whisper-cli)
+
+Following the principle of "prebuilt first, GPU builds as an explicit upgrade path", the versions auto-installed per environment are:
+
+| User environment | First auto-install | GPU acceleration? |
 | ----------------------- | ---------------------------------- | ----------------------------------------------- |
-| Windows + NVIDIA        | 官方 cublas 预编译（自带 CUDA 运行库）         | ✅ 是                                             |
-| Windows + AMD/Intel GPU | 官方 CPU 预编译 + 升级指引（装 Vulkan SDK 重跑） | ❌ 否，需显式升级                                       |
-| Linux（任意 GPU）           | 官方 ubuntu CPU 预编译 / brew           | ❌ 否（源码构建时检测到 Toolkit/ROCm/Vulkan SDK 才编出 GPU 版） |
-| WSL                     | 同 Linux                            | ❌ 否（GPU 版还需 WSL 驱动透传）                           |
-| macOS                   | brew install whisper-cpp           | ✅ 是（Metal 默认开启）                                 |
+| Windows + NVIDIA | Official prebuilt cublas (bundles the CUDA runtime) | ✅ yes |
+| Windows + AMD/Intel GPU | Official prebuilt CPU + upgrade guide (install the Vulkan SDK and re-run) | ❌ no, explicit upgrade required |
+| Linux (any GPU) | Official ubuntu CPU prebuild / brew | ❌ no (source builds only produce a GPU build when a Toolkit/ROCm/Vulkan SDK is detected) |
+| WSL | Same as Linux | ❌ no (a GPU build additionally needs WSL driver passthrough) |
+| macOS | brew install whisper-cpp | ✅ yes (Metal on by default) |
 
-官方预编译资产只有 Windows N 卡 cublas、macOS xcframework 和各平台 CPU 版；A 卡/Intel 的 Vulkan 与 Linux CUDA 只有源码/Docker 形式，因此技能不会静默编译，只给出明确升级指引。
+The official prebuilt assets only cover Windows NVIDIA cublas, macOS xcframework and CPU builds per platform; Vulkan for AMD/Intel and Linux CUDA exist only as source/Docker forms — hence the skill never compiles silently and only gives explicit upgrade guidance.
 
-### GPU 加速支持矩阵
+### GPU acceleration support matrix
 
-转录完成后，stderr 会标注实际使用的计算后端（`🎮 GPU 加速: Vulkan: AMD Radeon 780M...` / `🖥 CPU`）。加 `--no-gpu` 可强制 CPU。
+After transcription, stderr reports the backend actually used (`🎮 GPU acceleration: Vulkan: AMD Radeon 780M...` / `🖥 CPU`). Pass `--no-gpu` to force CPU.
 
-| GPU               | 推荐后端              | Windows 获取方式                        | Linux/macOS 获取方式                            |
+| GPU | Recommended backend | How to get it on Windows | How to get it on Linux/macOS |
 | ----------------- | ----------------- | ----------------------------------- | ------------------------------------------- |
-| **NVIDIA**        | CUDA              | 官方 cublas 预编译 zip（自动选用，自带 CUDA 运行库） | 源码构建（需 CUDA Toolkit）或官方 main-cuda Docker 镜像 |
-| **AMD 独显**        | ROCm/HIP 或 Vulkan | 源码构建（Vulkan SDK 或 ROCm）             | 源码构建（有 ROCm 用 HIP，否则 Vulkan SDK）            |
-| **AMD/Intel 核显**  | Vulkan            | 源码构建（需 Vulkan SDK，官方无 A 卡 GPU 预编译）  | 同左                                          |
-| **Apple Silicon** | Metal             | —                                   | 默认启用，无需任何配置                                 |
+| **NVIDIA** | CUDA | Official prebuilt cublas zip (selected automatically; bundles the CUDA runtime) | Source build (needs the CUDA Toolkit) or the official main-cuda Docker image |
+| **AMD discrete** | ROCm/HIP or Vulkan | Source build (Vulkan SDK or ROCm) | Source build (HIP when ROCm is present, otherwise the Vulkan SDK) |
+| **AMD/Intel iGPU** | Vulkan | Source build (needs the Vulkan SDK; no official GPU prebuild for AMD) | Same as at left |
+| **Apple Silicon** | Metal | — | Enabled by default, no configuration needed |
 
-GPU 是否启用取决于 whisper.cpp 二进制编译时包含的后端；CPU 构建或 GPU 后端/驱动不可用时回退为 CPU。可从转录 stderr 日志确认实际加载的 backend。`large-v3-turbo-q5_0` 仅是量化模型，不等于 GPU 加速。
+Whether the GPU is used depends on the backends compiled into the whisper.cpp binary; CPU builds — or an unavailable GPU backend/driver — fall back to CPU. The backend actually loaded is visible in the transcription stderr log. `large-v3-turbo-q5_0` is merely a quantised model and does not imply GPU acceleration.
 
-## 知识库 workspace（SQLite FTS5 全文检索 + 时间戳定位回放）
+## Knowledge-Base Workspace (SQLite FTS5 full-text retrieval + timestamped seeked playback)
 
-提取的内容可入库到本地知识库（workspace）供后续检索与精读。**只提取与索引，不调用 LLM**；检索引擎为 Python 标准库 sqlite3 内置的 FTS5（trigram 分词器），零外部依赖，支持 BM25 相关性排序、snippet 片段预览、短语/布尔/前缀/NEAR 查询。
+Extracted content can be ingested into a local knowledge base (workspace) for later retrieval and deep reading. **Extraction and indexing only — no LLM calls**; the retrieval engine is FTS5 built into the Python standard-library sqlite3 (trigram tokenizer) with zero external dependencies, supporting BM25 relevance ranking, snippet previews, and phrase/boolean/prefix/NEAR queries.
 
-### 摄入（提取时入库）
-
-```bash
-# --workspace 带上即入库；库名不存在时隐式创建（也支持显式 --workspace <名> --create）
-"$PYTHON" "$EXTRACTOR" --file "document.pdf" --workspace 我的资料
-"$PYTHON" "$EXTRACTOR" --url "https://www.bilibili.com/video/BVxxxx" --workspace 我的资料
-# 批量入库：多 --file 或 --dir（扫描目录受支持文件，不含子目录）——全部窗口合并为
-# 一次嵌入调用（llama-server 只拉起一次，N 文件 N×1.2s → 1×1.2s）；输出恒为 JSON
-"$PYTHON" "$EXTRACTOR" --file a.pdf --file b.docx --file c.epub --workspace 我的资料
-"$PYTHON" "$EXTRACTOR" --dir "资料目录" --workspace 我的资料
-# 元数据可选指定（title/author/publisher/publish-date），缺省自动取自内容或文件名
-"$PYTHON" "$EXTRACTOR" --file "lecture.mp3" --workspace 我的资料 --title "讲座标题" --author "作者"
-```
-
-入库规则：
-
-- **幂等**：条目 id = 内容 sha256 前 16 位；同内容重灌只更新元数据，不产生重复条目；
-- **来源副本**：本地文件与网页快照默认复制到 `source/<id>/`（音视频默认复制——回放必需），`--no-keep-source` 可关；
-- **音视频时间戳索引**：入库的音视频统一走 whisper SRT 转录，段级时间戳存 `transcript.json`，每个分片带 `start_ms`/`end_ms`（普通提取不受影响：视频仍先试内置字幕）；
-- **媒体条目的粒度语义**（KB-AUD-06 定案）：媒体条目的 **chunk 粒度由转录文本长度决定**（口语密度约 260 字符/分钟，40K 字符上限 ≈ 2.5 小时音频才产生第 2 片——长音频常为 1 片，属正常）。**定位/回放粒度不依赖 chunk**：检索命中精确到段级时间戳（`timestamp_precision: segment`），语义检索粒度是 800 字符嵌入窗口（独立于 chunk），读取有 `--max-chars` + 命中开窗兜底——`--play --at` 按段落定位回放，无需按时长分片；
-- **批量契约**（多 `--file` 或 `--dir` 时）：输出 `{"batch": true, "results": [每文件 entry 摘要（含 entry_id/title/chunk_count/vectors/updated/**supersedes/replaced**）或 {success:false,error}], "failed": [失败文件], "embedded_windows": N}`，rc = 全部成功 0 / 任一失败 1；单文件提取失败跳过不阻塞其余；**合并嵌入失败 → 整批不入库**（结构化错误）；`--url` 不参与批量（与多文件同给时报错）；**`--dir` 恒为 batch 形态**（即使只扫到 1 个受支持文件，调用方只需解析一种契约）；单 `--file` 用法输出契约不变。
-
-### 检索
+### Ingestion (ingest while extracting)
 
 ```bash
-"$PYTHON" "$EXTRACTOR" --workspace 我的资料 --search "全文检索" --limit 10
-"$PYTHON" "$EXTRACTOR" --workspace 我的资料 --search 'publisher:出版社名 AND 关键词'
-"$PYTHON" "$EXTRACTOR" --search "关键词" --all-workspaces     # 跨全部库，结果标注来源库名
-"$PYTHON" "$EXTRACTOR" --workspace 我的资料 --search "什么是机器学习" --mode vector  # 纯语义检索（跨语言）
-"$PYTHON" "$EXTRACTOR" --file doc.md --workspace 我的资料 --no-embed               # 仅 FTS 入库
+# passing --workspace ingests; a missing workspace is created implicitly (explicit creation: --workspace <name> --create)
+"$PYTHON" "$EXTRACTOR" --file "document.pdf" --workspace my-docs
+"$PYTHON" "$EXTRACTOR" --url "https://www.bilibili.com/video/BVxxxx" --workspace my-docs
+# batch ingest: multiple --file or a --dir (scans supported files in that directory, no subdirectories) —
+# all windows merge into ONE embedding call (one llama-server start, N files N×1.2s → 1×1.2s); output is always JSON
+"$PYTHON" "$EXTRACTOR" --file a.pdf --file b.docx --file c.epub --workspace my-docs
+"$PYTHON" "$EXTRACTOR" --dir "docs-folder" --workspace my-docs
+# optional metadata (title/author/publisher/publish-date); defaults come from the content or the file name
+"$PYTHON" "$EXTRACTOR" --file "lecture.mp3" --workspace my-docs --title "Lecture title" --author "Author"
 ```
 
-**混合检索（默认 fused）**：三路并行——语义向量路（Qwen3-Embedding，中英文/跨语言）、FTS5 关键词路、标题锚点路（结构标题独立索引），RRF 融合排序。命中结果带 `score_source`（fused/fts/vector/heading，多路同节命中并列标注如 `fused+heading`）；`score` 的语义看 `score_kind` 判别字段：`coverage`=0..1 覆盖率（命中查询词数/总词数，`--mode fts` 与 heading 路）、`similarity`=向量余弦、`rrf`=fused 融合排序分（1/(60+rank)，**跨查询不可比、不表达语义相关度，仅组内排序**；置信度判断应结合 `score_kind` 与 `fts_detail.coverage_terms`）；bm25 原值在 `fts_detail.bm25_raw`；同章节多个碎片命中自动聚合为一条（`same_section_hits` 计数），代表命中附所在标题 `heading` 与 `section_ref`。入库默认自动嵌入（`--no-embed` 可关）；首次使用知识库时一次性引导安装嵌入引擎与向量模型（y/N 确认）。
+Ingestion rules:
 
-**返回条数（`--limit`，默认 20，1..100）**：单次检索的**候选→展示**条数上限。默认 20 是覆盖度与上下文预算的平衡（实测约 25–27 KB JSON，中文粗估约 5K tokens；agent 通常只深读最高分 1-3 条）。**截断必须可感知**：响应带 `candidates_total`（**截断前**融合候选总数）与 `truncated_by_limit`；发生截断时附 `hint`/`hint_i18n` 给出补救建议。**注意 `len(hits) < limit` 不代表未截断**（同节聚合会合并命中）——判定只看 `truncated_by_limit`。且 `truncated_by_limit: false` 只说明**当前召回深度内**没有截断：各路召回深度本身随 limit 放大（约 3×limit、单路上限 100），实测同一查询 `--limit 20` 得候选 19、`--limit 50` 得候选 28——**加大 limit 能捞回更深处的来源**，故内容型/枚举型提问按上文显式用 `--limit 50`。
+- **Idempotent**: an entry id is the first 16 hex digits of the content sha256; re-ingesting identical content only updates metadata and never duplicates an entry;
+- **Source copy**: local files and web snapshots are copied into `source/<id>/` by default (audio/video are always copied — playback needs them); `--no-keep-source` disables it;
+- **Audio/video timestamp index**: ingested audio/video always goes through whisper SRT transcription, segment-level timestamps are stored in `transcript.json`, and every chunk carries `start_ms`/`end_ms` (ordinary extraction is unaffected: video still tries embedded subtitles first);
+- **Granularity semantics for media entries** (settled in KB-AUD-06): a media entry's **chunk granularity is decided by the transcribed text length** (spoken density ≈260 characters/minute, so the 40K-character cap only produces a second chunk after ≈2.5 hours of audio — long recordings are usually one chunk, which is normal). **Seek/playback granularity does not depend on chunks**: retrieval hits are precise to the segment timestamp (`timestamp_precision: segment`), the semantic route works on 800-character embedding windows (independent of chunks), and reads are protected by `--max-chars` plus hit-centred windowing — `--play --at` seeks by paragraph without needing time-based slicing;
+- **Batch contract** (with multiple `--file` or `--dir`): output `{"batch": true, "results": [per-file entry summary (entry_id/title/chunk_count/vectors/updated/**supersedes/replaced**) or {success:false,error}], "failed": [failed files], "embedded_windows": N}`, rc = 0 when all succeed / 1 when any fails; a failing single file is skipped without blocking the rest; **a failed merged embedding → nothing is ingested** (structured error); `--url` does not participate in batch mode (combining them is an error); **`--dir` is always batch-shaped** (even when it scans a single supported file, so callers only parse one contract); a single `--file` keeps its original output contract.
 
-**必须显式调大 `--limit` 的场景**（`truncated_by_limit: true` 时尤其）：① **内容型**（"讲了什么/说了哪些"）——**不得用默认 20**，建议 `--limit 50`（内容型契约要求覆盖全部实质要点，候选被砍=来源不可见）；② **枚举/清点类**（"列出所有讲 X 的内容"）；③ **多实体对比**（"对比 A/B/C 对 X 的说法"）；④ **宽泛跨库检索**——`--all-workspaces` 时 limit 是**全部库共享的总额度**（7 个库时平均每库不足 3 条，不能据此判断某库没有相关内容）。命中数可能少于 limit 属正常（同章节碎片聚合合并），不代表检索失败。
-
-查询语法：≥3 字词进 trigram 索引（输入自动转义）；**自然多词默认 OR 召回 + 覆盖率重排**（单词命中也返回，双词命中排前）；`AND`/`OR`/`NOT`/`NEAR(a b, 5)`/`前缀*` 原样透传；`title:`/`author:`/`publisher:`/`publish_date:` 可限定列；**元数据范围过滤**：`publish_date>=2024`、`created_at<2025-01-01` 等（两列支持 `>=`/`<=`/`>`/`<`，TEXT ISO 形态字典序即时间序；**值为前缀字典序比较**——`<=2019` 不含 `2019-05-01`，按日期语义请写 `<=2019-12-31`），与主题词并用时以候选 entry 集限定三路检索（`column_filter: true` + `filtered_entries` 标注；仅过滤无主题词返回结构化错误）；**<3 字中文词**（trigram 物理限制）自动回退 chunks 表 LIKE 并在结果中标注 `like-low-precision`（该路 `score=None` 为低精度匹配，高精度需求请用 ≥3 字词或 `--mode vector`）。
-
-**结构感知入库**：docx 标题样式 / EPUB h1-h6 / PDF 内嵌书签自动归一化为标题锚点，裸文本启发式识别"第N章/条款N/Chapter N/编号标题"（老条目 `--reindex` 补建）；出处锚定**源文件结构**——PDF 页码、EPUB 章节、音视频时间戳、文本行号（`source_loc` 字段），full.md 内部坐标不对外暴露。
-
-### 读取（agent 精读对象是 full.md，路径内部化）
+### Retrieval
 
 ```bash
-"$PYTHON" "$EXTRACTOR" --workspace 我的资料 --entry <entry-id>            # full.md 全文
-"$PYTHON" "$EXTRACTOR" --workspace 我的资料 --entry <entry-id> --chunk 3  # 指定分片
-"$PYTHON" "$EXTRACTOR" --workspace 我的资料 --section <section_ref>       # 精读命中所在整节（推荐）
+"$PYTHON" "$EXTRACTOR" --workspace my-docs --search "full-text query" --limit 10
+"$PYTHON" "$EXTRACTOR" --workspace my-docs --search 'publisher:publisher-name AND keywords'
+"$PYTHON" "$EXTRACTOR" --search "keywords" --all-workspaces     # every workspace; results are labelled with their workspace
+"$PYTHON" "$EXTRACTOR" --workspace my-docs --search "what is machine learning" --mode vector  # pure semantic retrieval (cross-language)
+"$PYTHON" "$EXTRACTOR" --file doc.md --workspace my-docs --no-embed               # FTS-only ingest
 ```
 
-命中落在首个标题之前（前言/目录区）时 `section_ref` 为 `entry_id#front` 哨兵引用，同样可 `--section` 精读。**读路径（`--entry`/`--chunk`/`--section`）输出同样带 `locator`**（与检索命中同形：`{link, action, target_label, …}`，文档 `action=open` 给页/章/行标注，媒体 `action=play` 给 mm:ss；整篇 `--entry` 为无 `target_label` 的打开链接，不虚标位置）——检索与精读两种入口的源文链接清单可用同一套规则渲染。检索命中附 `section_ref`（不透明引用）与 `section_chars`——agent 将 ref 原样传给 `--section` 即可精读整节。标题稀疏或**无标题**的长文档（扫描书/纯文本/识别失败的 EPUB）会在超长区间生成 20K 步长的**合成子节锚点**（卷首区为 `卷首·续N`）（标题为 `父标题·续N`，不参与标题检索），命中归位与 `--section` 精读粒度回到 20K。**读取默认上限 30,000 字符**（`--max-chars` 对 entry/chunk/section 三读路径统一生效；0=不限），超出截断并标注 `truncated/total_chars/remaining_chars`；超大节按命中位置开窗返回（`section_ref` 内嵌命中偏移），保证内容围绕命中词。媒体命中带 `start_ms/end_ms` 时间戳（精确到命中词所在段落，`timestamp_precision: segment/window/chunk` 标注精度来源；配 `--play --at` 定位回放）。
+**Hybrid retrieval (fused by default)**: three routes in parallel — the semantic vector route (Qwen3-Embedding, Chinese/English/cross-language), the FTS5 keyword route and the heading-anchor route (section titles indexed separately) — fused and ranked by RRF. Hits carry `score_source` (fused/fts/vector/heading; a section hit on several routes is labelled e.g. `fused+heading`); the meaning of `score` follows `score_kind`: `coverage` = 0..1 coverage ratio (query terms hit / total terms; `--mode fts` and the heading route), `similarity` = vector cosine, `rrf` = the fused ranking score (1/(60+rank) — **not comparable across queries and not a semantic relevance measure; ordering within one result set only**; judge confidence together with `score_kind` and `fts_detail.coverage_terms`); the raw BM25 value is in `fts_detail.bm25_raw`; multiple fragment hits in one section are aggregated into a single hit (`same_section_hits` counts them) whose representative carries the containing `heading` and `section_ref`. Ingestion embeds automatically by default (`--no-embed` disables it); the first knowledge-base use walks through installing the embedding engine and vector model once (y/N confirmation).
 
-### 管理操作全集
+**Result count (`--limit`, default 20, 1..100)**: the **candidate → presented** cap for one search. The default 20 balances coverage against context budget (measured ≈25–27 KB of JSON, roughly 5K tokens for Chinese; an agent usually deep-reads only the top 1–3 hits). **Truncation must be perceptible**: the response carries `candidates_total` (**pre-truncation** fused candidate count) and `truncated_by_limit`, plus `hint`/`hint_i18n` with a remedy when truncation occurred. **Note that `len(hits) < limit` does not mean "not truncated"** (same-section aggregation merges hits) — the only judge is `truncated_by_limit`. And `truncated_by_limit: false` only means **no truncation within the current recall depth**: the per-route recall depth itself grows with limit (≈3×limit, capped at 100 per route) — measured on the same query, `--limit 20` yielded 19 candidates while `--limit 50` yielded 28, so **a larger limit recovers deeper sources**; content/enumeration questions therefore use an explicit `--limit 50` as stated above.
 
-| 操作    | 命令                                               |
+**Cases that must raise `--limit` explicitly** (especially with `truncated_by_limit: true`): ① **content-type** ("what does it say / what did it mention") — **never the default 20**, prefer `--limit 50` (the content-type contract demands covering every substantive point, and a cut candidate pool means invisible sources); ② **enumeration/inventory** ("list everything about X"); ③ **multi-entity comparison** ("compare what A/B/C say about X"); ④ **wide cross-workspace search** — with `--all-workspaces`, limit is the **shared quota across all workspaces** (with 7 workspaces that is under 3 hits per workspace on average, so it cannot prove any single workspace lacks relevant content). Fewer hits than limit is normal (same-section fragment aggregation) and does not indicate failure.
+
+Query syntax: terms of ≥3 characters enter the trigram index (input is escaped automatically); **natural multi-term queries default to OR recall + coverage re-ranking** (single-term hits are returned too, two-term hits rank first); `AND`/`OR`/`NOT`/`NEAR(a b, 5)`/`prefix*` pass through as-is; `title:`/`author:`/`publisher:`/`publish_date:` restrict columns; **metadata range filters**: `publish_date>=2024`, `created_at<2025-01-01` etc. (both columns support `>=`/`<=`/`>`/`<`; TEXT ISO values compare lexicographically, which equals chronological order; **the comparison is by prefix** — `<=2019` does not include `2019-05-01`, so for date semantics write `<=2019-12-31`), and combined with topic terms they restrict the candidate entry set for all three routes (`column_filter: true` + `filtered_entries`; a filter with no topic terms returns a structured error); **Chinese terms shorter than 3 characters** (a trigram limitation) automatically fall back to a LIKE scan over the chunks table and are labelled `like-low-precision` in the results (that route reports `score=None` as a low-precision match; for high precision use terms of ≥3 characters or `--mode vector`).
+
+**Structure-aware ingestion**: docx heading styles / EPUB h1-h6 / embedded PDF bookmarks are normalised into heading anchors, and plain text is heuristically scanned for "Chapter N / Clause N / Chapter N / numbered headings" (older entries: rebuild with `--reindex`); provenance is anchored to the **source structure** — PDF page, EPUB chapter, audio/video timestamp, text line number (the `source_loc` field) — internal full.md coordinates are never exposed.
+
+### Reading (the agent deep-reads full.md; paths stay internal)
+
+```bash
+"$PYTHON" "$EXTRACTOR" --workspace my-docs --entry <entry-id>            # full.md in full
+"$PYTHON" "$EXTRACTOR" --workspace my-docs --entry <entry-id> --chunk 3  # a specific chunk
+"$PYTHON" "$EXTRACTOR" --workspace my-docs --section <section_ref>       # deep-read the whole section containing the hit (recommended)
+```
+
+When a hit falls before the first heading (preface/table-of-contents area), `section_ref` is the sentinel reference `entry_id#front`, which `--section` deep-reads just the same. **The read paths (`--entry`/`--chunk`/`--section`) also return `locator`** (same shape as retrieval hits: `{link, action, target_label, …}` — documents get `action=open` with page/chapter/line labels, media get `action=play` with mm:ss; a whole-entry `--entry` read gives an open link without `target_label` and never invents a location) — the source-links list of both retrieval and deep-read turns can be rendered with the same rules. Retrieval hits carry `section_ref` (an opaque reference) and `section_chars` — the agent passes the ref unchanged to `--section` to deep-read the whole section. Sparse-heading or **heading-less** long documents (scanned books / plain text / EPUBs whose headings failed to parse) get **synthetic sub-section anchors** every 20K characters across very long ranges (in the front matter area `卷首·续N`, otherwise `父标题·续N`; they do not participate in heading retrieval), so hit placement and `--section` deep-reading fall back to a 20K granularity. **The default read cap is 30,000 characters** (`--max-chars` applies uniformly to the entry/chunk/section read paths; 0 = unlimited); longer content is truncated with `truncated/total_chars/remaining_chars`; oversized sections are windowed around the hit position (the hit offset is embedded in `section_ref`) so the returned text centres on the matching terms. Media hits carry `start_ms/end_ms` timestamps (precise to the paragraph containing the matched term; `timestamp_precision: segment/window/chunk` records the precision source; pair with `--play --at`).
+
+### Full management command set
+
+| Operation | Command |
 | ----- | ------------------------------------------------ |
-| 显式创建  | `--workspace <名> --create`                       |
-| 列举库   | `--workspace-list`                               |
-| 删除库   | `--workspace <名> --delete-workspace`（需 `--yes`；误用 `--delete-workspace <名>` 走 usage 错误，须配 --workspace） |
-| 重命名   | `--workspace <旧名> --rename <新名>`                 |
-| 统计    | `--workspace <名> --stats`（条目/字符/分片/来源分布/db 体积）   |
-| 条目列举  | `--workspace <名> --list`                         |
-| 条目删除  | `--workspace <名> --remove <entry-id>`（需 `--yes`） |
-| 完整性校验 | `--workspace <名> --verify`（片数/逐片一致性/覆盖/FTS 索引比对；**含孤儿条目目录与 full.md.tmp 残留检测**——`orphan_entry_dir`/`tmp_residual`，嵌入失败回滚残留可被检出） |
-| 索引重建  | `--workspace <名> --reindex`（重建 FTS+标题锚点+子节；**不含向量**；`consistent` 含 chunk↔full.md 逐片校验；重建后刷新 ANALYZE 统计） |
-| 向量补建  | `--workspace <名> --embed`（为零向量条目补建向量，需嵌入链） |
-| 空间回收  | `--workspace <名> --vacuum`                       |
-| 定位回放  | `--workspace <名> --play <entry-id> --at mm:ss [--duration 秒]`（默认内置 ffplay 定位播放；`--player vlc\|potplayer\|mpv\|system` 覆盖） |
-| 协议注册  | `--register-protocol` / `--unregister-protocol`（myagentrag:// 定位链接处理器：`goto` **统一入口**——媒体条目定位播放、文档条目打开原文件；注册项只绑定**受管目录内的自定位启动器** `<home>/protocol/play.py`，不写死源码/技能目录；技能目录经 `MYAGENTRAG_SKILL_DIR` 环境变量 → 启动器旁 `skill.json`（注册时记录）运行时解析；安装 ffmpeg 时自动注册） |
-| 协议入口  | `--goto-uri "myagentrag://goto?ws=<库名>&entry=<id>[&at=<秒>]"`（点击链接时系统调用；**统一入口**：媒体定位播放（`at` 缺省从头）、文档打开原文件；`--play-uri` 为 v0.1.1 链接的**兼容别名**（`myagentrag://play`，`at` 必填）。参数按动作白名单校验防注入——`entry` 限 16 位十六进制、未知参数拒绝、**打开路径只从库内 DB 解析，URI 不接受任何路径参数**） |
-| 组件修复  | `--repair-deps`（幂等补齐受管 ffmpeg 组件 `ffmpeg`/`ffplay`，缺谁补谁、全齐零下载；老装机升级后 ffplay 缺失或 `--play` 报找不到播放器时使用） |
+| Explicit creation | `--workspace <name> --create` |
+| List workspaces | `--workspace-list` |
+| Delete workspace | `--workspace <name> --delete-workspace` (needs `--yes`; misusing `--delete-workspace <name>` is a usage error — it must accompany `--workspace`) |
+| Rename | `--workspace <old> --rename <new>` |
+| Stats | `--workspace <name> --stats` (entries/characters/chunks/source distribution/db size) |
+| List entries | `--workspace <name> --list` |
+| Delete entry | `--workspace <name> --remove <entry-id>` (needs `--yes`) |
+| Integrity check | `--workspace <name> --verify` (chunk count / per-chunk consistency / coverage / FTS index comparison; **includes orphaned entry directories and leftover full.md.tmp** — `orphan_entry_dir`/`tmp_residual`, so failed-embedding rollback leftovers are detectable) |
+| Rebuild index | `--workspace <name> --reindex` (rebuilds FTS + heading anchors + sub-sections; **no vectors**; `consistent` includes per-chunk chunk↔full.md verification; refreshes ANALYZE statistics afterwards) |
+| Backfill vectors | `--workspace <name> --embed` (build vectors for entries with none; needs the embedding chain) |
+| Space reclamation | `--workspace <name> --vacuum` |
+| Seeked playback | `--workspace <name> --play <entry-id> --at mm:ss [--duration seconds]` (built-in ffplay by default; override with `--player vlc\|potplayer\|mpv\|system`) |
+| Protocol registration | `--register-protocol` / `--unregister-protocol` (the myagentrag:// locator-link handler: `goto` is the **unified entry** — seeked playback for media entries, open-original-file for documents; the registration binds only the **self-locating launcher inside the managed directory** `<home>/protocol/play.py` and never hardcodes the source/skill directory; the skill directory is resolved at runtime via the `MYAGENTRAG_SKILL_DIR` environment variable → `skill.json` next to the launcher (recorded at registration); registered automatically when ffmpeg is installed) |
+| Protocol entry | `--goto-uri "myagentrag://goto?ws=<workspace>&entry=<id>[&at=<seconds>]"` (invoked by the OS when a link is clicked; **unified entry**: seeked playback for media (`at` defaults to the beginning), open-original-file for documents; `--play-uri` is the **compatibility alias** for v0.1.1 links (`myagentrag://play`, `at` required). Parameters are whitelist-validated per action against injection — `entry` must be 16 hex digits, unknown parameters are rejected, and **the open path is resolved only from the workspace DB; the URI accepts no path parameter**) |
+| Component repair | `--repair-deps` (idempotently restores the managed ffmpeg components `ffmpeg`/`ffplay`, fetching only what is missing and downloading nothing when complete; use it when an upgraded older install lacks ffplay or `--play` reports no player) |
 
-删除类操作默认只输出 `confirm_required: true` 与将删除的路径——agent 须向用户确认后加 `--yes` 重跑。跨机器迁移 = 直接拷贝 workspace 目录（自包含），无需命令。
+Destructive operations by default only print `confirm_required: true` and the paths to be deleted — the agent must confirm with the user and re-run with `--yes`. Machine-to-machine migration = copy the workspace directory (self-contained); no command needed.
 
-### 定位回放（音视频）
+### Seeked playback (audio/video)
 
 ```bash
-"$PYTHON" "$EXTRACTOR" --workspace 我的资料 --play <entry-id> --at 12:33 [--duration 60]
-"$PYTHON" "$EXTRACTOR" --goto-uri "myagentrag://goto?ws=<库名>&entry=<id>&at=<秒>"   # 协议入口（点击链接时调用；文档条目可省 at）
-"$PYTHON" "$EXTRACTOR" --play-uri "myagentrag://play?ws=<库名>&entry=<id>&at=<秒>"   # 兼容别名（v0.1.1 链接）
+"$PYTHON" "$EXTRACTOR" --workspace my-docs --play <entry-id> --at 12:33 [--duration 60]
+"$PYTHON" "$EXTRACTOR" --goto-uri "myagentrag://goto?ws=<workspace>&entry=<id>&at=<seconds>"   # protocol entry (invoked on link click; documents may omit at)
+"$PYTHON" "$EXTRACTOR" --play-uri "myagentrag://play?ws=<workspace>&entry=<id>&at=<seconds>"   # compatibility alias (v0.1.1 links)
 ```
 
-- **默认内置 ffplay 定位播放**（随 ffmpeg 发行包一并落盘，`-ss` 精确起播、`-autoexit` 播完自退、`-t` 限定时长）：`player: "ffplay"` 且 `degraded: false`——不存在"从头播"降级态；
-- `--player vlc|potplayer|mpv|system` 显式覆盖（`system` = 系统默认关联，只能从头播、结果标注 `degraded: true`）；macOS 无包内 ffplay 时链为 ffplay → VLC/IINA/mpv；
-- 播放进程经外壳 handoff 启动（Windows `cmd /c start` / 非 Windows 独立会话），不受调用方进程退出影响；
-- **检测不到可用播放器时输出结构化 JSON**（`candidates`/`hint`/`play_cmd: null`）交由 agent 处理，技能不弹界面；命中 `locator.fallback_play_cmd` 同一口径为 `null`（不给不可执行命令），修复：`--repair-deps`。
-- `myagentrag://goto` 统一入口（链接点击）：媒体条目 → 定位播放（`at` 缺省从头）；文档条目 → 系统默认关联打开原文件（打开路径只从库内 DB 解析，URI 不接受路径参数）；`myagentrag://play` 为 v0.1.1 链接的兼容别名。源为 URL / 源文件已删 / 未保留副本 → 结构化错误（不静默成功）。
+- **Built-in ffplay seeked playback by default** (shipped with the ffmpeg bundle; `-ss` seeks precisely, `-autoexit` quits when done, `-t` limits the duration): `player: "ffplay"` with `degraded: false` — there is no "plays from the start" degraded state;
+- `--player vlc|potplayer|mpv|system` overrides explicitly (`system` = the OS default association, which can only play from the start and marks the result `degraded: true`); without a bundled ffplay on macOS the chain is ffplay → VLC/IINA/mpv;
+- The player process is started through a shell handoff (Windows `cmd /c start` / an independent session elsewhere) so it survives the caller's exit;
+- **When no usable player is found, structured JSON is returned** (`candidates`/`hint`/`play_cmd: null`) for the agent to handle — the skill never pops up UI; `locator.fallback_play_cmd` follows the same rule and becomes `null` (no unexecutable command); fix with `--repair-deps`.
+- `myagentrag://goto` unified entry (link clicks): media entries → seeked playback (`at` defaults to the beginning); document entries → the OS default association opens the original file (the path is resolved only from the workspace DB; the URI accepts no path parameter); `myagentrag://play` is the compatibility alias for v0.1.1 links. A URL source / deleted source file / entry ingested without a copy → structured error (never a silent success).
 
-### 环境要求（由专用运行时保证）
+### Environment requirements (guaranteed by the dedicated runtime)
 
-workspace 依赖 SQLite ≥3.34（FTS5 trigram）。v1.4 起技能固定运行在专用运行时内（独立 CPython 3.12，内置 SQLite 3.5x），trigram 恒可用、与用户系统 Python 无关；运行时缺失时由引导安装流程补齐——**宁可明确报错，不做低精度降级检索**。
+The workspace relies on SQLite ≥3.34 (FTS5 trigram). Since v1.4 the skill always runs inside the dedicated runtime (standalone CPython 3.12 with SQLite 3.5x), so trigram is always available regardless of the user's system Python; a missing runtime is supplied by the bootstrap install flow — **a clear error is preferred over any low-precision degraded retrieval**.
 
-### 目录结构（workspace 自包含，拷走目录即完成迁移）
+### Directory layout (a workspace is self-contained; copying the directory migrates it)
 
 ```
-~/.myagentrag/workspaces/<库名>/
-├── workspace.db            # SQLite（WAL 模式）：entries / chunks / entries_fts
-├── source/<entry-id>/      # 原始来源副本（音视频/网页快照/字幕原始文件）
+~/.myagentrag/workspaces/<workspace>/
+├── workspace.db            # SQLite (WAL): entries / chunks / entries_fts
+├── source/<entry-id>/      # original source copies (audio/video, web snapshots, raw subtitle files)
 └── entries/<entry-id>/
-    ├── meta.json           # 元数据（标题/来源/作者/出版信息/分片数/副本文件名）
-    ├── full.md             # 全量提取文本（检索命中按 offset 精读）
-    └── transcript.json     # 音视频段级时间戳（含每段在 full.md 中的字符区间）
+    ├── meta.json           # metadata (title/source/author/publisher info/chunk count/copy file name)
+    ├── full.md             # the full extracted text (hits are deep-read by offset)
+    └── transcript.json     # per-segment timestamps for audio/video (including each segment's character range in full.md)
 ```
 
-workspace 根目录可用 `MYAGENTRAG_WORKSPACES_DIR` 覆盖（默认 `~/.myagentrag/workspaces/`；WSL 内注意勿放 /mnt/c 下，避免性能与文件锁问题）。
+The workspace root can be overridden with `MYAGENTRAG_WORKSPACES_DIR` (default `~/.myagentrag/workspaces/`; under WSL avoid /mnt/c to prevent performance and file-locking problems).
+## Cookie Privacy Rules
 
-## Cookies 隐私规则
+The skill package **ships no cookie files** and no longer asks users to configure paths up front.
 
-技能包**不携带任何 cookies 文件**，也不再要求用户预先配置路径。
+- The conventional cookie locations are determined automatically:
+  - YouTube: `~/.myagentrag/cookies/youtube-cookies.txt` (or any location via `MYAGENTRAG_YOUTUBE_COOKIES`)
+  - Bilibili: `~/.myagentrag/cookies/bilibili-cookies.txt` (or any location via `MYAGENTRAG_BILIBILI_COOKIES`; both Netscape format and a raw Cookie header are accepted)
+  - Bilibili cookies are for login-walled content (such as **AI-generated subtitles** — without a login session the API returns an empty list and only the uploader's manually uploaded CC subtitles are available);
+- Public videos need no cookies; the scripts access them anonymously;
+- Only when yt-dlp fails on a login check / bot protection / age restriction does the script hint, in the `cookieHint` field and on stderr, that the user should export Netscape-format cookies with a browser extension (e.g. Get cookies.txt LOCALLY) and **place them manually** at the paths above before retrying;
+- The skill never creates, collects or uploads cookies; files are placed by the user alone.
 
-- cookies 文件的约定位置自动确定：
-  - YouTube：`~/.myagentrag/cookies/youtube-cookies.txt`（或用 `MYAGENTRAG_YOUTUBE_COOKIES` 指定任意位置）
-  - B站：`~/.myagentrag/cookies/bilibili-cookies.txt`（或用 `MYAGENTRAG_BILIBILI_COOKIES` 指定任意位置；支持 Netscape 格式或原生 Cookie 头格式两种文件）
-  - B站 cookies 用于登录墙内容（如 **AI 自动字幕**——无登录态时接口返回空列表，只能拿到 UP 主手动上传的 CC 字幕）；
-- 平时（公开视频）不需要 cookies，脚本直接匿名访问；
-- 只有当 yt-dlp 因登录验证/风控/年龄限制失败时，脚本才会在 `cookieHint` 字段和 stderr 中提示用户：用浏览器扩展（如 Get cookies.txt LOCALLY）导出 Netscape 格式 cookies，**自己手动**保存到上述路径后重试；
-- 技能永不自动创建、收集或上传 cookies，文件只由用户手动放置。
+Cookies carry account-session privileges and must not be committed to the skill repository, copied to other agents or put in shared directories; mind the file permissions.
 
-cookies 具有账号会话权限，不能提交到技能仓库、复制到其他 agent 或放进共享目录；请注意文件权限。
-
-## 与 agent 配合
+## Working with Agents
 
 ```
-用户请求 → extract.py 提取入库 → agent 检索/精读 → 回复用户
+user request → extract.py extract & ingest → agent retrieval/deep reading → reply to the user
 ```
 
-- 提取或检索失败时先看 `error` 字段，不要盲目重试；
-- **呈现检索/精读结果必须遵守「检索」节 ② 的结果呈现契约**（命中列表统一格式 + 末尾源文链接清单）——硬性输出契约，不因客户端或提问方式而变；
-- 长内容精读注意上下文预算，用 `--section` / `--chunk` / `--max-chars` 分段读取；
-- 网页和 YouTube 在具备原生网页工具的 agent 中可优先使用其网页读取能力；本脚本尤其适合 B站字幕、本地文档和本地音视频的提取入库。
+- On extraction or retrieval failure, read the `error` field first — do not retry blindly;
+- **Presenting retrieval/deep-read results must follow the section ② result presentation contract** (uniform hit list + closing source-links list) — a hard output contract that does not vary with client or phrasing;
+- Watch the context budget when deep-reading long content: read in stages with `--section` / `--chunk` / `--max-chars`;
+- Agents with native web tooling may prefer their own web-reading ability for web pages and YouTube; this script is especially suited to Bilibili subtitles, local documents and local audio/video.
 
-## 故障排除
+## Troubleshooting
 
-| 症状                             | 处理                                                                                       |
+| Symptom | Fix |
 | ------------------------------ | ---------------------------------------------------------------------------------------- |
-| 找不到 `python`                   | 设置 `MYAGENTRAG_PYTHON` 为目标解释器的完整路径                                                  |
-| YouTube yt-dlp 报 JS runtime 错误 | 安装 Node.js 并确保 `node` 在 PATH；脚本使用 `--js-runtimes node`                                   |
-| 音视频提示 whisper.cpp 不可用          | 运行时检查会列出缺失组件与大小；同意后确认或由 agent 加 `--download-deps` 重跑                                     |
-| YouTube 提示需要 cookies           | 按提示用浏览器扩展导出 Netscape 格式 cookies 保存到 `~/.myagentrag/cookies/youtube-cookies.txt` 后重试 |
-| PDF 提取为空                       | 扫描件没有文字层，属正常；本工具不做 OCR                                                                   |
-| B站无字幕                          | 该视频没有 CC 字幕，API 返回 `success:false`，属正常                                                   |
-| `--mode vector` 恒 0 命中 | 先查该库入库时是否用了 `--no-embed`（`--list` 的 `vectors` 字段为 0 即是）；补建：`--embed` 或重入库不加减嵌入 |
-| `--search` 报 "workspace 不存在" | 库名拼写错误；`--workspace-list` 列出全部库名核对（`@库名` 前缀会自动剥离）；与"库内无匹配"（success:true + 空结果）严格区分 |
-| `--play` 报找不到播放器 | 执行 `--repair-deps` 补齐内置 ffplay（幂等，已齐全则零下载）；或用 `MYAGENTRAG_FFPLAY` 指向已有 ffplay；亦可 `--player system` 降级 |
-| 升级后播放链缺 ffplay（0.1.0→0.1.2） | 老装机受管 `bin/` 内可能只有 `ffmpeg` 而无 `ffplay`：执行 `--repair-deps` 一次补齐（不覆盖已有组件） |
-| 从 v0.1.1 升级后链接形态变化 | 文档命中新增统一协议链接 `link`（`myagentrag://goto`）——旧启动器转发 `--play-uri` 仍被新版兼容（`play` 别名 + `open` 过渡字段都在），**不重注册也能用**；要同步注册描述值与启动器（描述值 play→goto）则重跑一次 `--register-protocol`（绑定路径不变，无迁移成本） |
-| myagentrag:// 链接点不开 | 协议处理器需注册：`--register-protocol`（安装 ffmpeg 时已自动注册；仅写 skill 自有注册表命名空间，不动系统默认播放器与文件关联）；移除用 `--unregister-protocol` |
-| 文档链接被客户端拦截 | v0.1.2 起文档命中统一用 `locator.link`（`myagentrag://goto`，由已注册协议处理器打开原文件），不再依赖客户端对 `file://` 的策略；仅在过渡字段 `open` 上仍保留 file:/// 形式——渲染时优先用 `link` |
-| 移动技能目录后链接失效 | 注册项只绑定受管目录启动器（不受影响），技能目录运行时解析——设置 `MYAGENTRAG_SKILL_DIR` 指向新技能根目录，或重跑 `--register-protocol` 刷新记录（启动器找不到目录时 stderr 会给出同样指引） |
+| `python` not found | Set `MYAGENTRAG_PYTHON` to the full path of the target interpreter |
+| YouTube yt-dlp reports a JS runtime error | Install Node.js and make sure `node` is on PATH; the script passes `--js-runtimes node` |
+| Audio/video says whisper.cpp is unavailable | The runtime check lists the missing components and sizes; confirm after agreeing, or let the agent re-run with `--download-deps` |
+| YouTube asks for cookies | Export Netscape-format cookies with a browser extension as prompted and save them to `~/.myagentrag/cookies/youtube-cookies.txt`, then retry |
+| PDF extraction is empty | A scan without a text layer — expected; this tool does not do OCR |
+| Bilibili has no subtitles | The video has no CC subtitles; the API returns `success:false` — expected |
+| `--mode vector` always returns 0 hits | First check whether the workspace was ingested with `--no-embed` (a `vectors` value of 0 in `--list` means it was); backfill with `--embed` or re-ingest without disabling embeddings |
+| `--search` reports "workspace not found" | The workspace name is misspelled; list all names with `--workspace-list` (an `@name` prefix is stripped automatically); strictly distinct from "no match inside the workspace" (success:true + empty result) |
+| `--play` reports no player | Run `--repair-deps` to restore the bundled ffplay (idempotent; zero downloads when complete); or point `MYAGENTRAG_FFPLAY` at an existing ffplay; or degrade with `--player system` |
+| Playback chain lacks ffplay after an upgrade (0.1.0→0.1.2) | An older install's managed `bin/` may contain `ffmpeg` but no `ffplay`: run `--repair-deps` once to restore it (existing components are never overwritten) |
+| Link shape changed after upgrading from v0.1.1 | Document hits gained the unified protocol link `link` (`myagentrag://goto`) — an old launcher forwarding `--play-uri` is still accepted by the new version (both the `play` alias and the `open` transition field exist), so **it works without re-registering**; to refresh the registration description and launcher (description play→goto), re-run `--register-protocol` once (the bound path is unchanged; zero migration cost) |
+| A myagentrag:// link does not open | The protocol handler needs registration: `--register-protocol` (registered automatically when ffmpeg is installed; it writes only the skill's own registry namespace and never touches the system default players or file associations); remove it with `--unregister-protocol` |
+| Document links are blocked by the client | Since v0.1.2 document hits use `locator.link` (`myagentrag://goto`, opening the original file through the registered protocol handler) and no longer depend on the client's `file://` policy; only the transition field `open` still carries a file:/// form — prefer `link` when rendering |
+| Links break after moving the skill directory | The registration binds only the managed-directory launcher (unaffected); the skill directory is resolved at runtime — set `MYAGENTRAG_SKILL_DIR` to the new skill root, or re-run `--register-protocol` to refresh the record (the launcher prints the same guidance on stderr when it cannot find the directory) |

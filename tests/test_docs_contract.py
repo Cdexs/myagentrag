@@ -28,21 +28,22 @@ def skill_text():
 
 
 def test_contract_section_exists(skill_text):
-    assert "结果呈现契约" in skill_text
-    assert "源文链接清单" in skill_text
+    assert "Result presentation contract" in skill_text
+    assert "source-links list" in skill_text
 
 
 def test_contract_is_single_reply(skill_text):
     """呈现契约必须写明"一次提问一次答复给全"——命中列表与链接清单都在同一条
     回答里，不得让用户追问才补链接（防止被读成"多轮"语义）"""
-    assert "同一次回答" in skill_text, "契约需明确链接清单与命中列表同属一条回答"
+    assert "a single reply" in skill_text, "契约需明确链接清单与命中列表同属一条回答"
 
 
 def test_contract_prevents_content_compression(skill_text):
     """结论段防压缩条款齐备：完整性五类、详略档位、阈值边界声明、输出前自检——
     契约只约束"形式"不约束"信息量"时，agent 会把多要点压成一句（Gavin 侧实例）"""
-    for key in ("信息完整性", "详略档位", "输出前自检", "不外溢到结论段",
-                "禁止", "上位词替换下位词"):
+    for key in ("Information completeness", "Detail levels", "Pre-output self-check",
+                "does not spill over into the conclusion section",
+                "replace a specific term with a broader one"):
         assert key in skill_text, f"契约缺少防压缩条款: {key}"
 
 
@@ -58,7 +59,7 @@ def test_no_rendered_legacy_alias(skill_text):
 def test_protocol_entry_documented(skill_text):
     """统一入口与兼容别名都在协议表中说明（供 agent 判断旧链接是否仍可用）"""
     assert "--goto-uri" in skill_text
-    assert "兼容别名" in skill_text
+    assert "compatibility alias" in skill_text
 
 
 @pytest.mark.parametrize("name", ["README.md", "README.en.md"])
@@ -115,21 +116,24 @@ def test_runtime_locator_shape_matches_contract(ws_mod, tmp_path, monkeypatch):
 def test_contract_requires_deep_read(skill_text):
     """取数深度：内容型提问必须精读，snippet 只是预览——防"拿预览当正文"
     （Gavin 侧实例：只用 snippet 预览对 OAHSPE 下了错误的定性结论）"""
-    for key in ("取数深度", "预览窗口", "精读返回的原文", "先精读，后作答",
-                "取数深度自检", "定性结论必须基于精读", "不得只凭 `snippet` 作答"):
+    for key in ("Retrieval depth", "preview window",
+                "The original text returned by `--section` deep reading",
+                "deep-read first, then answer", "Retrieval-depth self-check",
+                "Qualitative conclusions must rest on deep reading",
+                "never answer from `snippet` alone"):
         assert key in skill_text, f"契约缺少取数深度条款: {key}"
 
 
 def test_contract_documents_truncation_signal(skill_text):
     """截断信号必须写进契约与字段指南：candidates_total / truncated_by_limit /
     内容型必须 --limit 50 / len(hits)<limit 不代表未截断"""
-    for key in ("candidates_total", "truncated_by_limit", "不得用默认 20",
-                "不代表未截断", "候选截断先补救"):
+    for key in ("candidates_total", "truncated_by_limit", "never the default 20",
+                'does not mean "not truncated"', "Fix candidate truncation first"):
         assert key in skill_text, f"契约缺少截断信号条款: {key}"
 
 
 def test_contract_documents_recall_depth(skill_text):
     """截断信号之外还要写明"召回深度随 limit 放大"——避免 agent 把
     truncated_by_limit=false 误读为"已拿全"（实测 20→19 / 50→28）"""
-    for key in ("当前召回深度内", "加大 limit 能捞回"):
+    for key in ("within the current recall depth", "a larger limit recovers deeper sources"):
         assert key in skill_text, f"契约缺少召回深度说明: {key}"

@@ -272,7 +272,7 @@ def _maybe_ingest(args, result):
 
 # ==================== 批量入库（多文件合并嵌入） ====================
 
-# --dir 扫描的受支持扩展名（与 SKILL.md「支持的内容源」一致）
+# --dir 扫描的受支持扩展名（与 SKILL.md “Supported Content Sources” 一致）
 _DIR_EXTS = {".txt", ".md", ".markdown", ".rst", ".csv", ".pdf", ".docx", ".doc",
              ".epub", ".xlsx", ".xlsm", ".pptx",
              ".mp3", ".wav", ".aac", ".m4a", ".flac", ".ogg", ".wma",
