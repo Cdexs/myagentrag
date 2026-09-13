@@ -1251,7 +1251,8 @@ def test_locator_document_hit(ws_mod, tmp_path):
     assert r["success"]
     s = ws_mod.ws_search("库LOC1", "主题乙", mode="fts")
     loc = s["hits"][0]["locator"]
-    assert loc["open"].startswith("file:///") and "#" not in loc["open"]
+    assert loc["action"] == "open" and loc["link"].startswith("myagentrag://goto?")
+    assert loc["open"].startswith("file:///") and "#" not in loc["open"]   # open=过渡字段
     assert "%20" in loc["open"]                      # URL 编码（空格）
     assert "%3A" not in loc["open"]                    # 盘符冒号保持标准形式 file:///C:/...
     assert loc["target_label"] == "第 2 页" and loc["open_scope"] == "file_only"
@@ -1280,7 +1281,7 @@ def test_locator_media_hit(ws_mod, tmp_path, monkeypatch):
     hit = s["hits"][0]
     loc = hit["locator"]
     assert loc["action"] == "play"
-    assert loc["link"].startswith("myagentrag://play?")
+    assert loc["link"].startswith("myagentrag://goto?")
     assert f"entry={hit['entry_id']}" in loc["link"] and "ws=" in loc["link"]
     assert _re.fullmatch(r"\d+:\d{2}", loc["target_label"])
     assert "-ss" in loc["fallback_play_cmd"] and "-autoexit" in loc["fallback_play_cmd"]
@@ -1300,7 +1301,7 @@ def test_locator_media_no_ffplay_fallback_null(ws_mod, tmp_path, monkeypatch):
     s = ws_mod.ws_search("库LOC4", "全文匹配", mode="fts")
     loc = s["hits"][0]["locator"]
     assert loc["fallback_play_cmd"] is None
-    assert loc["link"].startswith("myagentrag://play?")   # 协议入口链接仍有效
+    assert loc["link"].startswith("myagentrag://goto?")   # 协议入口链接仍有效
     # 同一受限条件下 --play 必须报不可用（两入口判定一致）
     eid = s["hits"][0]["entry_id"]
     out = ws_mod.ws_play("库LOC4", eid, "3")
@@ -1325,6 +1326,7 @@ def test_read_paths_locator(ws_mod, tmp_path, monkeypatch):
     # 整篇读取：无页/章标注 → 打开链接不带 target_label（不虚标位置）
     out = ws_mod.ws_read_entry("库LOC5", eid)
     loc = out["locator"]
+    assert loc["action"] == "open" and loc["link"].startswith("myagentrag://goto?")
     assert loc["open"].startswith("file:///") and "target_label" not in loc
     assert loc["open_scope"] == "file_only"
     # 分片读取：按分片起点给页标注
@@ -1347,6 +1349,74 @@ def test_read_path_media_locator(ws_mod, tmp_path, monkeypatch):
     assert r["success"]
     eid = ws_mod.ws_search("库LOC6", "全文匹配", mode="fts")["hits"][0]["entry_id"]
     loc = ws_mod.ws_read_entry("库LOC6", eid)["locator"]
-    assert loc["action"] == "play" and loc["link"].startswith("myagentrag://play?")
+    assert loc["action"] == "play" and loc["link"].startswith("myagentrag://goto?")
     assert f"entry={eid}" in loc["link"] and loc["target_label"] == "0:00"
     assert "-ss" in loc["fallback_play_cmd"]
+
+
+def _mk_doc_entry(ws_mod, tmp_path, ws="库GOTO1", name="原书.pdf"):
+    f = tmp_path / name
+    f.write_bytes(b"%PDF-fake")
+    r = ws_mod.ws_ingest(ws, content="goto 打开分支验证内容。" * 20, title="GOTO 书",
+                         source_type="pdf", source_ref=str(f))
+    assert r["success"]
+    return ws_mod.ws_search(ws, "goto", mode="fts")["hits"][0]["entry_id"], f
+
+
+def test_ws_open_document_ok(ws_mod, tmp_path, monkeypatch):
+    """goto 文档分支：路径从库内 source_ref 解析并交给系统默认关联打开"""
+    opened = {}
+    monkeypatch.setattr(ws_mod, "_open_with_os", lambda p: opened.update(path=str(p)))
+    eid, f = _mk_doc_entry(ws_mod, tmp_path)
+    out = ws_mod.ws_open("库GOTO1", eid)
+    assert out["success"] is True and out["action"] == "open"
+    assert out["source_ref"] == str(f) and out["title"] == "GOTO 书"
+    assert opened["path"] == str(f)
+
+
+def test_ws_open_structured_failures(ws_mod, tmp_path, monkeypatch):
+    """源为 URL / 源文件已删 / 未保留副本 → 结构化失败（不静默成功）"""
+    monkeypatch.setattr(ws_mod, "_open_with_os",
+                        lambda p: pytest.fail("不应尝试打开"))
+    # 网页来源（source_ref 是 URL）
+    r = ws_mod.ws_ingest("库GOTO2", content="网页来源内容。" * 20, title="网页",
+                         source_type="web", source_ref="https://example.com/a")
+    assert r["success"]
+    eid = ws_mod.ws_search("库GOTO2", "网页来源", mode="fts")["hits"][0]["entry_id"]
+    out = ws_mod.ws_open("库GOTO2", eid)
+    assert out["success"] is False and "URL" in out["error"] and "error_i18n" in out
+    # 源文件已删除
+    eid2, f2 = _mk_doc_entry(ws_mod, tmp_path, ws="库GOTO3", name="删掉.pdf")
+    f2.unlink()
+    out2 = ws_mod.ws_open("库GOTO3", eid2)
+    assert out2["success"] is False and "不可用" in out2["error"]
+    # 库 / 条目不存在
+    assert ws_mod.ws_open("没有这个库", eid2)["success"] is False
+    assert ws_mod.ws_open("库GOTO3", "ffffffffffffffff")["success"] is False
+
+
+def test_ws_goto_dispatch(ws_mod, tmp_path, monkeypatch):
+    """goto 分派：媒体 → ws_play（at 缺省 0）；文档 → ws_open"""
+    calls = {}
+    monkeypatch.setattr(ws_mod, "ws_play",
+                        lambda ws, eid, at, **kw: calls.update(play=(ws, eid, at)) or
+                        {"success": True, "player": "ffplay"})
+    monkeypatch.setattr(ws_mod, "_open_with_os", lambda p: calls.update(open=str(p)))
+    # 媒体条目
+    media = tmp_path / "录.mp3"
+    media.write_bytes(b"fake")
+    r = ws_mod.ws_ingest("库GOTO4", srt_text=SRT, title="M", source_type="audio",
+                         source_file=str(media))
+    assert r["success"]
+    eid_m = ws_mod.ws_search("库GOTO4", "全文匹配", mode="fts")["hits"][0]["entry_id"]
+    assert ws_mod.ws_goto("库GOTO4", eid_m)["success"] is True
+    assert calls["play"][2] == "0"                       # at 缺省从头
+    assert ws_mod.ws_goto("库GOTO4", eid_m, 317)["success"] is True
+    assert calls["play"][2] == "317"
+    # 文档条目
+    eid_d, f = _mk_doc_entry(ws_mod, tmp_path, ws="库GOTO5", name="文档.pdf")
+    assert ws_mod.ws_goto("库GOTO5", eid_d, 99)["success"] is True   # at 在文档上被忽略
+    assert calls["open"] == str(f)
+    # 条目不存在
+    assert ws_mod.ws_goto("库GOTO5", "ffffffffffffffff")["success"] is False
+    assert ws_mod.ws_goto("没有这个库", eid_d)["success"] is False

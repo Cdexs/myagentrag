@@ -313,13 +313,33 @@ MESSAGES = {
         "zh": "目录内无受支持的文件: {path}",
         "en": "No supported files in directory: {path}",
     },
-    "play_uri_invalid": {
-        "zh": "myagentrag:// 播放链接不合法: {err}",
-        "en": "Invalid myagentrag:// play link: {err}",
+    "goto_uri_invalid": {
+        "zh": "myagentrag:// 定位链接不合法: {err}",
+        "en": "Invalid myagentrag:// link: {err}",
+    },
+    "open_ok": {
+        "zh": "已打开原文件：{title}",
+        "en": "Opened the original file: {title}",
+    },
+    "open_no_source": {
+        "zh": "该条目没有来源记录（无法定位原文件）",
+        "en": "This entry has no source reference (cannot locate the original file)",
+    },
+    "open_source_url": {
+        "zh": "该条目的来源是 URL（无本地文件可打开）: {ref}",
+        "en": "This entry's source is a URL (no local file to open): {ref}",
+    },
+    "open_source_missing": {
+        "zh": "原文件已不可用（被移动/删除，或入库时用了 --no-keep-source）: {ref}",
+        "en": "The original file is unavailable (moved/deleted, or ingested with --no-keep-source): {ref}",
+    },
+    "open_failed": {
+        "zh": "打开原文件失败：{err}",
+        "en": "Failed to open the original file: {err}",
     },
     "protocol_registered": {
-        "zh": "myagentrag:// 协议已注册（仅 skill 自有命名空间，不影响系统默认播放器；--unregister-protocol 可移除）",
-        "en": "myagentrag:// protocol registered (skill-owned namespace only; system default players untouched; remove with --unregister-protocol)",
+        "zh": "myagentrag:// 协议已注册（定位链接：打开原文件 / 定位播放；仅 skill 自有命名空间，不影响系统默认播放器与文件关联；--unregister-protocol 可移除）",
+        "en": "myagentrag:// protocol registered (locator links: open the original file / seeked playback; skill-owned namespace only, system default players and file associations untouched; remove with --unregister-protocol)",
     },
     "protocol_unregistered": {
         "zh": "myagentrag:// 协议已移除",

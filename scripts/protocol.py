@@ -1,14 +1,18 @@
 # -*- coding: utf-8 -*-
-"""myagentrag:// 协议与定位播放模块
+"""myagentrag:// 协议与定位入口模块
 
-职责（独立于 extract.py 主脚本，协议处理与播放回调不进主流程）：
-- parse_play_uri：`myagentrag://play?ws=&entry=&at=` 的解析与白名单校验
-  （entry 限 16 位十六进制阻断路径穿越；参数白名单拒绝多余/缺失键；
+职责（独立于 extract.py 主脚本，协议处理与定位回调不进主流程）：
+- parse_uri：`myagentrag://goto?ws=&entry=[&at=]` 的解析与白名单校验
+  （entry 限 16 位十六进制阻断路径穿越；**按动作分派**必填/可选参数，多余键拒绝；
   at 数值区间限制——任何非法输入抛 ValueError，绝不进入命令拼接）
 - register_protocol / unregister_protocol：Windows 写 HKCU 用户级注册表的
   skill 自有命名空间（Software\\Classes\\myagentrag），Linux 写用户级
   .desktop；**不触碰任何系统默认播放器与文件关联**，可完全反注册
-- handle_play_uri：校验通过后复用 workspace.ws_play（ffplay 定位播放）
+- handle_uri：校验通过后按动作复用 workspace.ws_goto（媒体定位播放 / 文档打开原文件）
+
+安全红线（维护约束）：goto 的文档分支会打开文件，**路径只能由 handler 用
+ws+entry 从库内 DB 查出 source_ref 再打开**；严禁接受 URI 携带路径参数
+（如 `?path=C:\\...`），否则本协议将退化为任意文件打开/命令执行入口。
 """
 import os
 import re
@@ -19,8 +23,11 @@ from urllib.parse import parse_qs, urlparse
 import messages
 
 SCHEME = "myagentrag"
-_ACTION = "play"
-_ALLOWED_PARAMS = {"ws", "entry", "at"}
+# 按动作的参数契约：goto 为统一入口（推荐）；play 为 v0.1.1 链接的兼容别名
+_ACTIONS = {
+    "goto": {"required": frozenset({"ws", "entry"}), "optional": frozenset({"at"})},
+    "play": {"required": frozenset({"ws", "entry", "at"}), "optional": frozenset()},
+}
 _ENTRY_RE = re.compile(r"^[0-9a-f]{16}$")
 _WS_RE = re.compile(r"^[A-Za-z0-9\u4e00-\u9fff_-]+$")
 _MAX_AT_S = 24 * 3600
@@ -37,7 +44,7 @@ def _extract_py_path():
 # 技能目录解析顺序：MYAGENTRAG_SKILL_DIR 环境变量 → 同目录 skill.json（注册时记录）。
 _LAUNCHER_SRC = '''#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""MyAgentRAG myagentrag:// 播放链接启动器（由 extract.py --register-protocol 生成，勿手改）。
+"""MyAgentRAG myagentrag:// 链接启动器（由 extract.py --register-protocol 生成，勿手改）。
 
 注册表/.desktop 只绑定本文件（位于受管目录 protocol/ 下）与运行时 python；
 技能目录不在注册项里写死，按以下顺序运行时解析：
@@ -67,7 +74,7 @@ def main():
         print("myagentrag: 技能目录不可用——设置 MYAGENTRAG_SKILL_DIR 指向技能根目录，"
               "或重跑 extract.py --register-protocol 刷新绑定", file=sys.stderr)
         return 1
-    return subprocess.call([sys.executable, str(extract), "--play-uri", uri])
+    return subprocess.call([sys.executable, str(extract), "--goto-uri", uri])
 
 
 if __name__ == "__main__":
@@ -96,36 +103,44 @@ def _write_launcher():
     return launcher, skill_dir
 
 
-def parse_play_uri(uri):
-    """解析并校验 myagentrag://play URI → (ws_name, entry_id, at_s)。
+def parse_uri(uri):
+    """解析并校验 myagentrag:// URI → (action, ws_name, entry_id, at_s|None)。
 
-    at 支持整数或小数秒（内部取整到秒，与 --play 的秒级定位一致）。
-    任何非法输入抛 ValueError（文案含原因）；绝不返回未校验内容。"""
+    - `goto`：统一入口——媒体条目定位播放 / 文档条目打开原文件；`at` 可选
+      （媒体缺省从头播放；文档条目上被忽略）
+    - `play`：v0.1.1 链接的兼容别名（`at` 必填），等价于带 at 的 goto
+
+    at 支持整数或小数秒（内部取整到秒）。任何非法输入抛 ValueError（文案含
+    原因）；绝不返回未校验内容。"""
     p = urlparse(uri)
-    if p.scheme != SCHEME or p.netloc != _ACTION:
+    spec = _ACTIONS.get(p.netloc)
+    if p.scheme != SCHEME or spec is None:
         raise ValueError(f"未知协议: {p.scheme}://{p.netloc}")
     qs = parse_qs(p.query, keep_blank_values=True)
     keys = set(qs.keys())
-    extra = keys - _ALLOWED_PARAMS
+    extra = keys - spec["required"] - spec["optional"]
     if extra:
         raise ValueError(f"未知参数: {', '.join(sorted(extra))}")
-    missing = _ALLOWED_PARAMS - keys
+    missing = spec["required"] - keys
     if missing:
         raise ValueError(f"缺少参数: {', '.join(sorted(missing))}")
     ws = qs["ws"][0].strip()
     entry = qs["entry"][0].strip().lower()
-    at = qs["at"][0].strip()
     if not ws or not _WS_RE.fullmatch(ws):
         raise ValueError(f"库名不合法: {ws!r}")
     if not _ENTRY_RE.fullmatch(entry):
         raise ValueError(f"entry 非法（须 16 位十六进制）: {entry!r}")
-    try:
-        at_s = float(at) if "." in at else int(at)
-    except ValueError:
-        raise ValueError(f"at 非数值: {at!r}")
-    if not (0 <= at_s <= _MAX_AT_S):
-        raise ValueError(f"at 超出范围（0..24h）: {at}")
-    return ws, entry, int(round(at_s))
+    at_s = None
+    if "at" in qs:
+        at = qs["at"][0].strip()
+        try:
+            at_s = float(at) if "." in at else int(at)
+        except ValueError:
+            raise ValueError(f"at 非数值: {at!r}")
+        if not (0 <= at_s <= _MAX_AT_S):
+            raise ValueError(f"at 超出范围（0..24h）: {at}")
+        at_s = int(round(at_s))
+    return p.netloc, ws, entry, at_s
 
 
 def register_protocol():
@@ -143,7 +158,7 @@ def register_protocol():
         handler = f'"{exe}" "{launcher}" "%1"'
         cmds = [
             ["reg", "add", _REG_KEY, "/ve", "/t", "REG_SZ",
-             "/d", "URL:myagentrag play", "/f"],
+             "/d", "URL:myagentrag goto", "/f"],
             ["reg", "add", _REG_KEY, "/v", "URL Protocol", "/t", "REG_SZ", "/d", "", "/f"],
             ["reg", "add", _REG_KEY + r"\shell\open\command", "/ve", "/t", "REG_SZ",
              "/d", handler, "/f"],
@@ -167,7 +182,7 @@ def register_protocol():
         apps.mkdir(parents=True, exist_ok=True)
         desktop = apps / "myagentrag-play.desktop"
         desktop.write_text(
-            "[Desktop Entry]\nType=Application\nName=MyAgentRAG Play\n"
+            "[Desktop Entry]\nType=Application\nName=MyAgentRAG Link\n"
             f"Exec={exe} {launcher} %u\n"
             "NoDisplay=true\nTerminal=false\n"
             f"MimeType=x-scheme-handler/{SCHEME};\n", encoding="utf-8")
@@ -216,11 +231,14 @@ def unregister_protocol():
             "error": pair[messages.get_lang()], "error_i18n": pair}
 
 
-def handle_play_uri(uri):
-    """执行 myagentrag://play：校验 → 复用 workspace.ws_play（ffplay 定位播放）。"""
+def handle_uri(uri):
+    """执行 myagentrag:// 链接（协议处理器入口）：goto（统一）/ play（兼容别名）
+    → 复用 workspace.ws_goto / ws_play（不重复实现定位/打开逻辑）。"""
     import workspace
     try:
-        ws, entry, at_s = parse_play_uri(uri)
+        action, ws, entry, at_s = parse_uri(uri)
     except ValueError as e:
-        return messages.err_result("play_uri_invalid", err=str(e))
-    return workspace.ws_play(ws, entry, str(at_s))
+        return messages.err_result("goto_uri_invalid", err=str(e))
+    if action == "play":
+        return workspace.ws_play(ws, entry, str(at_s))
+    return workspace.ws_goto(ws, entry, at_s)

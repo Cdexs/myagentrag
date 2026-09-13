@@ -106,7 +106,7 @@ After retrieval, the Agent gets a second-level timestamp and **plays from 12:33 
 python scripts/extract.py --workspace lectures --play <entry-id> --at 12:33
 ```
 
-Hits also carry a clickable `locator`: media hits provide a `myagentrag://play?…` link (click to play at the timestamp), document hits provide a `file:///` link to open the original file plus a page/chapter label (readers don't support deep links, so we only promise "open the file" and state the page as text).
+Hits also carry a clickable `locator`, and **documents and media now share one `myagentrag://` protocol link** (handled by the registered protocol handler: media starts playing at the hit timestamp, documents open the original file with the page/chapter label alongside) — no longer dependent on how the client treats `file://`. Readers don't support deep links, so we only promise "open the file" and state the page as text.
 
 ### ⑤ Very long documents: ask a 300-page book anything
 

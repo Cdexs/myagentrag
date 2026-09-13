@@ -155,8 +155,8 @@ def _run_workspace_ops(args):
                 or args.list or args.entry or args.remove or args.verify
                 or args.reindex or args.vacuum or args.play
                 or (args.search and not args.all_workspaces))
-    # 注：--play-uri / --register-protocol / --unregister-protocol 不需要 --workspace
-    # （库名来自 URI 或操作与库无关）
+    # 注：--goto-uri / --play-uri / --register-protocol / --unregister-protocol
+    # 不需要 --workspace（库名来自 URI 或操作与库无关）
     if needs_ws and not W:
         return messages.err_result("ws_name_required")
     if args.create:
@@ -189,8 +189,8 @@ def _run_workspace_ops(args):
         return workspace.ws_reindex(W)
     if args.vacuum:
         return workspace.ws_vacuum(W)
-    if args.play_uri:
-        return protocol.handle_play_uri(args.play_uri)
+    if args.goto_uri or args.play_uri:
+        return protocol.handle_uri(args.goto_uri or args.play_uri)
     if args.register_protocol:
         return protocol.register_protocol()
     if args.unregister_protocol:
@@ -516,8 +516,10 @@ def main():
     parser.add_argument('--play', metavar='ID', help='定位回放音视频条目（默认内置 ffplay 定位播放）')
     parser.add_argument('--player', choices=['ffplay', 'vlc', 'potplayer', 'mpv', 'system'],
                         help='--play 指定播放器（默认 ffplay；system=系统默认关联，从头播放）')
+    parser.add_argument('--goto-uri', metavar='URI',
+                        help='执行 myagentrag://goto?ws=&entry=[&at=] 定位链接（协议处理器入口；媒体定位播放 / 文档打开原文件）')
     parser.add_argument('--play-uri', metavar='URI',
-                        help='执行 myagentrag://play?ws=&entry=&at= 链接（协议处理器入口）')
+                        help='--goto-uri 的兼容别名（v0.1.1 的 myagentrag://play 链接）')
     parser.add_argument('--register-protocol', action='store_true',
                         help='注册 myagentrag:// 协议处理器（用户级，仅 skill 自有命名空间，不影响系统默认播放器）')
     parser.add_argument('--unregister-protocol', action='store_true',
@@ -563,7 +565,7 @@ def main():
     ws_mgmt = any([args.workspace_list, args.create, args.delete_workspace, args.rename,
                    args.stats, args.list, args.search is not None, args.entry, args.section,
                    args.embed, args.remove, args.verify, args.reindex, args.vacuum,
-                   args.play, args.play_uri, args.register_protocol,
+                   args.play, args.goto_uri, args.play_uri, args.register_protocol,
                    args.unregister_protocol])
     if ws_mgmt or args.workspace:
         _fts_gate(args)

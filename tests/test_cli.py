@@ -408,3 +408,21 @@ def test_repair_deps_cli_noop(cli_env, tmp_path):
     assert j["components"]["ffplay"]["present"] is True
     assert j["ffplay"]["source"] == "managed"
     assert r.returncode == 0
+
+
+def test_goto_uri_cli_dispatch(cli_env, tmp_path):
+    """v0.1.2 统一入口：--goto-uri 非法 URI/路径注入结构化拒绝；--play-uri 兼容别名等价"""
+    r = run(cli_env, "--goto-uri", "myagentrag://goto?ws=lib&entry=bad")
+    j = jout(r)
+    assert r.returncode == 1 and j["success"] is False and "不合法" in j["error"]
+    # 安全红线：URI 携带路径参数必须被拒（未知参数），不得进入打开/命令拼接
+    r2 = run(cli_env, "--goto-uri",
+             "myagentrag://goto?ws=lib&entry=0123456789abcdef"
+             "&path=C:/Windows/System32/calc.exe")
+    assert r2.returncode == 1 and "未知参数" in jout(r2)["error"]
+    # 兼容别名 --play-uri 与 --goto-uri 同一条链路
+    r3 = run(cli_env, "--play-uri", "myagentrag://play?ws=lib&entry=bad&at=1")
+    assert r3.returncode == 1 and "不合法" in jout(r3)["error"]
+    # 合法 goto 指向不存在的库 → 结构化 ws_not_found（rc=1，不启动任何程序）
+    r4 = run(cli_env, "--goto-uri", "myagentrag://goto?ws=nosuchws&entry=0123456789abcdef")
+    assert r4.returncode == 1 and jout(r4)["success"] is False

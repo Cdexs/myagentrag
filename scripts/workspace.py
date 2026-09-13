@@ -1254,6 +1254,25 @@ def _media_file_for(ws_name, entry_id):
     return None
 
 
+def _goto_link(ws_name, entry_id, at=None):
+    """统一协议链接：文档/媒体同一入口（handler 按条目类型分派打开或播放）"""
+    from urllib.parse import quote as _q
+    link = f"myagentrag://goto?ws={_q(str(ws_name or ''), safe='')}&entry={entry_id}"
+    if at is not None:
+        link += f"&at={at}"
+    return link
+
+
+def _open_with_os(p):
+    """用系统默认关联打开本地文件（Windows os.startfile / macOS open / Linux xdg-open）"""
+    if os.name == "nt":
+        os.startfile(str(p))
+        return
+    cmd = ["open" if sys.platform == "darwin" else "xdg-open", str(p)]
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+
+
 def _row_to_hit(con, ws_name, rowid, score, snip, low_precision=False):
     c = con.execute("SELECT entry_id, chunk_no, file_offset, char_count, start_ms, end_ms"
                     " FROM chunks WHERE rowid=?", (rowid,)).fetchone()
@@ -1692,15 +1711,16 @@ def _source_loc_for(info, offset):
 
 
 def _build_locator(h, info, require_label=True):
-    """v0.1.1 点击定位（纯新增字段，异常时静默返回 None 不影响检索）：
+    """点击定位（纯新增字段，异常时静默返回 None 不影响检索）：
 
-    - 文档命中（pdf/epub/line 且 source_ref 指向本机存在的文件）→
-      {open: "file:///…"（无 fragment，不承诺深链）, kind, target_label,
-      open_scope: "file_only"}
-    - 媒体命中（media_file + start_ms）→
-      {action: "play", link: "myagentrag://play?…", target_label: "mm:ss",
-      fallback_play_cmd: [ffplay 命令构造，不启动进程] 或 None（无 ffplay 时
-      与 --play 同一判空口径：不给看起来可用、实际不可执行的命令）}
+    v0.1.2 统一协议入口（方案 2）：文档与媒体**同形**——
+    {link: "myagentrag://goto?ws=…&entry=…", action: "open"|"play", target_label,
+     …}；`open_scope/fallback_play_cmd` 按动作各自的语义附加：
+    - action=open（文档命中）→ 附带 kind / open_scope:"file_only"；`open`
+      （file:/// URL）为**过渡字段**（旧版 agent 渲染兼容，下个大版本移除）
+    - action=play（媒体命中）→ 附带 fallback_play_cmd（ffplay 命令构造，不启动
+      进程）或 None（无 ffplay 时与 --play 同一判空口径：不给看起来可用、
+      实际不可执行的命令）
 
     require_label=False 供读路径（--entry 整篇）使用：无页/章/行标注时省略
     target_label，仍给出打开链接（检索路径恒有标注，行为不变）。
@@ -1710,16 +1730,14 @@ def _build_locator(h, info, require_label=True):
     kind = loc.get("kind")
     if h.get("media_file") and h.get("start_ms") is not None:
         at = int(h["start_ms"] // 1000)
-        ws = quote(str(h.get("workspace") or ""), safe="")
-        eid = h.get("entry_id") or ""
-        link = f"myagentrag://play?ws={ws}&entry={eid}&at={at}"
         exe = deps._find_ffplay()
         fallback = None
         if exe:
             fallback = [exe, "-ss", str(at), "-autoexit", str(h["media_file"])]
             if os.name == "nt":
                 fallback = ["cmd", "/c", "start", "", *fallback]
-        return {"action": "play", "link": link,
+        return {"link": _goto_link(h.get("workspace"), h.get("entry_id"), at),
+                "action": "play",
                 "target_label": (lambda s: (f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}"
                                             if s // 3600 else f"{s // 60}:{s % 60:02d}"))(at),
                 "fallback_play_cmd": fallback}
@@ -1741,7 +1759,9 @@ def _build_locator(h, info, require_label=True):
             label = f"第 {loc['n']} 行"
         if not label and require_label:
             return None
-        out = {"open": open_url, "kind": kind, "open_scope": "file_only"}
+        out = {"link": _goto_link(h.get("workspace"), h.get("entry_id")),
+               "action": "open", "kind": kind, "open_scope": "file_only",
+               "open": open_url}     # open：过渡字段（旧版渲染兼容）
         if label:
             out["target_label"] = label
         return out
@@ -2665,3 +2685,65 @@ def ws_play(ws_name, entry_id, at, duration=None, player_key=None):
         out["note"] = dpair[messages.get_lang()]
         out["note_i18n"] = dpair
     return out
+
+
+def ws_open(ws_name, entry_id):
+    """打开条目对应的原文件（myagentrag://goto 文档分支）。
+
+    安全约束：打开路径**只从库内 DB 的 source_ref 解析**（URI 不携带任何路径
+    参数），且必须为存在的本地文件——网页来源（URL）、未保留副本、源文件已
+    删除时返回结构化错误，不静默成功。"""
+    d = ws_dir(ws_name)
+    if d is None:
+        return messages.err_result("ws_not_found", name=ws_name)
+    con = _connect(d / WORKSPACE_DB)
+    try:
+        e = _get_entry(con, entry_id)
+    finally:
+        _close(con)
+    if not e:
+        return messages.err_result("ws_entry_not_found", eid=entry_id, ws=ws_name)
+    meta = _entry_meta(e)
+    src = meta.get("source_ref")
+    if not src:
+        r = messages.err_result("open_no_source")
+        r.update({"workspace": ws_name, "entry_id": entry_id, "action": "open"})
+        return r
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", src):
+        r = messages.err_result("open_source_url", ref=src)
+        r.update({"workspace": ws_name, "entry_id": entry_id, "action": "open"})
+        return r
+    p = Path(src)
+    if not (p.exists() and p.is_file()):
+        r = messages.err_result("open_source_missing", ref=src)
+        r.update({"workspace": ws_name, "entry_id": entry_id, "action": "open"})
+        return r
+    try:
+        _open_with_os(p)
+    except Exception as ex:
+        r = messages.err_result("open_failed", err=str(ex) or type(ex).__name__)
+        r.update({"workspace": ws_name, "entry_id": entry_id, "action": "open",
+                  "source_ref": src})
+        return r
+    pair = messages.msg_pair("open_ok", title=meta.get("title") or entry_id)
+    return {"success": True, "action": "open", "workspace": ws_name,
+            "entry_id": entry_id, "title": meta.get("title"), "source_ref": src,
+            "message": pair[messages.get_lang()], "message_i18n": pair}
+
+
+def ws_goto(ws_name, entry_id, at_s=None):
+    """myagentrag://goto 统一入口：媒体条目 → 定位播放（at 缺省从头）；
+    其余条目 → 打开原文件（ws_open）。"""
+    d = ws_dir(ws_name)
+    if d is None:
+        return messages.err_result("ws_not_found", name=ws_name)
+    con = _connect(d / WORKSPACE_DB)
+    try:
+        e = _get_entry(con, entry_id)
+    finally:
+        _close(con)
+    if not e:
+        return messages.err_result("ws_entry_not_found", eid=entry_id, ws=ws_name)
+    if e[2] in ("audio", "video"):
+        return ws_play(ws_name, entry_id, str(at_s if at_s is not None else 0))
+    return ws_open(ws_name, entry_id)
