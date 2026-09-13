@@ -1420,3 +1420,47 @@ def test_ws_goto_dispatch(ws_mod, tmp_path, monkeypatch):
     # 条目不存在
     assert ws_mod.ws_goto("库GOTO5", "ffffffffffffffff")["success"] is False
     assert ws_mod.ws_goto("没有这个库", eid_d)["success"] is False
+
+
+# ---------- v0.1.2：--limit 截断信号（截断必须可感知，不能静默） ----------
+
+def _mk_three_section_lib(ws_mod, ws="库TRUNC"):
+    """3 个条目各含可检索内容 → 三路融合候选数 3"""
+    for i in range(3):
+        r = ws_mod.ws_ingest(ws, content=f"截断信号验证条目{i}，共同关键词：橙子。" * 20,
+                             title=f"条目{i}", source_type="text")
+        assert r["success"]
+
+
+def test_search_truncation_signal_fused(ws_mod, tmp_path, monkeypatch):
+    """候选被 --limit 砍掉时必须给出 candidates_total / truncated_by_limit / hint"""
+    monkeypatch.setattr(ws_mod.deps, "_find_llama_embed", lambda: None)   # 向量不可用 → fts 候选
+    _mk_three_section_lib(ws_mod)
+    s = ws_mod.ws_search("库TRUNC", "橙子", limit=1)
+    assert s["candidates_total"] == 3 and s["truncated_by_limit"] is True
+    assert len(s["hits"]) == 1
+    assert "另有 2 条候选未返回" in s["hint"] and "--limit 50" in s["hint"]
+    assert s["hint_i18n"]["en"].startswith("2 more candidate")
+    # 未截断：limit >= 候选池 → 无信号、无 hint
+    s2 = ws_mod.ws_search("库TRUNC", "橙子", limit=10)
+    assert s2["candidates_total"] == 3 and s2["truncated_by_limit"] is False
+    assert "hint" not in s2
+
+
+def test_search_truncation_ignores_aggregation(ws_mod, tmp_path, monkeypatch):
+    """同节聚合会让 len(hits) < limit —— 截断判定只认截断前候选数，不得据此误判未截断"""
+    monkeypatch.setattr(ws_mod.deps, "_find_llama_embed", lambda: None)
+    _mk_three_section_lib(ws_mod, ws="库TRUNC2")
+    s = ws_mod.ws_search("库TRUNC2", "橙子", limit=3)      # 候选 3 == limit
+    assert s["candidates_total"] == 3 and s["truncated_by_limit"] is False
+
+
+def test_search_truncation_signal_fts_mode(ws_mod, tmp_path, monkeypatch):
+    """fts / vector 模式同样带候选总数口径"""
+    monkeypatch.setattr(ws_mod.deps, "_find_llama_embed", lambda: None)
+    _mk_three_section_lib(ws_mod, ws="库TRUNC3")
+    s = ws_mod.ws_search("库TRUNC3", "橙子", mode="fts", limit=2)
+    assert s["candidates_total"] == 3 and s["truncated_by_limit"] is True
+    assert "另有 1 条候选未返回" in s["hint"]
+    s2 = ws_mod.ws_search("库TRUNC3", "橙子", mode="fts", limit=5)
+    assert s2["truncated_by_limit"] is False and "hint" not in s2

@@ -385,6 +385,14 @@ MESSAGES = {
         "zh": "  ⚠️ 来源文件副本保存失败: {err}",
         "en": "  ⚠️ Failed to save the source file copy: {err}",
     },
+    "search_truncated_hint": {
+        "zh": "另有 {n} 条候选未返回（当前 --limit {limit}）；内容型/枚举型提问建议加 --limit 50 重跑后再作答",
+        "en": "{n} more candidate(s) were not returned (current --limit {limit}); for content/enumeration questions re-run with --limit 50 before answering",
+    },
+    "search_truncated_hint_all": {
+        "zh": "另有 {n} 条候选未返回（--limit {limit} 为跨库共享额度）；内容型/枚举型提问建议加 --limit 50 重跑后再作答",
+        "en": "{n} more candidate(s) were not returned (--limit {limit} is shared across workspaces); for content/enumeration questions re-run with --limit 50 before answering",
+    },
     "play_no_player": {
         "zh": "无可用媒体播放器 / no media player found",
         "en": "no media player found",

@@ -1534,7 +1534,10 @@ def _headings_search_one(con, ws_name, match, limit, phrases=None, entry_set=Non
 
 
 def _rrf_fuse(fts_hits, vec_hits, limit, k=60, hd_hits=None):
-    """RRF 融合（三路）：score = Σ 1/(k + rank)；同键多路命中标记并列来源。"""
+    """RRF 融合（三路）：score = Σ 1/(k + rank)；同键多路命中标记并列来源。
+
+    返回 (命中列表, 融合候选总数)——候选总数为**截断前**的三路去重键数，
+    供上层输出截断信号（截断必须可感知，不能静默）。"""
     scores, hits, route_scores = {}, {}, {}
     for rank, h in enumerate(fts_hits):
         key = (h["workspace"], h["entry_id"], h["chunk_no"])
@@ -1573,7 +1576,7 @@ def _rrf_fuse(fts_hits, vec_hits, limit, k=60, hd_hits=None):
         h["score_kind"] = "rrf"          # RRF 排序分：跨查询不可比，不表达语义相关度
         h["scores"] = {r: round(v, 4) for r, v in route_scores[key].items()}  # 分路贡献（S6）
         out.append(h)
-    return out
+    return out, len(scores)
 
 
 # ==================== 出口层整形（§8D：出处锚定源文件，full.md 内部化） ====================
@@ -2009,17 +2012,26 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
         except Exception:
             pass
     if mode == "fts":
-        total_hits = (fts_all + hd_all)[:limit]
+        pool = fts_all + hd_all
+        candidates_total = len(pool)
+        total_hits = pool[:limit]
     elif mode == "vector":
-        total_hits = sorted(vec_all, key=lambda h: -h["score"])[:limit]
+        pool = sorted(vec_all, key=lambda h: -h["score"])
+        candidates_total = len(pool)
+        total_hits = pool[:limit]
     else:
-        total_hits = _rrf_fuse(fts_all, vec_all, limit, hd_hits=hd_all)
+        total_hits, candidates_total = _rrf_fuse(fts_all, vec_all, limit, hd_hits=hd_all)
     total_hits = _aggregate_and_polish(total_hits)
+    # 截断信号（P1）：候选池被 --limit 砍掉时必须可感知（同节聚合后的 len(hits)
+    # 通常小于 limit，不能据此反推"未截断"——判定只认截断前的候选总数）
+    truncated_by_limit = candidates_total > limit
     result = {"success": True, "workspace": None if all_workspaces else ws_name,
             "workspaces_searched": searched, "query": query,
             "mode": ("fts" if fts_only_degrade else mode),
             "column_filter": col_filter,
             "filtered_entries": filtered_total if entry_set is not None else None,
+            "candidates_total": candidates_total,
+            "truncated_by_limit": truncated_by_limit,
             "vector_candidates_exceeded": vector_candidates_exceeded or None,
             "vectors_rows": vrows_total,
             "vector_zero_hint": bool(mode == "vector" and vrows_total == 0
@@ -2030,6 +2042,11 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
             "vector_available": vector_available and degraded["vector_available"],
             "vector_backend": vector_backend,
             "total": len(total_hits), "hits": total_hits}
+    if truncated_by_limit:
+        key = "search_truncated_hint_all" if all_workspaces else "search_truncated_hint"
+        pair = messages.msg_pair(key, n=candidates_total - limit, limit=limit)
+        result["hint"] = pair[messages.get_lang()]
+        result["hint_i18n"] = pair
     return result
 
 

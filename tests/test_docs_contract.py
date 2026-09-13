@@ -118,3 +118,18 @@ def test_contract_requires_deep_read(skill_text):
     for key in ("取数深度", "预览窗口", "精读返回的原文", "先精读，后作答",
                 "取数深度自检", "定性结论必须基于精读", "不得只凭 `snippet` 作答"):
         assert key in skill_text, f"契约缺少取数深度条款: {key}"
+
+
+def test_contract_documents_truncation_signal(skill_text):
+    """截断信号必须写进契约与字段指南：candidates_total / truncated_by_limit /
+    内容型必须 --limit 50 / len(hits)<limit 不代表未截断"""
+    for key in ("candidates_total", "truncated_by_limit", "不得用默认 20",
+                "不代表未截断", "候选截断先补救"):
+        assert key in skill_text, f"契约缺少截断信号条款: {key}"
+
+
+def test_contract_documents_recall_depth(skill_text):
+    """截断信号之外还要写明"召回深度随 limit 放大"——避免 agent 把
+    truncated_by_limit=false 误读为"已拿全"（实测 20→19 / 50→28）"""
+    for key in ("当前召回深度内", "加大 limit 能捞回"):
+        assert key in skill_text, f"契约缺少召回深度说明: {key}"
