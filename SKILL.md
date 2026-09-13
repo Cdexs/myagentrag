@@ -308,7 +308,7 @@ Use `--search "clause 14"` (the heading route hits section titles directly) and 
 "$PYTHON" "$EXTRACTOR" --workspace my-books --section "<section_ref>"     # deep-read the whole section
 ```
 
-Structure anchors come automatically from docx heading styles / EPUB h1-h6 / PDF bookmarks / heuristics for "Chapter N, Clause N, Chapter N, numbered headings"; `--reindex` rebuilds them for older entries. Older entries may have `source_loc: null` (no source-position ledger) — re-ingest to get complete anchors.
+Structure anchors come automatically from docx heading styles / EPUB h1-h6 / PDF bookmarks / heuristics for Chinese "第N章/第N节/条款N" (chapter/section/clause), Western "Chapter N/Section N" and numbered headings ("1.2.3 …"); `--reindex` rebuilds them for older entries. Older entries may have `source_loc: null` (no source-position ledger) — re-ingest to get complete anchors.
 
 **④ "Where in that video is the part about Y" (retrieval + seeked playback)**
 
@@ -433,7 +433,7 @@ Ingestion rules:
 
 Query syntax: terms of ≥3 characters enter the trigram index (input is escaped automatically); **natural multi-term queries default to OR recall + coverage re-ranking** (single-term hits are returned too, two-term hits rank first); `AND`/`OR`/`NOT`/`NEAR(a b, 5)`/`prefix*` pass through as-is; `title:`/`author:`/`publisher:`/`publish_date:` restrict columns; **metadata range filters**: `publish_date>=2024`, `created_at<2025-01-01` etc. (both columns support `>=`/`<=`/`>`/`<`; TEXT ISO values compare lexicographically, which equals chronological order; **the comparison is by prefix** — `<=2019` does not include `2019-05-01`, so for date semantics write `<=2019-12-31`), and combined with topic terms they restrict the candidate entry set for all three routes (`column_filter: true` + `filtered_entries`; a filter with no topic terms returns a structured error); **Chinese terms shorter than 3 characters** (a trigram limitation) automatically fall back to a LIKE scan over the chunks table and are labelled `like-low-precision` in the results (that route reports `score=None` as a low-precision match; for high precision use terms of ≥3 characters or `--mode vector`).
 
-**Structure-aware ingestion**: docx heading styles / EPUB h1-h6 / embedded PDF bookmarks are normalised into heading anchors, and plain text is heuristically scanned for "Chapter N / Clause N / Chapter N / numbered headings" (older entries: rebuild with `--reindex`); provenance is anchored to the **source structure** — PDF page, EPUB chapter, audio/video timestamp, text line number (the `source_loc` field) — internal full.md coordinates are never exposed.
+**Structure-aware ingestion**: docx heading styles / EPUB h1-h6 / embedded PDF bookmarks are normalised into heading anchors, and plain text is heuristically scanned for Chinese "第N章/第N节/条款N" (chapter/section/clause), Western "Chapter N/Section N" and numbered headings ("1.2.3 …") (older entries: rebuild with `--reindex`); provenance is anchored to the **source structure** — PDF page, EPUB chapter, audio/video timestamp, text line number (the `source_loc` field) — internal full.md coordinates are never exposed.
 
 ### Reading (the agent deep-reads full.md; paths stay internal)
 

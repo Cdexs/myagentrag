@@ -137,3 +137,11 @@ def test_contract_documents_recall_depth(skill_text):
     truncated_by_limit=false 误读为"已拿全"（实测 20→19 / 50→28）"""
     for key in ("within the current recall depth", "a larger limit recovers deeper sources"):
         assert key in skill_text, f"契约缺少召回深度说明: {key}"
+
+
+def test_heuristic_list_matches_code(skill_text):
+    """裸文本标题启发式的文档清单须与 workspace._HEURISTIC_PATTERNS 实际口径一致，
+    且不得再出现重复项（QA 复核发现的 P2 笔误 "Chapter N, Clause N, Chapter N"）"""
+    for token in ("第N章", "第N节", "条款N", "Chapter N", "Section N", "1.2.3"):
+        assert token in skill_text, f"文档启发式清单缺少实际支持的形态: {token}"
+    assert "Chapter N, Clause N, Chapter N" not in skill_text
