@@ -160,7 +160,7 @@ Put the repo into your Agent's skill directory, or run the commands below inside
 - On first use the skill installs its **dedicated runtime** (a standalone CPython 3.12 + version-pinned libraries, ~150 MB, after your confirmation) — fully isolated from the system Python;
 - For transcription it will list ffmpeg / whisper.cpp / speech model requirements (~1.6–2.4 GB, after confirmation);
 - Everything lives under `~/.myagentrag/` — no system directories touched; uninstalling means deleting that folder;
-- Installing the ffmpeg component **auto-registers the `myagentrag://` play-link protocol** (user-level registry, skill-owned namespace only — your system default players and file associations are never modified; remove completely with `--unregister-protocol`).
+- Installing the ffmpeg component **auto-registers the `myagentrag://` locator-link protocol** (documents open the original file; media plays at the timestamp; user-level registry, skill-owned namespace only — your system default players and file associations are never modified; remove completely with `--unregister-protocol`).
 
 ### Step 3: start using
 
@@ -182,6 +182,7 @@ python scripts/extract.py --dir docs-folder --workspace my-docs              # b
 python scripts/extract.py --workspace my-docs --search "keyword"             # three-route hybrid search
 python scripts/extract.py --workspace my-docs --entry <id> --max-chars 8000  # located deep reading
 python scripts/extract.py --workspace my-docs --play <id> --at 12:33         # seeked playback
+python scripts/extract.py --goto-uri "myagentrag://goto?ws=<name>&entry=<id>&at=<sec>"  # locator link (invoked by the OS on click)
 ```
 
 ### Cookies for restricted content

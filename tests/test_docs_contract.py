@@ -47,6 +47,17 @@ def test_protocol_entry_documented(skill_text):
     assert "兼容别名" in skill_text
 
 
+@pytest.mark.parametrize("name", ["README.md", "README.en.md"])
+def test_readme_documents_locator_link(name):
+    """用户文档同步：README 必须写明统一协议入口的命令与链接形态，
+    且不得再把旧别名当作可点击链接渲染"""
+    text = (SKILL.parent / name).read_text(encoding="utf-8")
+    assert "myagentrag://goto" in text, f"{name} 未说明统一定位链接"
+    assert "--goto-uri" in text, f"{name} 未给出定位链接入口命令"
+    rendered = re.findall(r"\]\((myagentrag://[^)]+)\)", text)
+    assert [u for u in rendered if not u.startswith("myagentrag://goto?")] == []
+
+
 def test_runtime_locator_shape_matches_contract(ws_mod, tmp_path, monkeypatch):
     """运行期 locator 字段与契约承诺一致：
     文档 {link(action=open), kind, target_label, open_scope, open(过渡)}

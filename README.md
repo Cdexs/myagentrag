@@ -160,7 +160,7 @@ git clone https://github.com/Cdexs/myagentrag.git
 - 首次使用时技能会自动安装**专用运行时**（独立 CPython 3.12 + 版本锁定的扩展库，约 150 MB，经你确认后下载），与系统 Python 完全隔离，不污染用户环境；
 - 用到音视频转录时，会再列出 ffmpeg / whisper.cpp / 语音模型的清单（约 1.6–2.4 GB，经确认后下载）；
 - 所有组件都装在 `~/.myagentrag/` 用户目录下，不动系统目录，卸载只需删除该目录；
-- 安装 ffmpeg 组件时**自动注册 `myagentrag://` 播放链接协议**（用户级注册表，仅 skill 自有命名空间——不修改你的系统默认播放器与文件关联；`--unregister-protocol` 可完全移除）。
+- 安装 ffmpeg 组件时**自动注册 `myagentrag://` 定位链接协议**（文档打开原文件 / 媒体定位播放；用户级注册表，仅 skill 自有命名空间——不修改你的系统默认播放器与文件关联；`--unregister-protocol` 可完全移除）。
 
 ### 第三步：开始使用
 
@@ -182,6 +182,7 @@ python scripts/extract.py --dir 资料目录 --workspace 我的资料           
 python scripts/extract.py --workspace 我的资料 --search "检索词"              # 三路混合检索
 python scripts/extract.py --workspace 我的资料 --entry <id> --max-chars 8000  # 定位精读
 python scripts/extract.py --workspace 我的资料 --play <id> --at 12:33         # 音视频定位回放
+python scripts/extract.py --goto-uri "myagentrag://goto?ws=<库名>&entry=<id>&at=<秒>"  # 定位链接（点击链接时由系统调用）
 ```
 
 ### 受限内容需要 Cookies
