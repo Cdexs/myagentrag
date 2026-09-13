@@ -313,6 +313,13 @@ def _release_db(db_path):
     _pop_pool(os.path.normcase(str(Path(db_path).resolve())))
 
 
+def close_pooled_connections():
+    """关闭并清空进程级连接池（测试收尾等"必须释放文件句柄"的场景用；
+    正常 CLI 运行无需调用——池连接随进程退出统一回收）。"""
+    for key in list(_CONN_POOL):
+        _pop_pool(key)
+
+
 def _db_call(db_path, fn, retries=2, base_delay=0.2):
     """执行 fn(con)：捕获退避类 OperationalError（malformed/locked/disk i/o/busy）
     → 重建连接 + 指数退避重试 retries 次（0.2s/0.4s），仍失败才抛出。
