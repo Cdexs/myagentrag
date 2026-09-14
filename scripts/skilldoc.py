@@ -49,9 +49,19 @@ def contract_core():
 
 
 def ref_path(name):
-    """引用文件的绝对路径（字符串）；文件不存在返回 None。"""
+    """引用文件的绝对路径（字符串）；文件不存在返回 None。
+
+    为什么是绝对路径：消费方是调用 agent 的文件读取工具，其工作目录是用户项目
+    目录，相对路径会解析失败；环境变量形态也无法被读取工具展开。CLI 用 __file__
+    自身位置解析，因此永远指向正在运行的这份安装（移动技能目录后无需改配置）。
+    相对形态（references/<name>）只用于人读、日志与转发，见 ref_rel()。"""
     p = refs_dir() / name
     return str(p) if p.is_file() else None
+
+
+def ref_rel(name):
+    """引用文件的相对形态（相对技能根目录；人读、日志与转发用，不可直接交给读取工具）"""
+    return "references/" + name
 
 
 def missing_refs():

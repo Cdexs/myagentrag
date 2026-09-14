@@ -552,8 +552,12 @@ def main():
     if args.contract:
         core = skilldoc.contract_core()
         result = {"success": bool(core), "skill_md": str(skilldoc.skill_md_path()),
+                  "skill_dir": str(skilldoc.skill_dir()),
                   "refs_dir": str(skilldoc.refs_dir()),
-                  "references": {n: skilldoc.ref_path(n) for n in skilldoc.REFS},
+                  # path=绝对路径（直接交给文件读取工具）；rel=相对名（人读/转发）。
+                  # 不用环境变量形态：读取工具不展开变量，且 CLI 以自身位置解析更可靠。
+                  "references": {n: {"path": skilldoc.ref_path(n), "rel": skilldoc.ref_rel(n)}
+                                 for n in skilldoc.REFS},
                   "contract": core}
         if not core:
             result["error"], result["error_i18n"] = messages.err_field(

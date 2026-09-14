@@ -439,8 +439,10 @@ def test_contract_command(cli_env):
         assert token in core, token
     import os as _os
     assert _os.path.isdir(j["refs_dir"])
-    for name, path in j["references"].items():
-        assert path and _os.path.isfile(path), name
+    assert _os.path.isdir(j["skill_dir"])
+    for name, info in j["references"].items():
+        assert info["path"] and _os.path.isfile(info["path"]), name   # 绝对路径：可直接交给读取工具
+        assert info["rel"] == "references/" + name                     # 相对名：人读/转发用
 
 
 def test_search_carries_contract_fields(cli_env, tmp_path):

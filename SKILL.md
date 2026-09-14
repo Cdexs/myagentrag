@@ -44,6 +44,8 @@ Each reference sits in `references/` next to this file and starts with a `READ W
 | First use, missing components, transcription or environment problems, GPU questions, cookies | `references/setup-and-deps.md` |
 | Any error message | `references/troubleshooting.md` |
 
+Paths in tool output (`refs_dir`, `references[].path`) are **absolute** - pass them to your file-reading tool as-is; the same files are `references/<name>` relative to the skill directory (for humans and logs; do not hand the relative form to a read tool).
+
 **Rule of thumb**: the core above covers the plain default path. If the situation is *not* the plain default — or you are about to render something you have not rendered before — load the governing reference first; skipping it is what produces misrendered answers or an omitted links list.
 
 ## Minimal command set
