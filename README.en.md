@@ -22,7 +22,7 @@ All computation happens locally: **no LLM calls, no data leaves your machine**.
 
 ---
 
-## What It Can Do: Six Real Scenarios
+## What It Can Do: Seven Real Scenarios
 
 ### ① Build a knowledge base (batch ingest)
 
@@ -36,19 +36,6 @@ python scripts/extract.py --dir "D:\papers" --workspace papers          # whole-
 python scripts/extract.py --url "https://www.bilibili.com/video/BVxxxx" --workspace papers
 ```
 
-**Ingest flow at a glance**:
-
-```mermaid
-flowchart TD
-    U["👤 User: ingest these files into library X"] --> A["🤖 Agent calls extract.py<br/>--file a.pdf --file b.docx --workspace X"]
-    A --> E["📄 Extract per file<br/>PDF/Word/EPUB parsing · subtitle fetching · whisper transcription"]
-    E -->|"single-file failure: skipped into failed"| K2["⚠️ Rest of the batch unaffected"]
-    E --> P["🧱 Prepare phase (no embedding)<br/>full text → 40K-char chunks → 800-char embedding windows<br/>full.md staged · source snapshots"]
-    P --> M["🧠 Merged embedding: all windows in one llama-server call"]
-    M -->|"embedding failure: whole-batch rollback"| RB["❌ Structured error, no residue"]
-    M --> C["💾 Commit per entry<br/>chunks + FTS index + vectors + heading anchors"]
-    C --> K["📚 Library X is searchable<br/>new entries · idempotent updates · supersedes chain"]
-```
 
 Supported sources: **YouTube, Bilibili, web articles, PDF, Word (docx/doc), Excel, PowerPoint, EPUB, plain text**, plus **local speech-to-text transcription of audio/video** (whisper.cpp, offline).
 
@@ -64,20 +51,7 @@ python scripts/extract.py --workspace papers --search "model compression"
 
 **Retrieval recall & presentation flow at a glance**:
 
-```mermaid
-flowchart TD
-    U["👤 User: what does the library say about X?"] --> A["🤖 Agent parses intent<br/>library · topic terms · metadata filters"]
-    A --> S["🔍 Agent calls extract.py<br/>--workspace X --search topic (default fused)"]
-    S --> R1["⌨️ FTS5 keyword route<br/>BM25 + coverage re-ranking"]
-    S --> R2["🧲 Semantic vector route<br/>query embedding → sqlite-vec KNN (cross-lingual)"]
-    S --> R3["🏷️ Heading-anchor route<br/>section title hits"]
-    R1 --> F["⚖️ RRF fusion + same-section aggregation<br/>hit list: score · snippet · provenance"]
-    R2 --> F
-    R3 --> F
-    F --> D["📖 Agent deep-reads the top 1-3 hits<br/>--section · --max-chars"]
-    D --> AN["🗣️ Composed answer<br/>conclusion + provenance (page / chapter / timestamp)"]
-    D -.->|"media hit"| P["▶️ --play --at seeked playback"]
-```
+
 
 Every hit carries: its entry and section title, a highlighted snippet (『』), multi-route score details, and **precise provenance**. The skill also imposes a uniform **presentation contract** on the Agent (a hard requirement): hits are listed one per line in a fixed format (number + **title** + provenance label + quoted snippet), and every answer ends with a "source links" list — so retrieval results look the same whichever Agent you use and however you phrase the question.
 
@@ -127,6 +101,25 @@ Column filters (`title:` / `author:` / `publisher:` / `publish_date:`) and range
 Different projects can live in different libraries (`--workspace projectA` / `papers` / `lectures`…), fully isolated; one query can also span all libraries at once, annotated per source library. A library is a **self-contained directory** — copying the folder is a complete backup or migration. 13 management operations cover create/list/delete/rename/stats/verify/reindex/vacuum and more.
 
 ---
+
+## Architecture & Flows
+
+**In one line**: the Agent (intent, deep reading, answering) calls `scripts/extract.py` (extraction and indexing only — no LLM calls) → extractors branch by content type (web & subtitles, document parsing, audio/video transcription) → everything is written into a local **workspace** (one SQLite file holding the full-text index, vectors and heading anchors; the directory is self-contained and copy-migratable) → components live under `~/.myagentrag/` (dedicated runtime, ffmpeg, whisper, models) and uninstall by deleting that directory.
+
+Four properties matter most, compared with "throwing files at a model":
+
+- **Fully local loop**: extraction, indexing, retrieval and deep reading never leave the machine, and no LLM is called (no API key, no external service). Only web-article fetching goes through Jina Reader (the URL is sent to a third party); using local files avoids that entirely.
+- **Three-route hybrid retrieval + RRF fusion**: keyword (exact wording), vector semantics (paraphrases, cross-language) and heading anchors (chapter titles) recalled in parallel, with same-section merging.
+- **Provenance anchored to structure**: PDF page, EPUB chapter, text line, or an audio/video timestamp to the second; every hit carries a clickable link — documents open the original file, media seek and play from that second.
+- **Hard contract for retrieval depth and presentation**: candidate-pool size is visible (truncation is reported with a remedy), content-type questions deep-read the source text before answering, and every answer ends with a source-links list — the same shape and provenance whichever Agent you use.
+
+**Ingest flow** (horizontal: from one sentence to a searchable library):
+
+![Ingest flow](images/ingest-flow.en.svg)
+
+**Retrieval & answer flow** (horizontal: three routes → fusion → deep reading → answer with provenance):
+
+![Retrieval & answer flow](images/retrieval-flow.en.svg)
 
 ## Quick Start
 
@@ -204,7 +197,7 @@ Bilibili's AI subtitles and login-walled videos, and some YouTube videos, need a
 
 All components require **no pre-installation** — detected on first use and installed after confirmation; extension libraries ship with the dedicated runtime, versions test-locked, never touching the user's system Python.
 
-After upgrading from an older release, if ffplay is reported missing (a 0.1.0 install may have shipped ffmpeg only), run `--repair-deps` once to idempotently restore the bundled components (only what is missing is fetched; when complete it downloads nothing and leaves existing files untouched).
+After upgrading from an older release, if ffplay is reported missing (an early install may have shipped ffmpeg only), run `--repair-deps` once to idempotently restore the bundled components (only what is missing is fetched; when complete it downloads nothing and leaves existing files untouched).
 
 ## Environment Variables
 

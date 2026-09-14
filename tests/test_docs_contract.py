@@ -216,3 +216,25 @@ def test_references_declare_read_when(mission_text=None):
     for f in sorted(REFS_DIR.glob("*.md")):
         head = f.read_text(encoding="utf-8")[:400]
         assert "READ WHEN" in head, f.name
+
+
+@pytest.mark.parametrize("name", ["README.md", "README.en.md"])
+def test_readme_flow_images_exist_and_are_svg(name):
+    """README 的流程图必须是横向 SVG 且文件存在（npm/GitHub 都不渲染 mermaid，
+    图必须是真实图片；缺失/换回 mermaid 都会让 npm 页面变形）"""
+    text = (SKILL.parent / name).read_text(encoding="utf-8")
+    assert "```mermaid" not in text, f"{name} 不应再内嵌 mermaid（npm 不渲染）"
+    imgs = re.findall(r"!\[[^\]]*\]\(([^)]+\.svg)\)", text)
+    assert len(imgs) >= 2, f"{name} 应引用两张流程 SVG"
+    for rel in imgs:
+        f = SKILL.parent / rel
+        assert f.is_file(), f"缺少图片文件: {rel}"
+        head = f.read_text(encoding="utf-8", errors="replace")[:400]
+        assert "<svg" in head, f"{rel} 不是有效 SVG"
+        # 横向判定：宽 > 高（竖向图会占满页面）
+        import re as _re
+        vb = _re.search(r'viewBox="[^"]*"', head)
+        if vb:
+            nums = [float(x) for x in _re.findall(r"-?\d+\.?\d*", vb.group(0))]
+            w, h = nums[2], nums[3]
+            assert w > h * 3, f"{rel} 应为横向扁图（当前 {w:.0f}x{h:.0f}）"
