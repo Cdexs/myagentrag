@@ -238,3 +238,13 @@ def test_readme_flow_images_exist_and_are_svg(name):
             nums = [float(x) for x in _re.findall(r"-?\d+\.?\d*", vb.group(0))]
             w, h = nums[2], nums[3]
             assert w > h * 3, f"{rel} 应为横向扁图（当前 {w:.0f}x{h:.0f}）"
+
+
+def test_positioning_stays_agent_first(main_text):
+    """产品的设计初衷与首要特性必须始终写在最显眼处：专为 Agent 设计的 RAG 知识库。
+    中英 README 与技能描述都不得丢掉这一定位（用户明确要求）。"""
+    assert "Agent-first" in main_text, "SKILL.md description 需保留 Agent-first 定位"
+    zh = (SKILL.parent / "README.md").read_text(encoding="utf-8")
+    en = (SKILL.parent / "README.en.md").read_text(encoding="utf-8")
+    assert "专为 AI Agent 设计的本地 RAG 知识库技能" in zh and "为 Agent 而设计" in zh
+    assert "designed specifically for AI Agents" in en and "Built for Agents" in en

@@ -12,6 +12,17 @@ Embed it into **Claude Code, Codex, OpenCode, pi** or any other skill-capable AI
 
 **The knowledge base and the Agent each do what they're best at**: MyAgentRAG does the heavy lifting — extracting and ingesting YouTube/Bilibili videos, web pages, PDF/Word/Excel/PowerPoint/EPUB documents and audio/video recordings (high-accuracy local ASR transcription), then building **three-route aggregated retrieval: full-text keywords + vector semantics + heading anchors** (SQLite FTS5 + a local embedding model, cross-lingual Chinese/English), with every retrieval result anchored to exact provenance (which PDF page, which EPUB chapter, which minute-and-second of a video). The Agent does what it's best at — understanding your question, locating, deep-reading and presenting. A retrieval engine's memory × an Agent's presentation and processing power — together, your personal knowledge base.
 
+### Built for Agents: every choice here is deliberate
+
+> **The design intent: Agents already have understanding and expression; what they lack is material that is retrievable, conclusions that are traceable, and context that stays within budget. MyAgentRAG supplies exactly that half** — and every interface is shaped around how an Agent actually works:
+
+- **Output is a contract**: stdout carries JSON only (progress goes to stderr; `--quiet` silences it); exit codes 0/1/2; errors carry bilingual `error_i18n`; destructive operations first return `confirm_required` — an Agent can branch on all of it without parsing human prose;
+- **Every hit ships with a clickable target and provenance**: each result carries a `locator` (documents open the original file; media seeks and plays from that second) plus structure-level provenance (PDF page / EPUB chapter / text line / audio-video timestamp to the second) — ready to render as-is;
+- **Context budget comes first**: the hit list is an *index*, not the content (≤10 items by default, 1–2 quoted lines each); deep reading is chunked via `--section` / `--chunk` / `--max-chars`, and oversized documents are sliced automatically — the context window cannot physically be blown;
+- **Retrieval depth and presentation follow a hard contract**: content-type questions deep-read the source text first, and answers are always "conclusion + hit list + closing source-links list", gated by a self-check — **the same shape and provenance whichever Agent you use, however you phrase the question**;
+- **No guessing whether the pool was complete**: every search reports its candidate total and truncation flag, with a remedy when truncated; content/enumeration questions automatically raise retrieval depth;
+- **The skill documentation is designed for how Agents load skills**: a compact main file plus on-demand `references/`, a truncation self-diagnosis sentinel, and a `--contract` fallback — so a partially loaded document never means acting on wrong assumptions.
+
 It solves the oldest problems every Agent runs into:
 
 - **Private knowledge isn't in the model** — your lecture slides, papers, meeting recordings and saved videos are unknown to the model;

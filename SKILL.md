@@ -1,16 +1,16 @@
 ---
 name: myagentrag
-description: Local knowledge-base (RAG) build & retrieval tool: ingest YouTube/Bilibili subtitles, web articles, local files (PDF/Word/Excel/PowerPoint/EPUB/text) and audio/video transcripts into local knowledge-base workspaces; hybrid keyword + semantic + heading-anchor retrieval (FTS5 + Qwen3 embeddings); structure-aware deep reading and timestamped playback. Extraction and indexing run fully locally with no LLM calls; reading and answering from retrieval results is done by the calling agent. Also matches Chinese-language requests such as 知识库 / 入库 / 检索 / 精读 / 定位回放 / 字幕 / 知识库检索.
+description: Agent-first local knowledge-base (RAG) skill for AI agents (Claude Code / Codex / OpenCode / pi): ingest videos/subtitles, web articles, documents (PDF/Word/Excel/PPT/EPUB/text) and audio/video transcripts into self-contained local workspaces; three-route hybrid retrieval with page/chapter/line/timestamp provenance and clickable open-play links; retrieval depth and answer form follow a hard contract (deep-read before answering; answers end with a source-links list). Fully local, no LLM calls — reading and answering is done by the calling agent. Also matches Chinese requests: 知识库 / 入库 / 检索 / 精读 / 定位回放 / 字幕.
 compatibility: Windows / macOS / Linux / WSL; bootstrap layer requires any Python ≥3.8 (standard library only); first use auto-installs the dedicated runtime (SQLite ≥3.34 included); audio/video transcription additionally needs ffmpeg, whisper.cpp and a GGML model — details in references/setup-and-deps.md
 ---
 
 # MyAgentRAG — Local Knowledge-Base Build & Retrieval Tool
 
-> ⚠️ **READ-FIRST — self-diagnosis.** This file is the contract. **The last line of this file is `<!-- END-OF-SKILL -->`. If your copy does not END with that line, you only got a fragment** — Read this whole file before any retrieval or answering; never infer the rules from a prefix. (If the doc was truncated, `--contract` prints the core block from the CLI.)
+> ⚠️ **READ-FIRST.** Last line is `<!-- END-OF-SKILL -->`; if your copy does not END with it you got a **fragment** — Read the whole file first. Never infer rules from a prefix. (`--contract` prints the core from the CLI.)
 >
-> **Core, in case you read nothing else**: ① `--search` finds locations → ② **`--section` deep-reads** the hits you will present → ③ answer, **ending with the `Source links` list**. Never answer from `snippet` previews; never show internal fields (`score/entry_id/section_ref/…`); content & enumeration questions use `--limit 50`.
+> **Core**: ① `--search` finds → ② **`--section` deep-reads** the hits you present → ③ answer **ending with the `Source links` list**. Never answer from `snippet`; never show internal fields (`score/entry_id/section_ref/…`); content & enum questions use `--limit 50`.
 >
-> Detailed rules live in `references/*.md` next to this file; **this file alone is sufficient for the standard loop**. The trigger table below says which reference to load, and when.
+> Details: `references/*.md` beside this file. This file alone covers the standard loop; the trigger table below says which reference to load, and when.
 
 <!-- CONTRACT-CORE -->
 **NON-NEGOTIABLE CORE — applies to every reply. Full contract: `references/presentation-contract.md`.**

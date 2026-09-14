@@ -1,7 +1,7 @@
 {
   "name": "@cdexs/myagentrag",
   "version": "0.1.2",
-  "description": "Agent skill for a local knowledge base: ingest YouTube/Bilibili videos, web articles, local files (PDF/Word/Excel/PowerPoint/EPUB/text) and audio/video transcripts into SQLite workspaces, with hybrid keyword + semantic + heading-anchor retrieval, structure-aware deep reading and timestamped playback. Extraction and indexing run locally - no LLM calls.",
+  "description": "Agent-first RAG knowledge-base skill (Claude Code / Codex / OpenCode / pi): ingest YouTube/Bilibili videos, web articles, local files (PDF/Word/Excel/PowerPoint/EPUB/text) and audio/video transcripts into SQLite workspaces, with hybrid keyword + semantic + heading-anchor retrieval, structure-aware deep reading and timestamped playback. Extraction and indexing run locally - no LLM calls.",
   "keywords": [
     "agent",
     "skill",
