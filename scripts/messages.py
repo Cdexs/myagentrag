@@ -385,6 +385,22 @@ MESSAGES = {
         "zh": "  ⚠️ 来源文件副本保存失败: {err}",
         "en": "  ⚠️ Failed to save the source file copy: {err}",
     },
+    "contract_unavailable": {
+        "zh": "读不到 SKILL.md 契约核心（文件缺失或缺少 CONTRACT-CORE 标记）: {path}",
+        "en": "Cannot read the SKILL.md contract core (file missing or CONTRACT-CORE marker absent): {path}",
+    },
+    "next_step_search": {
+        "zh": "下一步（强制）：对将呈现的命中逐个 `--section` 精读——结论段必须来自精读原文，不得用 snippet 预览；回答末尾必附 Source links 清单（自检 ⑨–⑪）。渲染边界见 {refs}/presentation-contract.md",
+        "en": "Next (mandatory): deep-read each hit you will present with `--section` — the conclusion must come from deep-read text, never from `snippet`; end the reply with the Source links list (self-check ⑨–⑪). Rendering edge cases: {refs}/presentation-contract.md",
+    },
+    "next_step_read": {
+        "zh": "下一步（强制）：结论只使用本精读文本作答；回答末尾必附 Source links 清单（自检 ⑨–⑪：存在性/计数校验/渲染合规）。",
+        "en": "Next (mandatory): answer from this deep-read text only; end the reply with the Source links list (self-check ⑨–⑪: presence / count / rendering).",
+    },
+    "contract_stderr_search": {
+        "zh": "契约：命中列表=索引，结论须来自 --section 精读；回答末尾必附 Source links 清单（自检 ⑨–⑪）",
+        "en": "contract: hit list = index; conclusion from --section deep reading; end with the Source links list (self-check ⑨–⑪)",
+    },
     "search_truncated_hint": {
         "zh": "另有 {n} 条候选未返回（当前 --limit {limit}）；内容型/枚举型提问建议加 --limit 50 重跑后再作答",
         "en": "{n} more candidate(s) were not returned (current --limit {limit}); for content/enumeration questions re-run with --limit 50 before answering",

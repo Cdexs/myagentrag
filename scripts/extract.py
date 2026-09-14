@@ -26,6 +26,7 @@ import deps
 import messages
 import workspace
 import protocol
+import skilldoc
 import runtime
 import embeddings
 
@@ -524,6 +525,8 @@ def main():
                         help='注册 myagentrag:// 协议处理器（用户级，仅 skill 自有命名空间，不影响系统默认播放器）')
     parser.add_argument('--unregister-protocol', action='store_true',
                         help='移除 myagentrag:// 协议处理器')
+    parser.add_argument('--contract', action='store_true',
+                        help='打印 SKILL.md 的不可豁免核心契约（文档被截断时的兜底；含 references/ 路径）')
     parser.add_argument('--repair-deps', action='store_true',
                         help='幂等补齐受管 ffmpeg 组件（ffmpeg/ffplay，缺谁补谁；老装机升级后 ffplay 缺失时使用）')
     parser.add_argument('--at', metavar='mm:ss', help='回放起点（mm:ss / hh:mm:ss / 秒数）')
@@ -544,6 +547,19 @@ def main():
 
     # 专用运行时闸门（v1.4 §8B）：缺失则引导安装，就绪则透明 re-exec（v1.4 决策 3：不回退用户环境）
     _runtime_gate(args)
+
+    # 契约核心兜底（v0.1.2 文档拆分）：不依赖 workspace，从 SKILL.md 抽 CONTRACT-CORE
+    if args.contract:
+        core = skilldoc.contract_core()
+        result = {"success": bool(core), "skill_md": str(skilldoc.skill_md_path()),
+                  "refs_dir": str(skilldoc.refs_dir()),
+                  "references": {n: skilldoc.ref_path(n) for n in skilldoc.REFS},
+                  "contract": core}
+        if not core:
+            result["error"], result["error_i18n"] = messages.err_field(
+                "contract_unavailable", path=str(skilldoc.skill_md_path()))
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        sys.exit(0 if core else 1)
 
     # 受管组件幂等补齐（v0.1.2）：不依赖 workspace / 嵌入链，直接执行后退出
     if args.repair_deps:
@@ -572,6 +588,9 @@ def main():
     if ws_mgmt:
         result = _run_workspace_ops(args)
         print(json.dumps(result, ensure_ascii=False, indent=2))
+        if isinstance(result, dict) and "hits" in result and not args.quiet:
+            # 契约提醒走 stderr（stdout 保持纯 JSON）；--quiet 抑制
+            print(messages.msg("contract_stderr_search"), file=sys.stderr)
         sys.exit(0 if result.get("success") else 1)
 
     # 批量输入归集：--file 可重复 + --dir 目录扫描（单输入 → 原路径，零行为变化）

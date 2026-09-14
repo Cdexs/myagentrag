@@ -426,3 +426,32 @@ def test_goto_uri_cli_dispatch(cli_env, tmp_path):
     # 合法 goto 指向不存在的库 → 结构化 ws_not_found（rc=1，不启动任何程序）
     r4 = run(cli_env, "--goto-uri", "myagentrag://goto?ws=nosuchws&entry=0123456789abcdef")
     assert r4.returncode == 1 and jout(r4)["success"] is False
+
+
+def test_contract_command(cli_env):
+    """v0.1.2 文档拆分兜底：--contract 直接输出不可豁免核心 + 引用文件绝对路径
+    （文档被宿主截断时，agent 仍能拿到规则与"该读哪份细节"）"""
+    r = run(cli_env, "--contract")
+    j = jout(r)
+    assert r.returncode == 0 and j["success"] is True
+    core = j["contract"]
+    for token in ("NON-NEGOTIABLE CORE", "Three-step loop", "Source links", "Self-check"):
+        assert token in core, token
+    import os as _os
+    assert _os.path.isdir(j["refs_dir"])
+    for name, path in j["references"].items():
+        assert path and _os.path.isfile(path), name
+
+
+def test_search_carries_contract_fields(cli_env, tmp_path):
+    """检索输出必须内嵌"下一步"与引用目录——不依赖 agent 是否读到 SKILL.md"""
+    (tmp_path / "c.md").write_text("契约字段验证内容。" * 20, encoding="utf-8")
+    r = run(cli_env, "--file", str(tmp_path / "c.md"),
+            "--workspace", "契约字段库", "--no-embed", "--quiet")
+    assert jout(r)["success"] is True
+    r2 = run(cli_env, "--workspace", "契约字段库", "--search", "契约字段", "--mode", "fts", "--quiet")
+    j2 = jout(r2)
+    assert "Source links" in j2["next_required_step"]
+    assert j2["next_required_step_i18n"]["zh"]
+    import os as _os
+    assert _os.path.isdir(j2["refs_dir"])

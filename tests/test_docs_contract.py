@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 SKILL = Path(__file__).resolve().parent.parent / "SKILL.md"
+REFS_DIR = Path(__file__).resolve().parent.parent / "references"
 
 SRT = """1
 00:00:01,000 --> 00:00:03,500
@@ -23,8 +24,18 @@ SRT = """1
 
 
 @pytest.fixture(scope="module")
-def skill_text():
+def main_text():
+    """主文件（自动加载的那一份）"""
     return SKILL.read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def skill_text(main_text):
+    """主文件 + references/ 全量拼接：条款守卫跨文件生效（细节已拆到 references）"""
+    parts = [main_text]
+    for f in sorted(REFS_DIR.glob("*.md")):
+        parts.append(f.read_text(encoding="utf-8"))
+    return chr(10).join(parts)
 
 
 def test_contract_section_exists(skill_text):
@@ -155,3 +166,53 @@ def test_source_links_are_gated_by_self_check(skill_text):
     for token in ("⑨", "⑩", "⑪", "count check: number of link lines == number of distinct cited"):
         assert token in skill_text, f"源链接自检门禁缺少: {token}"
     assert "gated by self-check items ⑨–⑪" in skill_text
+
+
+# ---------- v0.1.2 文档拆分：自动加载面必须"自我可诊断 + 自足" ----------
+
+def test_main_file_is_small_enough(main_text):
+    """主文件必须足够小以适配宿主注入窗口（拆分的目的就是让它整体可载）"""
+    size = len(main_text.encode("utf-8"))
+    assert size <= 10 * 1024, f"主文件 {size} B 超过 10 KB 预算——内容请移入 references/"
+
+
+def test_end_of_skill_sentinel(main_text):
+    """文末哨兵：残片自诊断的判据（agent 看不到它即说明被截断）"""
+    assert main_text.rstrip().endswith("<!-- END-OF-SKILL -->")
+    assert "END-OF-SKILL" in main_text[:2000]
+
+
+def test_truncation_zone_carries_the_core(main_text):
+    """宿主实测截断点约 1.8 KB：该区间内必须能读到"被截断"告警与最关键的规则，
+    否则 agent 无法自知、也拿不到任何约束"""
+    head = main_text[:1800]
+    for token in ("END-OF-SKILL", "READ-FIRST", "--section", "Source links",
+                  "--limit 50", "internal fields"):
+        assert token in head, f"截断区缺少关键内容: {token}"
+
+
+def test_contract_core_block_present_and_complete(main_text):
+    """CONTRACT-CORE 块是 --contract 命令的数据源，必须在主文件里且含核心条目"""
+    assert "<!-- CONTRACT-CORE -->" in main_text and "<!-- /CONTRACT-CORE -->" in main_text
+    core = main_text.split("<!-- CONTRACT-CORE -->")[1].split("<!-- /CONTRACT-CORE -->")[0]
+    for token in ("Three-step loop", "Source links", "Self-check", "limit 50"):
+        assert token in core, f"CONTRACT-CORE 缺少: {token}"
+
+
+def test_references_exist_and_are_reachable(main_text):
+    """每份引用文件必须真实存在、非空，且在触发表中出现（够得着才谈得上"按需加载"）"""
+    import skilldoc
+    assert sorted(p.name for p in REFS_DIR.glob("*.md")) == sorted(skilldoc.REFS)
+    for name in skilldoc.REFS:
+        f = REFS_DIR / name
+        assert f.is_file() and f.stat().st_size > 500, name
+        assert len(f.read_text(encoding="utf-8").encode("utf-8")) <= 32 * 1024, f"{name} 超过 32 KB"
+        assert name in main_text, f"主文件未指向 {name}"
+        assert skilldoc.ref_path(name), f"skilldoc 解析不到 {name}"
+
+
+def test_references_declare_read_when(mission_text=None):
+    """每份引用开头须有 READ WHEN 行（被单独打开时能自我定位）"""
+    for f in sorted(REFS_DIR.glob("*.md")):
+        head = f.read_text(encoding="utf-8")[:400]
+        assert "READ WHEN" in head, f.name

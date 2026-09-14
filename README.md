@@ -152,7 +152,8 @@ pi install npm:@cdexs/myagentrag
 git clone https://github.com/Cdexs/myagentrag.git
 ```
 
-把仓库目录放进 Agent 的技能目录，或直接在仓库内运行下述命令。
+把仓库目录**整体**放进 Agent 的技能目录（须含 `references/` 子目录——技能文档已拆分为精简主文件
+`SKILL.md` + 细节引用 `references/*.md`，Agent 按需读取），或直接在仓库内运行下述命令。
 
 ### 第二步：首次使用会发生什么
 

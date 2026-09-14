@@ -32,6 +32,7 @@ from pathlib import Path
 from deps import MANAGED_HOME
 from slicing import CHUNK_CHARS, CHUNK_OVERLAP_CHARS
 import messages
+import skilldoc
 import embeddings
 import deps
 import deps
@@ -1251,6 +1252,15 @@ def _like_snippet(text, terms, width=32):
     return f"{head}{text[a:pos]}『{text[pos:pos + len(terms[0])]}』{text[pos + len(terms[0]):b]}{tail}"
 
 
+
+def _contract_fields(step_key):
+    """契约兜底字段（v0.1.2 文档拆分）：把"下一步该做什么/该读哪份细节"直接
+    放进工具输出——不依赖调用方是否完整读到 SKILL.md。"""
+    pair = messages.msg_pair(step_key, refs=str(skilldoc.refs_dir()))
+    return {"next_required_step": pair[messages.get_lang()],
+            "next_required_step_i18n": pair,
+            "refs_dir": str(skilldoc.refs_dir())}
+
 def _media_file_for(ws_name, entry_id):
     """条目来源副本中的本地音视频文件（回放/定位链接用）；无副本返回 None"""
     sdir = ws_dir(ws_name) / "source" / entry_id
@@ -2054,6 +2064,7 @@ def ws_search(ws_name, query, limit=20, all_workspaces=False, mode="fused",
         pair = messages.msg_pair(key, n=candidates_total - limit, limit=limit)
         result["hint"] = pair[messages.get_lang()]
         result["hint_i18n"] = pair
+    result.update(_contract_fields("next_step_search"))
     return result
 
 
@@ -2101,6 +2112,7 @@ def _read_front(con, d, ws_name, entry_id, max_chars=30000, at=None):
             "content": content}
     out["locator"] = _build_locator_read(ws_name, entry_id, info,
                                          out["section"]["source_loc"])
+    out.update(_contract_fields("next_step_read"))
     if cap:
         out.update(cap)
         out["truncated"] = True
@@ -2167,6 +2179,7 @@ def _read_section(con, d, ws_name, ref, max_chars=30000):
     out = {"success": True, "workspace": ws_name, "entry": _entry_meta(e),
             "section": sec, "content": content}
     out["locator"] = _build_locator_read(ws_name, entry_id, info, sec["source_loc"])
+    out.update(_contract_fields("next_step_read"))
     if cap:
         out.update(cap)
         out["truncated"] = True
@@ -2207,6 +2220,7 @@ def ws_read_entry(ws_name, entry_id, chunk_no=None, section=None, max_chars=3000
             out = {"success": True, "workspace": ws_name, "entry": meta, "locator": loc,
                     "chunk": {"chunk_no": c[0], "chars": c[3],
                               "start_ms": c[4], "end_ms": c[5]}, "content": content}
+            out.update(_contract_fields("next_step_read"))
             if cap:
                 out.update(cap)
                 out["truncated"] = True
@@ -2217,6 +2231,7 @@ def ws_read_entry(ws_name, entry_id, chunk_no=None, section=None, max_chars=3000
         loc = _build_locator_read(ws_name, entry_id, _load_exit_info(con, d, entry_id), None)
         out = {"success": True, "workspace": ws_name, "entry": meta, "locator": loc,
                "chunk": None, "content": text}
+        out.update(_contract_fields("next_step_read"))
         if cap:
             out.update(cap)
             out["truncated"] = True

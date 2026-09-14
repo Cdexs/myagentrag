@@ -32,6 +32,7 @@
   },
   "files": [
     "SKILL.md",
+    "references",
     "README.md",
     "README.en.md",
     "LICENSE",
@@ -45,6 +46,7 @@
     "scripts/runtime.py",
     "scripts/protocol.py",
     "scripts/embeddings.py",
+    "scripts/skilldoc.py",
     "scripts/requirements-libs.txt"
   ],
   "engines": {

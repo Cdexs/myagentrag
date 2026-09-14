@@ -152,7 +152,8 @@ The skill lands in `node_modules/@cdexs/myagentrag/`; place it into your Agent's
 git clone https://github.com/Cdexs/myagentrag.git
 ```
 
-Put the repo into your Agent's skill directory, or run the commands below inside it.
+Put the repo **as a whole** into your Agent's skill directory (the `references/` subdirectory must come along — the
+documentation is split into a compact `SKILL.md` plus on-demand `references/*.md` details), or run the commands below inside it.
 
 ### Step 2: what happens on first use
 
